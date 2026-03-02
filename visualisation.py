@@ -18,7 +18,6 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-from text_sorting import sort_documents
 from email_splitter import split_emails
 
 # ---------------------------------------------------------------------------
@@ -186,10 +185,8 @@ def _detail_html(doc_code: str, doc: dict, emails: list[dict] | None) -> str:
 # ---------------------------------------------------------------------------
 # Main builder
 # ---------------------------------------------------------------------------
-def build_html(pdf_path: Path | str = PDF_PATH,
-               out_path: Path | str = OUT_PATH) -> None:
-    """Generate the timeline HTML file."""
-    docs = sort_documents(Path(pdf_path))
+def build_html(docs: dict, out_path: Path | str = OUT_PATH) -> None:
+    """Generate the timeline HTML file from an already-loaded, sorted docs dict."""
 
     # ── Build per-card data ──────────────────────────────────────────────────
     cards_data: list[dict] = []
@@ -401,6 +398,8 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape')closePanel();});
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     import sys
+    from pdf_import_reader import load_pdf
+    from text_sorting import sort_documents
     pdf = sys.argv[1] if len(sys.argv) > 1 else PDF_PATH
     out = sys.argv[2] if len(sys.argv) > 2 else OUT_PATH
-    build_html(pdf, out)
+    build_html(sort_documents(load_pdf(Path(pdf))), out)

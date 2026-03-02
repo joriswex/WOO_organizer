@@ -28,8 +28,6 @@ Output IDs follow the pattern <doc_code>.<n>, e.g. "0003.1", "0003.2".
 
 import re
 
-from pdf_import_reader import load_pdf
-
 # ---------------------------------------------------------------------------
 # Regexes
 # ---------------------------------------------------------------------------
@@ -198,6 +196,7 @@ def split_emails(text: str, doc_code: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    from pdf_import_reader import load_pdf
     docs = load_pdf()
 
     email_docs = {

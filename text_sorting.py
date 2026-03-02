@@ -148,25 +148,20 @@ def _get_doc_date(doc: dict) -> tuple[datetime | None, str]:
             return dt, raw
         return _date_from_text_scan(doc['text'])
 
-    if category == 'Timeline':
-        return _date_from_text_scan(doc['text'])
-
-    # Other / unknown categories
+    # Timeline, Other, and any unknown category
     return _date_from_text_scan(doc['text'])
 
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
-def sort_documents(pdf_path: Path | str) -> dict[str, dict]:
+def sort_documents(docs: dict) -> dict:
     """
-    Load the PDF, attach ``date`` (datetime | None) and ``date_raw`` (str)
-    to every document, and return them sorted chronologically.
+    Attach ``date`` (datetime | None) and ``date_raw`` (str) to every document
+    and return them sorted chronologically.
     Undated documents are appended at the end, sorted by doc_code.
     """
-    docs = load_pdf(Path(pdf_path))
-
-    for _, doc in docs.items():
+    for doc in docs.values():
         dt, raw = _get_doc_date(doc)
         doc['date'] = dt
         doc['date_raw'] = raw
@@ -189,7 +184,7 @@ def sort_documents(pdf_path: Path | str) -> dict[str, dict]:
 if __name__ == '__main__':
     import sys
     pdf = sys.argv[1] if len(sys.argv) > 1 else 'test.pdf'
-    docs = sort_documents(pdf)
+    docs = sort_documents(load_pdf(Path(pdf)))
 
     print(f"\n{'#':<4} {'Code':<8} {'Date':<14} {'Category':<20} {'Date source'}")
     print('-' * 78)
