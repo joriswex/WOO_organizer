@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+*.egg-info/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Generated outputs
+woo_timeline.html
+
+# Claude Code settings
+.claude/
+
+# PDF source files (large binaries — store separately or via Git LFS)
+*.pdf
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo
