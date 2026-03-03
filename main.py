@@ -25,7 +25,7 @@ def main() -> None:
     docs = sort_documents(docs)
 
     print("Step 3/3 — Building interactive HTML timeline...")
-    build_html(docs, OUT_PATH)
+    build_html(docs, OUT_PATH, pdf_path=PDF_PATH)
 
     print("\nDone.")
 

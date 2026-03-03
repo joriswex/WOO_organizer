@@ -82,8 +82,30 @@ def _draw_wrapped(draw: ImageDraw.ImageDraw, text: str, x: int, y: int,
 
 
 def make_thumbnail(doc_code: str, doc: dict,
-                   emails: list[dict] | None = None) -> str:
-    """Render a mini document image; return as a base64 data URI."""
+                   emails: list[dict] | None = None,
+                   page_image: Image.Image | None = None) -> str:
+    """Render a mini document image; return as a base64 data URI.
+
+    For non-email documents a rendered PDF page (page_image) is used when
+    available so the original formatting is preserved.  Email documents always
+    use the text-based render so the subject/body preview is shown.
+    """
+    # ── PDF-page thumbnail (non-email docs) ──────────────────────────────────
+    if page_image is not None and emails is None:
+        canvas = Image.new("RGB", (THUMB_W, THUMB_H), (248, 248, 248))
+        page = page_image.copy()
+        page.thumbnail((THUMB_W - 4, THUMB_H - 4), Image.LANCZOS)
+        x = (THUMB_W - page.width) // 2
+        y = (THUMB_H - page.height) // 2
+        canvas.paste(page, (x, y))
+        draw = ImageDraw.Draw(canvas)
+        draw.rectangle([(0, 0), (THUMB_W - 1, THUMB_H - 1)],
+                       outline=(195, 200, 205), width=1)
+        buf = io.BytesIO()
+        canvas.save(buf, format="PNG", optimize=True)
+        return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
+    # ── Text-based thumbnail (email docs or fallback) ────────────────────────
     color = CATEGORY_COLORS.get(doc["category"], DEFAULT_COLOR)
     color_rgb = _hex_rgb(color)
 
@@ -97,8 +119,8 @@ def make_thumbnail(doc_code: str, doc: dict,
     # Coloured header bar
     header_h = 34
     draw.rectangle([(0, 0), (THUMB_W, header_h)], fill=color_rgb)
-    draw.text((7, 5),  doc_code,          fill=(255, 255, 255), font=font_hdr)
-    draw.text((7, 19), doc["category"],   fill=(210, 220, 230), font=font_sm)
+    draw.text((7, 5),  doc_code,         fill=(255, 255, 255), font=font_hdr)
+    draw.text((7, 19), doc["category"],  fill=(210, 220, 230), font=font_sm)
 
     y = header_h + 6
 
@@ -110,9 +132,7 @@ def make_thumbnail(doc_code: str, doc: dict,
 
     # Subject / title
     if emails:
-        subj = (emails[0].get("subject") or "").strip()
-        if not subj:
-            subj = f"{len(emails)} e-mails"
+        subj = (emails[0].get("subject") or "").strip() or f"{len(emails)} e-mails"
     else:
         lines = [l.strip() for l in doc["text"].splitlines() if l.strip()]
         lines = [l for l in lines if not re.fullmatch(r"0\d{3}", l)]
@@ -127,8 +147,11 @@ def make_thumbnail(doc_code: str, doc: dict,
     draw.line([(7, y), (THUMB_W - 7, y)], fill=(210, 215, 220), width=1)
     y += 7
 
-    # Body preview
-    body = (emails[0].get("text") or "") if emails else doc["text"]
+    # Body preview (emails: strip headers from preview text too)
+    if emails:
+        body = _email_body(emails[0].get("text") or "")
+    else:
+        body = doc["text"]
     body = re.sub(r"\s+", " ", body).strip()
     _draw_wrapped(draw, body[:400], 7, y, width=33,
                   font=font_sm, fill=(65, 70, 80),
@@ -144,28 +167,106 @@ def make_thumbnail(doc_code: str, doc: dict,
 
 
 # ---------------------------------------------------------------------------
+# Email body stripper
+# ---------------------------------------------------------------------------
+_HEADER_FIELD_RE = re.compile(
+    r"^[ \t]*(?:from|van|to|aan|subject|onderwerp|sent|verzonden|received|cc|bcc)\s*:",
+    re.IGNORECASE,
+)
+
+
+def _email_body(text: str, scan_lines: int = 30) -> str:
+    """Return *text* with the leading email header block removed.
+
+    Scans the first *scan_lines* lines for recognised header field lines
+    (From/Van, To/Aan, Subject/Onderwerp, Sent/Verzonden, Received, CC, BCC).
+    Everything up to and including the last header field (plus any indented
+    continuation lines) is stripped; leading blank lines after the block are
+    also removed.
+    """
+    lines = text.splitlines()
+    last_header = -1
+    for i, line in enumerate(lines[:scan_lines]):
+        if _HEADER_FIELD_RE.match(line):
+            last_header = i
+
+    if last_header == -1:
+        return text  # no header block found — return as-is
+
+    # Advance past any continuation lines (indented) right after last header
+    i = last_header + 1
+    while i < len(lines) and i < scan_lines and lines[i].startswith((" ", "\t")):
+        i += 1
+    # Skip leading blank lines before the body
+    while i < len(lines) and not lines[i].strip():
+        i += 1
+    return "\n".join(lines[i:])
+
+
+# ---------------------------------------------------------------------------
 # HTML detail panel content
 # ---------------------------------------------------------------------------
 def _e(s) -> str:
     return html_mod.escape(str(s) if s is not None else "")
 
 
-def _email_block_html(email: dict) -> str:
-    fields = [("From", email.get("sender")),
-              ("Date", email.get("date")),
-              ("Subject", email.get("subject"))]
-    hdr = "".join(
-        f'<div class="em-row"><span class="em-lbl">{_e(k)}</span>{_e(v or "—")}</div>'
-        for k, v in fields if v
-    )
-    body = _e(email.get("text", ""))
-    subj = _e(email.get("subject") or "(geen onderwerp)")
-    date = _e(email.get("date") or "")
-    return (f'<details class="email-block" open>'
-            f'<summary><span class="em-summary">{subj}</span>'
-            f'<span class="em-date">{date}</span></summary>'
-            f'<div class="em-header">{hdr}</div>'
-            f'<pre class="em-body">{body}</pre></details>')
+# Chat bubble colours: (side, bubble-bg, sender-name-colour)
+_SENDER_STYLES: list[tuple[str, str, str]] = [
+    ("left",  "#1b3a5c", "#93c5fd"),   # blue  — first sender
+    ("right", "#1a3a24", "#86efac"),   # green — second sender
+    ("left",  "#3b1e3f", "#e879f9"),   # purple — third sender
+    ("right", "#3f2a10", "#fb923c"),   # amber  — fourth sender
+]
+
+
+def _short_name(sender: str) -> str:
+    """Extract a display name from 'Name <email>' or return the email local-part."""
+    m = re.match(r'^([^<\n@]+?)(?:\s*<|$)', sender.strip())
+    if m:
+        name = m.group(1).strip()
+        if name:
+            return name[:48]
+    m2 = re.match(r'([^@<\s]+)', sender.strip())
+    return m2.group(1)[:48] if m2 else sender[:48]
+
+
+def _chat_html(emails: list[dict]) -> str:
+    """Render an email thread as a visual back-and-forth chat conversation.
+
+    Emails are shown oldest-first (document order is typically newest-first,
+    so the list is reversed).  Each unique sender gets a fixed colour and
+    left/right alignment for the full thread.
+    """
+    ordered = list(reversed(emails))   # oldest first → natural reading order
+
+    # Assign each unique sender a style in order of first appearance
+    sender_style: dict[str, tuple[str, str, str]] = {}
+    for email in ordered:
+        sender = (email.get("sender") or "").strip()
+        if sender not in sender_style:
+            sender_style[sender] = _SENDER_STYLES[len(sender_style) % len(_SENDER_STYLES)]
+
+    parts: list[str] = []
+    for email in ordered:
+        sender = (email.get("sender") or "").strip()
+        side, bubble_color, name_color = sender_style.get(sender, _SENDER_STYLES[0])
+        name  = _short_name(sender) if sender else "Onbekend"
+        date  = _e(email.get("date") or "")
+        body  = _e(_email_body(email.get("text") or ""))
+        align = "right" if side == "right" else "left"
+        parts.append(
+            f'<div class="msg {side}">'
+            f'<div class="msg-meta" style="text-align:{align}">'
+            f'<span class="msg-sender" style="color:{name_color}">{_e(name)}</span>'
+            f'<span class="msg-date"> &mdash; {date}</span>'
+            f'</div>'
+            f'<div class="msg-bubble" style="background:{bubble_color}">'
+            f'<pre class="msg-body">{body}</pre>'
+            f'</div>'
+            f'</div>'
+        )
+
+    return '<div class="chat-thread">' + "\n".join(parts) + '</div>'
 
 
 def _detail_html(doc_code: str, doc: dict, emails: list[dict] | None) -> str:
@@ -177,16 +278,47 @@ def _detail_html(doc_code: str, doc: dict, emails: list[dict] | None) -> str:
               f'<span class="det-date">{_e(date_str)}</span>'
               f'</div>')
     if emails:
-        body = "\n".join(_email_block_html(e) for e in emails)
-        return header + f'<div class="thread">{body}</div>'
-    return header + f'<pre class="doc-pre">{_e(doc["text"])}</pre>'
+        return header + _chat_html(emails)
+    return header  # PDF page images are injected by JS via PAGE_IMGS
 
 
 # ---------------------------------------------------------------------------
 # Main builder
 # ---------------------------------------------------------------------------
-def build_html(docs: dict, out_path: Path | str = OUT_PATH) -> None:
+def build_html(docs: dict, out_path: Path | str = OUT_PATH,
+               pdf_path: Path | str | None = None) -> None:
     """Generate the timeline HTML file from an already-loaded, sorted docs dict."""
+
+    # ── Render PDF pages: thumbnails (first page) + panel images (all pages) ──
+    page_images: dict[str, Image.Image] = {}   # first-page PIL for card thumbnail
+    doc_page_uris: dict[str, list[str]] = {}   # all pages as JPEG base64 for panel
+    if pdf_path is not None and Path(pdf_path).exists():
+        try:
+            import pdfplumber
+            non_email = [(c, d) for c, d in docs.items()
+                         if d["category"] != "E-mail" and d.get("pages")]
+            with pdfplumber.open(pdf_path) as pdf:
+                for doc_code, doc in non_email:
+                    print(f"  [{doc_code}] rendering {len(doc['pages'])} page(s)…",
+                          flush=True)
+                    uris: list[str] = []
+                    for j, page_num in enumerate(doc["pages"]):
+                        try:
+                            img = pdf.pages[page_num - 1].to_image(resolution=100).original
+                            if j == 0:
+                                page_images[doc_code] = img   # thumbnail source
+                            buf = io.BytesIO()
+                            img.save(buf, format="JPEG", quality=65, optimize=True)
+                            uris.append(
+                                "data:image/jpeg;base64,"
+                                + base64.b64encode(buf.getvalue()).decode()
+                            )
+                        except Exception:
+                            pass
+                    if uris:
+                        doc_page_uris[doc_code] = uris
+        except Exception:
+            pass
 
     # ── Build per-card data ──────────────────────────────────────────────────
     cards_data: list[dict] = []
@@ -194,7 +326,7 @@ def build_html(docs: dict, out_path: Path | str = OUT_PATH) -> None:
         emails = (split_emails(doc["text"], doc_code)
                   if doc["category"] == "E-mail" else None)
 
-        thumb   = make_thumbnail(doc_code, doc, emails)
+        thumb   = make_thumbnail(doc_code, doc, emails, page_images.get(doc_code))
         detail  = _detail_html(doc_code, doc, emails)
         color   = CATEGORY_COLORS.get(doc["category"], DEFAULT_COLOR)
         date_str = doc["date"].strftime("%-d %b %Y") if doc["date"] else "(geen datum)"
@@ -315,36 +447,48 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 .det-badge{font-size:9px;font-weight:700;color:#fff;padding:2px 8px;
   border-radius:3px;text-transform:uppercase;letter-spacing:.05em}
 .det-date{font-size:12px;color:#94a3b8;margin-left:auto}
-.thread{display:flex;flex-direction:column;gap:10px}
-.email-block{background:#0f172a;border:1px solid #334155;border-radius:6px;overflow:hidden}
-.email-block summary{display:flex;justify-content:space-between;align-items:center;
-  padding:9px 12px;cursor:pointer;background:#162032;
-  border-bottom:1px solid #334155;list-style:none;gap:8px;
-  user-select:none}
-.email-block summary::-webkit-details-marker{display:none}
-.email-block:not([open]) summary{border-bottom:none}
-.em-summary{font-size:12px;font-weight:600;color:#cbd5e1;
-  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}
-.em-date{font-size:10px;color:#64748b;white-space:nowrap;flex-shrink:0}
-.em-header{padding:8px 12px;background:#111c2d;border-bottom:1px solid #1e3050}
-.em-row{font-size:11px;color:#94a3b8;margin-bottom:2px;
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.em-lbl{font-weight:600;color:#475569;display:inline-block;min-width:52px}
-.em-body{font-family:'Courier New',monospace;font-size:11px;line-height:1.55;
-  color:#cbd5e1;padding:12px;white-space:pre-wrap;word-break:break-word;
-  max-height:320px;overflow-y:auto}
+.chat-thread{display:flex;flex-direction:column;gap:14px;margin-top:8px}
+.msg{display:flex;flex-direction:column;max-width:88%}
+.msg.left{align-self:flex-start}
+.msg.right{align-self:flex-end;align-items:flex-end}
+.msg-meta{font-size:10px;margin-bottom:3px}
+.msg-sender{font-weight:700;font-size:11px}
+.msg-date{color:#475569}
+.msg-bubble{border-radius:12px;padding:10px 13px}
+.msg.left .msg-bubble{border-bottom-left-radius:3px}
+.msg.right .msg-bubble{border-bottom-right-radius:3px}
+.msg-body{font-family:'Courier New',monospace;font-size:11px;line-height:1.5;
+  color:#e2e8f0;white-space:pre-wrap;word-break:break-word;margin:0;padding:0}
 .doc-pre{font-family:'Courier New',monospace;font-size:11px;line-height:1.6;
   color:#cbd5e1;white-space:pre-wrap;word-break:break-word}
+.pdf-pages{display:flex;flex-direction:column;gap:6px;margin-top:12px}
+.pdf-page{width:100%;display:block;border:1px solid #2d3f55;border-radius:2px}
 #ov{display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:99}
 #ov.on{display:block}
 """
 
+    page_imgs_json = json.dumps(doc_page_uris, ensure_ascii=False)
+
     js = """
 const DOCS=PANEL_JSON_PLACEHOLDER;
+const PAGE_IMGS=PAGE_IMGS_JSON_PLACEHOLDER;
 function openPanel(i){
   const d=DOCS[i];
   document.getElementById('ptitle').textContent=d.code+' \u2014 '+d.title;
-  document.getElementById('pbody').innerHTML=d.detail;
+  const body=document.getElementById('pbody');
+  body.innerHTML=d.detail;
+  const imgs=PAGE_IMGS[d.code];
+  if(imgs){
+    const wrap=document.createElement('div');
+    wrap.className='pdf-pages';
+    imgs.forEach(src=>{
+      const im=new Image();
+      im.src=src;
+      im.className='pdf-page';
+      wrap.appendChild(im);
+    });
+    body.appendChild(wrap);
+  }
   document.getElementById('panel').classList.add('open');
   document.getElementById('ov').classList.add('on');
   document.querySelectorAll('.card').forEach((c,j)=>c.classList.toggle('active',j===i));
@@ -355,7 +499,8 @@ function closePanel(){
   document.querySelectorAll('.card').forEach(c=>c.classList.remove('active'));
 }
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closePanel();});
-""".replace("PANEL_JSON_PLACEHOLDER", panel_json)
+""".replace("PANEL_JSON_PLACEHOLDER", panel_json
+   ).replace("PAGE_IMGS_JSON_PLACEHOLDER", page_imgs_json)
 
     page = (
         "<!DOCTYPE html>\n<html lang=\"nl\">\n<head>\n"
@@ -402,4 +547,4 @@ if __name__ == "__main__":
     from text_sorting import sort_documents
     pdf = sys.argv[1] if len(sys.argv) > 1 else PDF_PATH
     out = sys.argv[2] if len(sys.argv) > 2 else OUT_PATH
-    build_html(sort_documents(load_pdf(Path(pdf))), out)
+    build_html(sort_documents(load_pdf(Path(pdf))), out, pdf_path=Path(pdf))
