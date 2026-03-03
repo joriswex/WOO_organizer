@@ -18,8 +18,8 @@ OUT_PATH = Path("woo_timeline.html")
 
 
 def main() -> None:
-    print("Step 1/3 — Loading and parsing PDF...")
-    docs = load_pdf(PDF_PATH)
+    print("Step 1/3 — Loading and parsing PDF (with 300 DPI OCR supplement)...")
+    docs = load_pdf(PDF_PATH, ocr_supplement=True)
 
     print("Step 2/3 — Extracting dates and sorting chronologically...")
     docs = sort_documents(docs)

@@ -1,5 +1,5 @@
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
 import pdfplumber
@@ -12,7 +12,7 @@ PDF_PATH = Path(__file__).parent / "test.pdf"
 # WOO (Wet open overheid) redaction codes.
 # Valid grounds are all under article 5.1.x or 5.2.x, e.g. 5.1.2e, 5.1.1, 5.2.1.
 # This intentionally excludes plain decimals (2.5), money amounts (50.000), etc.
-REDACTION_CODE_RE = re.compile(r"\b(5\.[12]\.[1-9][a-z]?)\b")
+REDACTION_CODE_RE = re.compile(r"\b(5\.[12]\.[1-9][a-z]{0,2})\b")
 
 # 4-digit document code in the top-right corner
 DOC_CODE_RE = re.compile(r"\b(\d{4})\b")
@@ -156,9 +156,21 @@ def _is_searchable(pdf_path: Path) -> bool:
     return False
 
 
+def _normalize_code(code: str) -> str:
+    """Strip any spurious second letter from an OCR-garbled redaction code.
+
+    WOO article 5 sub-grounds carry at most one letter suffix (e.g. 5.1.2e).
+    OCR occasionally appends an extra letter (e.g. '5.1.2el'); we keep only
+    the first letter so it counts toward the correct ground.
+    """
+    return re.sub(r"([a-z])[a-z]+$", r"\1", code)
+
+
 def _annotate_redactions(text: str) -> str:
     """Replace bare WOO redaction codes with [REDACTED: …] markers."""
-    return REDACTION_CODE_RE.sub(lambda m: f"[REDACTED: {m.group(1)}]", text)
+    return REDACTION_CODE_RE.sub(
+        lambda m: f"[REDACTED: {_normalize_code(m.group(1))}]", text
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -293,20 +305,31 @@ def _categorize_document(text: str, first_page: str = "") -> str:
 # Main entry point
 # ---------------------------------------------------------------------------
 
-def load_pdf(pdf_path: Path = PDF_PATH) -> dict[str, dict]:
+def load_pdf(pdf_path: Path = PDF_PATH, ocr_supplement: bool = False) -> dict[str, dict]:
     """
     Extract text from *pdf_path* and group pages by their 4-digit document
     code found in the top-right corner of each page.
+
+    Parameters
+    ----------
+    pdf_path : Path
+        Path to the PDF file to process.
+    ocr_supplement : bool, default False
+        When True, every page of a searchable PDF is also rendered at 300 DPI
+        and OCR'd.  The redaction-code count per page is taken as the max of
+        the text-layer count and the OCR count, so image-only stamps that are
+        invisible to the text layer are captured without double-counting.
+        Adds roughly 2–3 seconds per page.
 
     Returns a dict keyed by document code:
 
         {
             "0001": {
                 "doc_code":        str,
-                "pages":           list[int],   # 1-based PDF page numbers
-                "text":            str,          # concatenated raw text
-                "annotated_text":  str,          # text with [REDACTED: …] markers
-                "redaction_codes": list[str],    # deduplicated, in order of appearance
+                "pages":           list[int],        # 1-based PDF page numbers
+                "text":            str,               # concatenated raw text
+                "annotated_text":  str,               # text with [REDACTED: …] markers
+                "redaction_codes": dict[str, int],    # code → total count across all pages
                 "method":          "direct" | "ocr",
             },
             ...
@@ -330,9 +353,12 @@ def load_pdf(pdf_path: Path = PDF_PATH) -> dict[str, dict]:
     else:
         print("[data_import] Searchable PDF — using direct text extraction.")
 
+    if ocr_supplement and searchable:
+        print("[data_import] OCR supplement enabled — rendering all pages at 300 DPI.")
+
     # Accumulate raw data per document code
     docs: dict[str, dict] = defaultdict(
-        lambda: {"pages": [], "text_parts": [], "redaction_codes": [], "page_nums_in_doc": []}
+        lambda: {"pages": [], "text_parts": [], "code_counts": Counter(), "page_nums_in_doc": []}
     )
 
     last_code: str | None = None  # for forward-filling pages with no detectable code
@@ -388,32 +414,53 @@ def load_pdf(pdf_path: Path = PDF_PATH) -> dict[str, dict]:
                 doc_code = "unknown"
 
             # Extract full-page text
+            was_ocr_fallback = False
             if searchable:
                 text = page.extract_text() or ""
                 if len(text.strip()) < 20:
                     # Page has no (or near-empty) text layer — OCR it individually.
                     # Happens for rasterized pages embedded in an otherwise
                     # searchable PDF (e.g. scanned inserts).
+                    was_ocr_fallback = True
                     try:
-                        rendered = page.to_image(resolution=300).original
-                        text = _ocr_image(rendered)
+                        ocr_render = page.to_image(resolution=300).original
+                        text = _ocr_image(ocr_render)
                     except Exception:
                         pass
             else:
                 text = _ocr_image(images[i - 1]) if images else ""
 
-            codes = REDACTION_CODE_RE.findall(text)
+            # Count redaction codes from the text layer (or OCR fallback).
+            # Normalize each match to strip spurious extra letters (e.g. '5.1.2el' → '5.1.2e').
+            page_codes: Counter = Counter(
+                _normalize_code(c) for c in REDACTION_CODE_RE.findall(text)
+            )
+
+            # OCR supplement: re-render at 300 DPI and OCR to catch image-only
+            # redaction stamps not visible in the text layer.  Take max() per
+            # code to avoid double-counting codes already in the text layer.
+            if ocr_supplement and searchable and not was_ocr_fallback:
+                try:
+                    ocr_render = page.to_image(resolution=300).original
+                    ocr_text = _ocr_image(ocr_render)
+                    ocr_codes: Counter = Counter(
+                        _normalize_code(c) for c in REDACTION_CODE_RE.findall(ocr_text)
+                    )
+                    all_keys = set(page_codes) | set(ocr_codes)
+                    page_codes = Counter({k: max(page_codes[k], ocr_codes[k]) for k in all_keys})
+                except Exception:
+                    pass
 
             docs[doc_code]["pages"].append(i)
             docs[doc_code]["text_parts"].append(text)
-            docs[doc_code]["redaction_codes"].extend(codes)
+            docs[doc_code]["code_counts"].update(page_codes)
             docs[doc_code]["page_nums_in_doc"].append(bottom_info)
 
             status = f"doc={doc_code}" + (" (inherited)" if inherited else "")
             if bottom_info is not None:
                 status += f"  page-in-doc={bottom_info}"
-            if codes:
-                status += f"  redactions={codes}"
+            if page_codes:
+                status += f"  redactions={dict(page_codes)}"
             print(f"  Page {i}: {status}")
 
     # Build final output, sorted by document code
@@ -421,10 +468,6 @@ def load_pdf(pdf_path: Path = PDF_PATH) -> dict[str, dict]:
     for code in sorted(docs):
         data = docs[code]
         combined = "\n\n".join(data["text_parts"])
-        # Deduplicate redaction codes while preserving first-seen order
-        seen: dict[str, None] = {}
-        for c in data["redaction_codes"]:
-            seen[c] = None
         first_page = data["text_parts"][0] if data["text_parts"] else ""
         result[code] = {
             "doc_code": code,
@@ -432,7 +475,7 @@ def load_pdf(pdf_path: Path = PDF_PATH) -> dict[str, dict]:
             "page_nums_in_doc": data["page_nums_in_doc"],
             "text": combined,
             "annotated_text": _annotate_redactions(combined),
-            "redaction_codes": list(seen),
+            "redaction_codes": dict(data["code_counts"]),  # {code: total count}
             "category": _categorize_document(combined, first_page),
             "method": method,
         }
