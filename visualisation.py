@@ -39,6 +39,10 @@ CATEGORY_COLORS = {
 }
 DEFAULT_COLOR = "#6B7280"
 
+# Matches WOO redaction codes: 5.1.x, 5.2.x, with optional 1–2 letter suffix.
+# Two letters catches OCR artefacts like "5.1.2el" (should be "5.1.2e").
+_REDACTION_RE = re.compile(r"\b(5\.[12]\.[1-9][a-z]{0,2})\b")
+
 
 # ---------------------------------------------------------------------------
 # Font helpers
@@ -269,6 +273,60 @@ def _chat_html(emails: list[dict]) -> str:
     return '<div class="chat-thread">' + "\n".join(parts) + '</div>'
 
 
+def _redaction_summary_html(text: str) -> str:
+    """Build a compact per-code count/percentage block for the detail panel.
+
+    Codes with a letter suffix (e.g. 5.1.2e) are highlighted in amber —
+    they indicate a specific sub-ground and are of special interest.
+    Codes with two-letter suffixes (e.g. 5.1.2el) are flagged as suspicious
+    OCR artefacts.
+    """
+    codes = _REDACTION_RE.findall(text)
+    if not codes:
+        return ""
+
+    total = len(codes)
+    code_counts: dict[str, int] = {}
+    for code in codes:
+        code_counts[code] = code_counts.get(code, 0) + 1
+
+    rows: list[str] = []
+    for code, n in sorted(code_counts.items(), key=lambda x: -x[1]):
+        pct      = n / total * 100
+        bar_w    = max(2, round(pct))   # at least 2 % wide so hairline is visible
+        suffix   = re.search(r"[a-z]+$", code)
+        if suffix and len(suffix.group()) > 1:
+            code_cls = "redact-code suspect"
+            bar_cls  = "redact-bar suspect"
+            label    = f'{_e(code)} <span class="redact-warn" title="Mogelijke OCR-fout">⚠</span>'
+        elif suffix:
+            code_cls = "redact-code has-letter"
+            bar_cls  = "redact-bar has-letter"
+            label    = _e(code)
+        else:
+            code_cls = "redact-code"
+            bar_cls  = "redact-bar"
+            label    = _e(code)
+        rows.append(
+            f'<div class="redact-row">'
+            f'<span class="{code_cls}">{label}</span>'
+            f'<div class="redact-bar-wrap">'
+            f'<div class="{bar_cls}" style="width:{bar_w}%"></div></div>'
+            f'<span class="redact-pct">{pct:.0f}%</span>'
+            f'<span class="redact-count">{n}\u00d7</span>'
+            f'</div>'
+        )
+
+    return (
+        f'<div class="redact-section">'
+        f'<div class="redact-title">Redactieoverzicht'
+        f'<span class="redact-total">{total} passage{"s" if total != 1 else ""}</span>'
+        f'</div>'
+        f'<div class="redact-rows">{"".join(rows)}</div>'
+        f'</div>'
+    )
+
+
 def _detail_html(doc_code: str, doc: dict, emails: list[dict] | None) -> str:
     date_str = doc["date"].strftime("%-d %B %Y") if doc["date"] else "Datum onbekend"
     cat_color = CATEGORY_COLORS.get(doc["category"], DEFAULT_COLOR)
@@ -277,9 +335,10 @@ def _detail_html(doc_code: str, doc: dict, emails: list[dict] | None) -> str:
               f'<span class="det-badge" style="background:{cat_color}">{_e(doc["category"])}</span>'
               f'<span class="det-date">{_e(date_str)}</span>'
               f'</div>')
+    redact = _redaction_summary_html(doc["text"])
     if emails:
-        return header + _chat_html(emails)
-    return header  # PDF page images are injected by JS via PAGE_IMGS
+        return header + redact + _chat_html(emails)
+    return header + redact  # PDF page images are injected by JS via PAGE_IMGS
 
 
 # ---------------------------------------------------------------------------
@@ -463,6 +522,23 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
   color:#cbd5e1;white-space:pre-wrap;word-break:break-word}
 .pdf-pages{display:flex;flex-direction:column;gap:6px;margin-top:12px}
 .pdf-page{width:100%;display:block;border:1px solid #2d3f55;border-radius:2px}
+.redact-section{background:#111c2d;border:1px solid #1e3050;border-radius:6px;
+  padding:10px 12px;margin-bottom:14px}
+.redact-title{font-size:11px;font-weight:600;color:#94a3b8;margin-bottom:7px;
+  display:flex;align-items:center;justify-content:space-between}
+.redact-total{font-weight:400;color:#475569;font-size:10px}
+.redact-row{display:grid;grid-template-columns:72px 1fr 36px 32px;
+  align-items:center;gap:7px;margin-bottom:4px}
+.redact-code{font-family:monospace;font-size:11px;font-weight:600;color:#64748b}
+.redact-code.has-letter{color:#fbbf24}
+.redact-code.suspect{color:#f87171}
+.redact-warn{font-size:10px;margin-left:2px}
+.redact-bar-wrap{height:5px;background:#1e2d3d;border-radius:3px;overflow:hidden}
+.redact-bar{height:100%;border-radius:3px;background:#334155}
+.redact-bar.has-letter{background:#d97706}
+.redact-bar.suspect{background:#991b1b}
+.redact-pct{font-size:10px;color:#64748b;text-align:right}
+.redact-count{font-size:10px;color:#475569;text-align:right}
 #ov{display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:99}
 #ov.on{display:block}
 """

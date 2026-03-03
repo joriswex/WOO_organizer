@@ -390,6 +390,15 @@ def load_pdf(pdf_path: Path = PDF_PATH) -> dict[str, dict]:
             # Extract full-page text
             if searchable:
                 text = page.extract_text() or ""
+                if len(text.strip()) < 20:
+                    # Page has no (or near-empty) text layer — OCR it individually.
+                    # Happens for rasterized pages embedded in an otherwise
+                    # searchable PDF (e.g. scanned inserts).
+                    try:
+                        rendered = page.to_image(resolution=300).original
+                        text = _ocr_image(rendered)
+                    except Exception:
+                        pass
             else:
                 text = _ocr_image(images[i - 1]) if images else ""
 
