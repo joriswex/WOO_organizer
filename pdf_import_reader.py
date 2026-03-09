@@ -14,82 +14,62 @@ PDF_PATH = Path(__file__).parent / "test.pdf"
 # This intentionally excludes plain decimals (2.5), money amounts (50.000), etc.
 REDACTION_CODE_RE = re.compile(r"\b(5\.[12]\.[1-9][a-z]{0,2})\b")
 
-# 4-digit document code in the top-right corner
+# 4-digit document code
 DOC_CODE_RE = re.compile(r"\b(\d{4})\b")
 
-# Top-right corner: 4-digit document code
-_TOP_FRAC   = 0.12   # top strip height as a fraction of page height
-_RIGHT_FRAC = 0.30   # right strip width as a fraction of page width
+# ---------------------------------------------------------------------------
+# Multi-region search constants
+# ---------------------------------------------------------------------------
 
-# Bottom-right corner: WOO-added within-document page number (raster stamp)
-# Tighter than the top-right region to exclude the document's own page footer
-# ("Pagina X van Y") which sits just outside this zone.
-_BOTTOM_STRIP_FRAC       = 0.06   # bottom strip height as a fraction of page height
-_BOTTOM_RIGHT_STRIP_FRAC = 0.12   # right strip width as a fraction of page width
+# Fractions used to define search regions as (x0, y0, x1, y1) of page dimensions.
+_TOP_FRAC  = 0.12   # top-strip height
+_SIDE_FRAC = 0.30   # side-strip width
+_BTM_FRAC  = 0.10   # bottom-strip height for doc-code search (wider than page-num strip)
+
+# Text-layer doc-code search: top strip only.
+# Body text (email dates, reference numbers) can appear anywhere on the page, so
+# searching the bottom via the text layer produces false positives.  Top-strip
+# search is safe because document codes always appear in a page header.
+_DOC_CODE_TEXT_REGIONS: list[tuple[str, tuple[float, float, float, float]]] = [
+    # (name, (x0_frac, y0_frac, x1_frac, y1_frac))
+    ("top-right",  (1 - _SIDE_FRAC, 0.00, 1.00,       _TOP_FRAC)),  # primary WOO
+    ("top-left",   (0.00,           0.00, _SIDE_FRAC, _TOP_FRAC)),
+    ("top-full",   (0.00,           0.00, 1.00,       _TOP_FRAC)),   # widened fallback
+]
+
+# Raster-OCR doc-code search: all corners and edges.
+# Raster stamps are unambiguous (they contain only the code, nothing else), so
+# searching bottom regions is safe.  This covers alternative WOO formats where
+# the code appears at the bottom-centre or other corners.
+_DOC_CODE_RASTER_REGIONS: list[tuple[str, tuple[float, float, float, float]]] = [
+    ("top-right",  (1 - _SIDE_FRAC, 0.00,          1.00,       _TOP_FRAC)),
+    ("top-left",   (0.00,           0.00,           _SIDE_FRAC, _TOP_FRAC)),
+    ("btm-middle", (0.30,           1 - _BTM_FRAC,  0.70,       1.00)),
+    ("btm-right",  (1 - _SIDE_FRAC, 1 - _BTM_FRAC, 1.00,       1.00)),
+    ("btm-left",   (0.00,           1 - _BTM_FRAC,  _SIDE_FRAC, 1.00)),
+    ("top-full",   (0.00,           0.00,           1.00,       _TOP_FRAC)),
+]
+
+# Within-document page-number stamp search: bottom-right only.
+# The WOO raster stamp is always placed in the bottom-right corner.
+# Searching other bottom regions risks picking up digits from email body text
+# (e.g. redaction codes "5.1.2e" → OCR extracts "512" with digits-only filter).
+_PAGE_NUM_H_FRAC = 0.06   # tight strip: keeps crop below "Pagina X van Y" text
+_PAGE_NUM_W_FRAC = 0.12
+
+_PAGE_NUM_REGIONS: list[tuple[str, tuple[float, float, float, float]]] = [
+    ("btm-right",  (1 - _PAGE_NUM_W_FRAC, 1 - _PAGE_NUM_H_FRAC, 1.00, 1.00)),
+]
 
 
 # ---------------------------------------------------------------------------
-# Document-code extraction
+# Low-level OCR helpers
 # ---------------------------------------------------------------------------
-
-def _doc_code_from_words(page) -> str | None:
-    """
-    Find the 4-digit document code in the top-right header of a pdfplumber
-    page by filtering word bounding boxes.
-
-    Primary search: right _RIGHT_FRAC of the top _TOP_FRAC strip.
-    Fallback: full-width top strip, picking the rightmost 4-digit match —
-    catches codes that sit slightly outside the expected margin.
-    """
-    top_limit = page.height * _TOP_FRAC
-    left_limit = page.width * (1 - _RIGHT_FRAC)
-
-    # Primary: tight right-corner region
-    for word in page.extract_words():
-        if word["top"] <= top_limit and word["x0"] >= left_limit:
-            if re.fullmatch(r"\d{4}", word["text"].strip()):
-                return word["text"].strip()
-
-    # Fallback: full top strip — return rightmost 4-digit word
-    candidates = [
-        (word["x0"], word["text"].strip())
-        for word in page.extract_words()
-        if word["top"] <= top_limit and re.fullmatch(r"\d{4}", word["text"].strip())
-    ]
-    if candidates:
-        return max(candidates, key=lambda c: c[0])[1]
-
-    return None
-
-
-def _doc_code_from_image(image: Image.Image) -> str | None:
-    """
-    Crop the top-right corner of a PIL image and OCR it to find the
-    4-digit document code.
-    """
-    w, h = image.size
-    crop = image.crop((
-        int(w * (1 - _RIGHT_FRAC)), 0,
-        w, int(h * _TOP_FRAC),
-    ))
-    text = pytesseract.image_to_string(
-        crop,
-        config="--psm 6 -c tessedit_char_whitelist=0123456789",
-    )
-    # Primary: clean isolated 4-digit word
-    match = DOC_CODE_RE.search(text)
-    if match:
-        return match.group(1)
-    # Fallback: first "0NNN" substring — handles noise-merged output like
-    # "542240014" where \b boundaries don't apply mid-digit-run.
-    m = re.search(r"(0\d{3})", text)
-    return m.group(1) if m else None
-
 
 def _ocr_bottom_right(image: Image.Image) -> int | None:
     """
-    OCR a pre-cropped PIL image of the bottom-right corner and return the
-    integer found, or None.  Shared by both the searchable and image-PDF paths.
+    OCR a pre-cropped PIL image and return the integer found, or None.
+    Shared by all within-document page-number detection paths.
     """
     text = pytesseract.image_to_string(
         image,
@@ -98,45 +78,6 @@ def _ocr_bottom_right(image: Image.Image) -> int | None:
     m = re.search(r"\b(\d{1,3})\b", text.strip())
     return int(m.group(1)) if m else None
 
-
-def _within_doc_page(page) -> int | None:
-    """
-    Find the WOO-added within-document page number in the bottom-right corner.
-
-    The number is stamped into the raster image layer (not the text overlay),
-    so text extraction alone cannot see it.  We render the page and OCR the
-    tight bottom-right crop (_BOTTOM_STRIP_FRAC × _BOTTOM_RIGHT_STRIP_FRAC).
-    """
-    try:
-        rendered = page.to_image(resolution=150).original   # PIL Image
-        w, h = rendered.size
-        crop = rendered.crop((
-            int(w * (1 - _BOTTOM_RIGHT_STRIP_FRAC)),
-            int(h * (1 - _BOTTOM_STRIP_FRAC)),
-            w, h,
-        ))
-        return _ocr_bottom_right(crop)
-    except Exception:
-        return None
-
-
-def _within_doc_page_from_image(image: Image.Image) -> int | None:
-    """
-    Find the WOO-added within-document page number for image-based PDFs
-    (pre-rendered full-page PIL image supplied by the caller).
-    """
-    w, h = image.size
-    crop = image.crop((
-        int(w * (1 - _BOTTOM_RIGHT_STRIP_FRAC)),
-        int(h * (1 - _BOTTOM_STRIP_FRAC)),
-        w, h,
-    ))
-    return _ocr_bottom_right(crop)
-
-
-# ---------------------------------------------------------------------------
-# Text extraction helpers
-# ---------------------------------------------------------------------------
 
 def _ocr_image(image: Image.Image) -> str:
     """Run Tesseract OCR on a PIL image. Prefers Dutch, falls back to English."""
@@ -155,6 +96,85 @@ def _is_searchable(pdf_path: Path) -> bool:
                 return True
     return False
 
+
+# ---------------------------------------------------------------------------
+# Multi-region document-code detection
+# ---------------------------------------------------------------------------
+
+def _find_doc_code_words(page) -> str | None:
+    """
+    Search top-strip text-layer regions for a 4-digit document code.
+
+    Only top regions are searched (see _DOC_CODE_TEXT_REGIONS) to avoid false
+    positives from 4-digit numbers in email body text lower on the page.
+    Regions are tried in priority order; within each region the rightmost
+    4-digit word is returned.
+    """
+    w, h = page.width, page.height
+    words = page.extract_words()
+    for _name, (x0f, y0f, x1f, y1f) in _DOC_CODE_TEXT_REGIONS:
+        x0, y0, x1, y1 = w * x0f, h * y0f, w * x1f, h * y1f
+        candidates = [
+            (wd["x0"], wd["text"].strip())
+            for wd in words
+            if (x0 <= wd["x0"] and wd["x1"] <= x1
+                and y0 <= wd["top"] and wd["bottom"] <= y1
+                and re.fullmatch(r"\d{4}", wd["text"].strip()))
+        ]
+        if candidates:
+            return max(candidates, key=lambda c: c[0])[1]
+    return None
+
+
+def _find_doc_code_raster(image: Image.Image) -> str | None:
+    """
+    OCR all corner/edge regions of a rendered page image for a 4-digit document
+    code.
+
+    Regions in _DOC_CODE_RASTER_REGIONS are tried in priority order; the first
+    unambiguous match wins.  Primary: clean 4-digit match; fallback: leading-zero
+    substring (handles noise-merged OCR output like "542240014" → "0014").
+    """
+    w, h = image.size
+    for _name, (x0f, y0f, x1f, y1f) in _DOC_CODE_RASTER_REGIONS:
+        crop = image.crop((int(w * x0f), int(h * y0f), int(w * x1f), int(h * y1f)))
+        text = pytesseract.image_to_string(
+            crop, config="--psm 6 -c tessedit_char_whitelist=0123456789"
+        )
+        m = DOC_CODE_RE.search(text)
+        if m:
+            return m.group(1)
+        # Fallback: first '0NNN' substring — handles noise-merged strings like "542240014"
+        m = re.search(r"(0\d{3})", text)
+        if m:
+            return m.group(1)
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Multi-region within-document page-number detection
+# ---------------------------------------------------------------------------
+
+def _find_within_doc_page_raster(image: Image.Image) -> int | None:
+    """
+    Search the defined page-number regions of a rendered image for the WOO
+    within-document page-number stamp.
+
+    The stamp is a raster image added by WOO (not in the text layer).  Regions
+    are searched in priority order; returns the first non-None result.
+    """
+    w, h = image.size
+    for _name, (x0f, y0f, x1f, y1f) in _PAGE_NUM_REGIONS:
+        crop = image.crop((int(w * x0f), int(h * y0f), int(w * x1f), int(h * y1f)))
+        result = _ocr_bottom_right(crop)
+        if result is not None:
+            return result
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Code normalisation and annotation
+# ---------------------------------------------------------------------------
 
 def _normalize_code(code: str) -> str:
     """Strip any spurious second letter from an OCR-garbled redaction code.
@@ -253,8 +273,6 @@ _DATE_RE = re.compile(
     r"|\b\d{4}[-/]\d{2}[-/]\d{2}\b"                 # yyyy-mm-dd
     r"|\b\d{1,2}\s+(?:jan|feb|mrt|maa|apr|mei|jun|jul|aug|sep|okt|nov|dec)\w*\s*\d{4}\b",
     re.IGNORECASE,
-    # Note: \s* (not \s+) between month name and year handles OCR-collapsed
-    # text like "november2024" (no space between month and year).
 )
 
 
@@ -264,15 +282,6 @@ def _categorize_document(text: str, first_page: str = "") -> str:
 
     *first_page* should be the text of the first page of the document.
     If omitted, the first 1000 characters of *text* are used as a proxy.
-
-    Special scoring rules applied on top of pattern matching:
-    - E-mail patterns are scored against *first_page* only: email headers
-      always appear at the top; this prevents false positives from embedded
-      email addresses or quoted messages inside long reports.
-    - Nota gets a +3 bonus if the document opens with "nota" or "notitie",
-      since those words rarely appear as the literal first word of a report.
-    - Timeline gets a +2 bonus if ≥ 5 date instances are found in the text,
-      since timelines are dense with dates even without explicit keywords.
     """
     t = text.lower()
     fp = (first_page or text[:1000]).lower()
@@ -284,13 +293,11 @@ def _categorize_document(text: str, first_page: str = "") -> str:
         else:
             scores[label] = sum(1 for p in patterns if re.search(p, t))
 
-    # Bonus: document opens with a distinctive type keyword
     if re.search(r"^\s*(nota|notitie)\b", fp):
         scores["Nota"] = scores.get("Nota", 0) + 3
     if re.search(r"^\s*tijdlijn\b", fp):
         scores["Timeline"] = scores.get("Timeline", 0) + 3
 
-    # Bonus: date-dense documents lean toward Timeline
     if len(_DATE_RE.findall(t)) >= 5:
         scores["Timeline"] = scores.get("Timeline", 0) + 2
 
@@ -302,13 +309,183 @@ def _categorize_document(text: str, first_page: str = "") -> str:
 
 
 # ---------------------------------------------------------------------------
+# Auto-split helpers (used when no document stamps are detected)
+# ---------------------------------------------------------------------------
+
+def _is_new_doc_boundary(p: dict) -> bool:
+    """
+    Return True when high-confidence signals indicate a new document starts
+    on this page.  Used in both forward-fill and auto-split modes.
+
+    Signals (in priority order):
+      1. WOO within-document page stamp == 1
+      2. "Pagina 1 van N" footer in the text layer
+    """
+    if p["within_doc_page"] == 1:
+        return True
+    if re.search(r"\bpagina\s+1\s+van\b", p["text"], re.IGNORECASE):
+        return True
+    return False
+
+
+def _is_fresh_email_start(text: str) -> bool:
+    """
+    Return True if the first 20 lines of *text* contain at least three distinct
+    email header fields, indicating this page starts a fresh email thread.
+    """
+    count = sum(
+        1 for line in text.splitlines()[:20]
+        if re.match(
+            r"^[ \t]*(?:van|from|aan|to|onderwerp|subject|datum|date|sent|verzonden)\s*:",
+            line, re.IGNORECASE,
+        )
+    )
+    return count >= 3
+
+
+def _auto_split_boundaries(page_data: list[dict]) -> list[bool]:
+    """
+    Determine document boundaries when no raster stamps were found anywhere.
+
+    Returns a list of booleans (one per page); True means a new document starts
+    at that page.
+
+    Priority:
+      1. within_doc_page == 1  OR  'Pagina 1 van' in text  (high confidence)
+      2. Fresh email header block after a non-email page    (medium confidence)
+    """
+    n = len(page_data)
+    is_new = [False] * n
+    is_new[0] = True   # first page always starts a document
+
+    prev_is_email = _is_fresh_email_start(page_data[0]["text"]) if n > 0 else False
+
+    for i in range(1, n):
+        p = page_data[i]
+        if _is_new_doc_boundary(p):
+            is_new[i] = True
+        else:
+            curr_is_email = _is_fresh_email_start(p["text"])
+            if curr_is_email and not prev_is_email:
+                is_new[i] = True
+            prev_is_email = curr_is_email
+
+    return is_new
+
+
+# ---------------------------------------------------------------------------
+# Document-code assignment helpers
+# ---------------------------------------------------------------------------
+
+def _log_page(num: int, code: str, wpn: int | None,
+              codes: Counter, inherited: bool) -> None:
+    status = f"doc={code}" + (" (inherited)" if inherited else "")
+    if wpn is not None:
+        status += f"  page-in-doc={wpn}"
+    if codes:
+        status += f"  redactions={dict(codes)}"
+    print(f"  Page {num}: {status}")
+
+
+def _build_docs_forward_fill(page_data: list[dict]) -> dict:
+    """
+    Assign document codes using detected stamps with forward-fill fallback.
+
+    Pages whose code is not detectable inherit the previous page's code.
+    A page where _is_new_doc_boundary() fires but no code is found gets an
+    auto-generated 'unknown_N' code.
+    """
+    docs: dict = defaultdict(
+        lambda: {"pages": [], "text_parts": [], "code_counts": Counter(),
+                 "page_nums_in_doc": []}
+    )
+    last_code: str | None = None
+    unknown_count = 0
+
+    for p in page_data:
+        i   = p["page_num"]
+        det = p["detected_code"]
+        wpn = p["within_doc_page"]
+
+        inherited = False
+        if det:
+            doc_code  = det
+            last_code = det
+        elif _is_new_doc_boundary(p) and last_code:
+            # New document starts here, but no code was readable
+            unknown_count += 1
+            doc_code  = f"unknown_{unknown_count}"
+            last_code = doc_code
+        elif last_code:
+            doc_code  = last_code
+            inherited = True
+        else:
+            doc_code = "unknown"
+
+        docs[doc_code]["pages"].append(i)
+        docs[doc_code]["text_parts"].append(p["text"])
+        docs[doc_code]["code_counts"].update(p["code_counts"])
+        docs[doc_code]["page_nums_in_doc"].append(wpn)
+        _log_page(i, doc_code, wpn, p["code_counts"], inherited)
+
+    return docs
+
+
+def _build_docs_auto_split(page_data: list[dict]) -> dict:
+    """
+    Assign auto-generated document codes (auto_001, auto_002, …) based on
+    automatically detected document boundaries.
+    """
+    boundaries = _auto_split_boundaries(page_data)
+    docs: dict = defaultdict(
+        lambda: {"pages": [], "text_parts": [], "code_counts": Counter(),
+                 "page_nums_in_doc": []}
+    )
+    doc_counter  = 0
+    current_code = "auto_001"
+
+    for p, is_new in zip(page_data, boundaries):
+        if is_new:
+            doc_counter += 1
+            current_code = f"auto_{doc_counter:03d}"
+
+        docs[current_code]["pages"].append(p["page_num"])
+        docs[current_code]["text_parts"].append(p["text"])
+        docs[current_code]["code_counts"].update(p["code_counts"])
+        docs[current_code]["page_nums_in_doc"].append(p["within_doc_page"])
+        _log_page(p["page_num"], current_code, p["within_doc_page"],
+                  p["code_counts"], False)
+
+    return docs
+
+
+def _finalize_docs(docs_raw: dict, method: str) -> dict[str, dict]:
+    """Convert raw per-document accumulator into the final output dict."""
+    result = {}
+    for code in sorted(docs_raw):
+        data     = docs_raw[code]
+        combined = "\n\n".join(data["text_parts"])
+        first_pg = data["text_parts"][0] if data["text_parts"] else ""
+        result[code] = {
+            "doc_code":        code,
+            "pages":           data["pages"],
+            "page_nums_in_doc": data["page_nums_in_doc"],
+            "text":            combined,
+            "annotated_text":  _annotate_redactions(combined),
+            "redaction_codes": dict(data["code_counts"]),
+            "category":        _categorize_document(combined, first_pg),
+            "method":          method,
+        }
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
 def load_pdf(pdf_path: Path = PDF_PATH, ocr_supplement: bool = False) -> dict[str, dict]:
     """
-    Extract text from *pdf_path* and group pages by their 4-digit document
-    code found in the top-right corner of each page.
+    Extract text from *pdf_path* and group pages by their 4-digit document code.
 
     Parameters
     ----------
@@ -317,34 +494,48 @@ def load_pdf(pdf_path: Path = PDF_PATH, ocr_supplement: bool = False) -> dict[st
     ocr_supplement : bool, default False
         When True, every page of a searchable PDF is also rendered at 300 DPI
         and OCR'd.  The redaction-code count per page is taken as the max of
-        the text-layer count and the OCR count, so image-only stamps that are
-        invisible to the text layer are captured without double-counting.
-        Adds roughly 2–3 seconds per page.
+        the text-layer count and the OCR count, capturing image-only stamps
+        that are invisible to the text layer.  Adds ~3 s per page.
 
-    Returns a dict keyed by document code:
+    Returns
+    -------
+    dict[str, dict]
+        Keyed by document code (4-digit stamp, 'unknown_N', or 'auto_NNN'):
 
         {
             "0001": {
-                "doc_code":        str,
-                "pages":           list[int],        # 1-based PDF page numbers
-                "text":            str,               # concatenated raw text
-                "annotated_text":  str,               # text with [REDACTED: …] markers
-                "redaction_codes": dict[str, int],    # code → total count across all pages
-                "method":          "direct" | "ocr",
+                "doc_code":         str,
+                "pages":            list[int],        # 1-based PDF page numbers
+                "page_nums_in_doc": list[int | None], # within-doc page stamps
+                "text":             str,               # concatenated raw text
+                "annotated_text":   str,               # text with [REDACTED: …] markers
+                "redaction_codes":  dict[str, int],    # code → total count
+                "category":         str,               # one of 7 categories
+                "method":           "direct" | "ocr",
             },
             ...
         }
 
-        Pages with no detectable code inherit the code of the preceding page
-        (forward-fill), since documents are contiguous blocks in the PDF.
-        Only the very first page(s) of the file, if they have no code, are
-        grouped under "unknown".
+    Document detection strategy (trust hierarchy)
+    ----------------------------------------------
+    1. Stamped indicators found  →  forward-fill with 'unknown_N' for readable
+       boundaries that lack a code.
+    2. No stamps found anywhere  →  auto-split using within-doc page stamps,
+       'Pagina 1 van' text, and fresh email-header blocks.
+
+    Region search order
+    -------------------
+    Doc-code detection searches text-layer regions (_DOC_CODE_TEXT_REGIONS)
+    first, then raster regions (_DOC_CODE_RASTER_REGIONS).  Page-number
+    detection uses _PAGE_NUM_REGIONS.  All lists are tried in priority order,
+    so the pipeline handles PDFs where the stamp is not in the primary WOO
+    location.
     """
     if not pdf_path.exists():
         raise FileNotFoundError(f"PDF not found: {pdf_path}")
 
     searchable = _is_searchable(pdf_path)
-    method = "direct" if searchable else "ocr"
+    method     = "direct" if searchable else "ocr"
 
     images = None
     if not searchable:
@@ -356,131 +547,81 @@ def load_pdf(pdf_path: Path = PDF_PATH, ocr_supplement: bool = False) -> dict[st
     if ocr_supplement and searchable:
         print("[data_import] OCR supplement enabled — rendering all pages at 300 DPI.")
 
-    # Accumulate raw data per document code
-    docs: dict[str, dict] = defaultdict(
-        lambda: {"pages": [], "text_parts": [], "code_counts": Counter(), "page_nums_in_doc": []}
-    )
-
-    last_code: str | None = None  # for forward-filling pages with no detectable code
-    unknown_count = 0             # counter for new-doc boundaries with no detectable code
+    # ── Stage 1: per-page data collection ────────────────────────────────────
+    page_data: list[dict] = []
 
     with pdfplumber.open(pdf_path) as pdf:
         for i, page in enumerate(pdf.pages, start=1):
 
-            # Detect within-document page number from bottom-right corner.
-            # For searchable PDFs this renders the page; we reuse that image
-            # below so it is done first.
             if searchable:
-                bottom_info = _within_doc_page(page)
-            else:
-                bottom_info = _within_doc_page_from_image(images[i - 1]) if images else None
-            is_new_doc_start = bottom_info == 1
+                # One 200 DPI render serves both page-number and doc-code detection,
+                # avoiding the previous double-render (150 DPI + 200 DPI).
+                rendered = page.to_image(resolution=200).original
 
-            # Detect document code from header region.
-            if searchable:
-                detected = _doc_code_from_words(page)      # fast text-layer path
-                if is_new_doc_start or detected is None:
-                    # Always try raster OCR when:
-                    # (a) bottom stamp == 1: text layer can misread (e.g. email
-                    #     body "0008" overrides true raster stamp "0006"), or
-                    # (b) text layer found nothing: raster may still have the code
-                    #     (e.g. page 1 of a new doc whose bottom stamp was unreadable).
-                    try:
-                        rendered = page.to_image(resolution=200).original
-                        raster_code = _doc_code_from_image(rendered)
-                        if raster_code:
-                            detected = raster_code
-                    except Exception:
-                        pass
-            else:
-                detected = _doc_code_from_image(images[i - 1]) if images else None
+                within_doc_page = _find_within_doc_page_raster(rendered)
 
+                detected_code = _find_doc_code_words(page)
+                # At a stamp-boundary (page 1 of doc) the text layer can misread
+                # the code from email body text — raster OCR corrects this.
+                # Also try raster when the text layer found nothing at all.
+                if within_doc_page == 1 or detected_code is None:
+                    raster = _find_doc_code_raster(rendered)
+                    if raster:
+                        detected_code = raster
 
-            inherited = False
-            if detected:
-                doc_code = detected
-                last_code = detected
-            elif is_new_doc_start and last_code:
-                # Bottom-right shows page 1, but no top-right code → new document boundary
-                unknown_count += 1
-                doc_code = f"unknown_{unknown_count}"
-                last_code = doc_code
-            elif last_code:
-                # No code found — inherit from the previous page (documents are contiguous)
-                doc_code = last_code
-                inherited = True
-            else:
-                # Very first page(s) with no code at all
-                doc_code = "unknown"
-
-            # Extract full-page text
-            was_ocr_fallback = False
-            if searchable:
-                text = page.extract_text() or ""
+                text    = page.extract_text() or ""
+                was_ocr = False
                 if len(text.strip()) < 20:
-                    # Page has no (or near-empty) text layer — OCR it individually.
-                    # Happens for rasterized pages embedded in an otherwise
-                    # searchable PDF (e.g. scanned inserts).
-                    was_ocr_fallback = True
+                    # Rasterized page embedded in an otherwise searchable PDF
+                    was_ocr = True
                     try:
-                        ocr_render = page.to_image(resolution=300).original
-                        text = _ocr_image(ocr_render)
+                        text = _ocr_image(page.to_image(resolution=300).original)
                     except Exception:
                         pass
-            else:
-                text = _ocr_image(images[i - 1]) if images else ""
 
-            # Count redaction codes from the text layer (or OCR fallback).
-            # Normalize each match to strip spurious extra letters (e.g. '5.1.2el' → '5.1.2e').
+            else:
+                # Fully image-based PDF — everything comes from pre-rendered images
+                rendered        = images[i - 1] if images else None
+                within_doc_page = _find_within_doc_page_raster(rendered) if rendered else None
+                detected_code   = _find_doc_code_raster(rendered) if rendered else None
+                text            = _ocr_image(rendered) if rendered else ""
+                was_ocr         = True
+
+            # Redaction-code counting (with optional OCR supplement)
             page_codes: Counter = Counter(
                 _normalize_code(c) for c in REDACTION_CODE_RE.findall(text)
             )
-
-            # OCR supplement: re-render at 300 DPI and OCR to catch image-only
-            # redaction stamps not visible in the text layer.  Take max() per
-            # code to avoid double-counting codes already in the text layer.
-            if ocr_supplement and searchable and not was_ocr_fallback:
+            if ocr_supplement and searchable and not was_ocr:
                 try:
-                    ocr_render = page.to_image(resolution=300).original
-                    ocr_text = _ocr_image(ocr_render)
-                    ocr_codes: Counter = Counter(
+                    hi_res    = page.to_image(resolution=300).original
+                    ocr_text  = _ocr_image(hi_res)
+                    ocr_codes = Counter(
                         _normalize_code(c) for c in REDACTION_CODE_RE.findall(ocr_text)
                     )
-                    all_keys = set(page_codes) | set(ocr_codes)
-                    page_codes = Counter({k: max(page_codes[k], ocr_codes[k]) for k in all_keys})
+                    all_keys   = set(page_codes) | set(ocr_codes)
+                    page_codes = Counter(
+                        {k: max(page_codes[k], ocr_codes[k]) for k in all_keys}
+                    )
                 except Exception:
                     pass
 
-            docs[doc_code]["pages"].append(i)
-            docs[doc_code]["text_parts"].append(text)
-            docs[doc_code]["code_counts"].update(page_codes)
-            docs[doc_code]["page_nums_in_doc"].append(bottom_info)
+            page_data.append({
+                "page_num":        i,
+                "detected_code":   detected_code,
+                "within_doc_page": within_doc_page,
+                "text":            text,
+                "code_counts":     page_codes,
+            })
 
-            status = f"doc={doc_code}" + (" (inherited)" if inherited else "")
-            if bottom_info is not None:
-                status += f"  page-in-doc={bottom_info}"
-            if page_codes:
-                status += f"  redactions={dict(page_codes)}"
-            print(f"  Page {i}: {status}")
+    # ── Stage 2: assign document codes ───────────────────────────────────────
+    has_stamps = any(p["detected_code"] for p in page_data)
+    if has_stamps:
+        docs_raw = _build_docs_forward_fill(page_data)
+    else:
+        print("[data_import] No stamps found — using automatic document splitting.")
+        docs_raw = _build_docs_auto_split(page_data)
 
-    # Build final output, sorted by document code
-    result = {}
-    for code in sorted(docs):
-        data = docs[code]
-        combined = "\n\n".join(data["text_parts"])
-        first_page = data["text_parts"][0] if data["text_parts"] else ""
-        result[code] = {
-            "doc_code": code,
-            "pages": data["pages"],
-            "page_nums_in_doc": data["page_nums_in_doc"],
-            "text": combined,
-            "annotated_text": _annotate_redactions(combined),
-            "redaction_codes": dict(data["code_counts"]),  # {code: total count}
-            "category": _categorize_document(combined, first_page),
-            "method": method,
-        }
-
-    n_docs = len([k for k in result if k != "unknown" and not k.startswith("unknown_")])
+    result  = _finalize_docs(docs_raw, method)
     n_pages = sum(len(d["pages"]) for d in result.values())
-    print(f"[data_import] Done. {n_pages} page(s) → {n_docs} document(s).")
+    print(f"[data_import] Done. {n_pages} page(s) → {len(result)} document(s).")
     return result

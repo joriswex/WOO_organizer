@@ -39,10 +39,6 @@ CATEGORY_COLORS = {
 }
 DEFAULT_COLOR = "#6B7280"
 
-# Matches WOO redaction codes: 5.1.x, 5.2.x, with optional 1–2 letter suffix.
-# Two letters catches OCR artefacts like "5.1.2el" (should be "5.1.2e").
-_REDACTION_RE = re.compile(r"\b(5\.[12]\.[1-9][a-z]{0,2})\b")
-
 
 # ---------------------------------------------------------------------------
 # Font helpers
@@ -278,8 +274,6 @@ def _redaction_summary_html(code_counts: dict[str, int]) -> str:
 
     Codes with a letter suffix (e.g. 5.1.2e) are highlighted in amber —
     they indicate a specific sub-ground and are of special interest.
-    Codes with two-letter suffixes (e.g. 5.1.2el) are flagged as suspicious
-    OCR artefacts.
     """
     if not code_counts:
         return ""

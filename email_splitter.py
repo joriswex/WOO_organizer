@@ -1,5 +1,5 @@
 """
-e-mail_splitter.py
+email_splitter.py
 
 Splits every E-mail document returned by load_pdf() into individual emails.
 
