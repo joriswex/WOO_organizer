@@ -2,6 +2,7 @@ import re
 from collections import Counter, defaultdict
 from pathlib import Path
 
+import numpy as np
 import pdfplumber
 import pytesseract
 from pdf2image import convert_from_path
@@ -13,9 +14,6 @@ PDF_PATH = Path(__file__).parent / "test.pdf"
 # Valid grounds are all under article 5.1.x or 5.2.x, e.g. 5.1.2e, 5.1.1, 5.2.1.
 # This intentionally excludes plain decimals (2.5), money amounts (50.000), etc.
 REDACTION_CODE_RE = re.compile(r"\b(5\.[12]\.[1-9][a-z]{0,2})\b")
-
-# 4-digit document code
-DOC_CODE_RE = re.compile(r"\b(\d{4})\b")
 
 # ---------------------------------------------------------------------------
 # Multi-region search constants
@@ -44,8 +42,8 @@ _DOC_CODE_TEXT_REGIONS: list[tuple[str, tuple[float, float, float, float]]] = [
 _DOC_CODE_RASTER_REGIONS: list[tuple[str, tuple[float, float, float, float]]] = [
     ("top-right",  (1 - _SIDE_FRAC, 0.00,          1.00,       _TOP_FRAC)),
     ("top-left",   (0.00,           0.00,           _SIDE_FRAC, _TOP_FRAC)),
+    ("btm-right",  (1 - _SIDE_FRAC, 1 - _BTM_FRAC, 1.00,       1.00)),  # before btm-middle
     ("btm-middle", (0.30,           1 - _BTM_FRAC,  0.70,       1.00)),
-    ("btm-right",  (1 - _SIDE_FRAC, 1 - _BTM_FRAC, 1.00,       1.00)),
     ("btm-left",   (0.00,           1 - _BTM_FRAC,  _SIDE_FRAC, 1.00)),
     ("top-full",   (0.00,           0.00,           1.00,       _TOP_FRAC)),
 ]
@@ -101,6 +99,17 @@ def _is_searchable(pdf_path: Path) -> bool:
 # Multi-region document-code detection
 # ---------------------------------------------------------------------------
 
+def _is_year(code: str) -> bool:
+    """Return True if a 4-digit code looks like a calendar year (1900–2099).
+
+    Year numbers regularly appear in document headers, footers, and email
+    date fields, so they must be excluded from stamp detection to avoid false
+    positives.  Genuine WOO document codes are sequential catalogue numbers
+    (0001, 0002, …) and never fall in this range in practice.
+    """
+    return 1900 <= int(code) <= 2099
+
+
 def _find_doc_code_words(page) -> str | None:
     """
     Search top-strip text-layer regions for a 4-digit document code.
@@ -108,7 +117,7 @@ def _find_doc_code_words(page) -> str | None:
     Only top regions are searched (see _DOC_CODE_TEXT_REGIONS) to avoid false
     positives from 4-digit numbers in email body text lower on the page.
     Regions are tried in priority order; within each region the rightmost
-    4-digit word is returned.
+    4-digit word is returned.  Year-range numbers (1900–2099) are excluded.
     """
     w, h = page.width, page.height
     words = page.extract_words()
@@ -119,11 +128,17 @@ def _find_doc_code_words(page) -> str | None:
             for wd in words
             if (x0 <= wd["x0"] and wd["x1"] <= x1
                 and y0 <= wd["top"] and wd["bottom"] <= y1
-                and re.fullmatch(r"\d{4}", wd["text"].strip()))
+                and re.fullmatch(r"\d{4}", wd["text"].strip())
+                and not _is_year(wd["text"].strip()))
         ]
         if candidates:
             return max(candidates, key=lambda c: c[0])[1]
     return None
+
+
+# Matches isolated leading-zero WOO codes (e.g. "0144").  Defined at module
+# level to avoid recompiling on every call to _find_doc_code_raster().
+_LEADING_ZERO_RE = re.compile(r"\b(0\d{3})\b")
 
 
 def _find_doc_code_raster(image: Image.Image) -> str | None:
@@ -132,22 +147,37 @@ def _find_doc_code_raster(image: Image.Image) -> str | None:
     code.
 
     Regions in _DOC_CODE_RASTER_REGIONS are tried in priority order; the first
-    unambiguous match wins.  Primary: clean 4-digit match; fallback: leading-zero
-    substring (handles noise-merged OCR output like "542240014" → "0014").
+    unambiguous match wins.
+
+    Two-stage matching per region:
+      1. Primary  : isolated leading-zero code  ``\\b(0\\d{3})\\b``
+                    All known WOO catalogue codes begin with 0 (e.g. 0001, 0144).
+                    Requiring the leading zero prevents article-number fragments
+                    like "5122" (from 5.1.2.2) from being treated as doc codes.
+      2. Fallback : first '0NNN' substring — bottom regions only.
+                    Handles noise-merged barcode strings like "7601441" -> "0144".
+                    Restricted to bottom regions because top-strip OCR can pick up
+                    long email-body numbers (e.g. "825202570600") from which the
+                    fallback would wrongly extract a spurious code.
     """
     w, h = image.size
-    for _name, (x0f, y0f, x1f, y1f) in _DOC_CODE_RASTER_REGIONS:
+    for name, (x0f, y0f, x1f, y1f) in _DOC_CODE_RASTER_REGIONS:
         crop = image.crop((int(w * x0f), int(h * y0f), int(w * x1f), int(h * y1f)))
         text = pytesseract.image_to_string(
             crop, config="--psm 6 -c tessedit_char_whitelist=0123456789"
         )
-        m = DOC_CODE_RE.search(text)
-        if m:
+        m = _LEADING_ZERO_RE.search(text)
+        if m and not _is_year(m.group(1)):
             return m.group(1)
-        # Fallback: first '0NNN' substring — handles noise-merged strings like "542240014"
-        m = re.search(r"(0\d{3})", text)
-        if m:
-            return m.group(1)
+        # Fallback: '0NNN' embedded in a longer barcode (at least 2 preceding digits).
+        # Pattern: "\d{2,}(0\d{3})" matches barcodes like "7601441" → "0144" and
+        # "542240014" → "0014" but NOT short sequences like "00001" (only 5 chars,
+        # insufficient for \d{2,} + 0\d{3} = min 6).  Bottom regions only — top-strip
+        # OCR may yield long email-body numbers where this could still give false hits.
+        if name.startswith("btm"):
+            m = re.search(r"\d{2,}(0\d{3})", text)
+            if m:
+                return m.group(1)
     return None
 
 
@@ -267,6 +297,16 @@ _CATEGORY_RULES: list[tuple[str, list[str]]] = [
     ]),
 ]
 
+# Mapping from VLM page_type values to pipeline category names.
+VLM_TO_CATEGORY: dict[str, str] = {
+    "email":   "E-mail",
+    "nota":    "Nota",
+    "rapport": "Report",
+    "brief":   "Brief",
+    "besluit": "Other",
+    "bijlage": "Other",
+}
+
 # Matches common Dutch and ISO date formats for timeline density detection.
 _DATE_RE = re.compile(
     r"\b\d{1,2}[-/]\d{1,2}[-/]\d{2,4}\b"           # dd-mm-yy(yy)
@@ -318,9 +358,12 @@ def _is_new_doc_boundary(p: dict) -> bool:
     on this page.  Used in both forward-fill and auto-split modes.
 
     Signals (in priority order):
-      1. WOO within-document page stamp == 1
-      2. "Pagina 1 van N" footer in the text layer
+      1. VLM high-confidence boundary (set by _apply_vlm_boundaries before Stage 2)
+      2. WOO within-document page stamp == 1
+      3. "Pagina 1 van N" footer in the text layer
     """
+    if p.get("vlm_boundary"):
+        return True
     if p["within_doc_page"] == 1:
         return True
     if re.search(r"\bpagina\s+1\s+van\b", p["text"], re.IGNORECASE):
@@ -374,11 +417,134 @@ def _auto_split_boundaries(page_data: list[dict]) -> list[bool]:
 
 
 # ---------------------------------------------------------------------------
+# Semantic boundary detection (sentence-transformer similarity)
+# ---------------------------------------------------------------------------
+
+# Module-level cache so the model loads once per process, not once per call.
+_SENTENCE_MODEL = None
+
+
+def _get_sentence_model():
+    """Lazy-load and cache the multilingual sentence-transformer model."""
+    global _SENTENCE_MODEL
+    if _SENTENCE_MODEL is None:
+        try:
+            from sentence_transformers import SentenceTransformer
+        except ImportError as exc:
+            raise ImportError(
+                "semantic_split requires the sentence-transformers package. "
+                "Install it with: pip install sentence-transformers"
+            ) from exc
+        print("[data_import] Loading sentence-transformer model (first run downloads ~120 MB)…")
+        _SENTENCE_MODEL = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
+        print("[data_import] Model ready.")
+    return _SENTENCE_MODEL
+
+
+# Pattern used to strip redaction markers before embedding — they are structured
+# noise that would distort topical similarity scores.
+_REDACTION_MARKER_RE = re.compile(r"\[REDACTED:[^\]]+\]")
+
+
+def _normalize_text_for_embedding(text: str, max_chars: int = 1000) -> str:
+    """Prepare a page's text for embedding.
+
+    Strips redaction markers, collapses whitespace, and truncates to max_chars
+    (roughly 200 tokens — well within the 512-token model limit).  Returns an
+    empty string when fewer than 20 non-whitespace characters remain.
+    """
+    t = _REDACTION_MARKER_RE.sub(" ", text)
+    t = re.sub(r"\s+", " ", t).strip()
+    t = t[:max_chars]
+    return t if len(t.replace(" ", "")) >= 20 else ""
+
+
+def _embed_pages(texts: list[str], model) -> list[np.ndarray | None]:
+    """Embed page texts in one batch; pages with empty text get None."""
+    non_empty = [(i, t) for i, t in enumerate(texts) if t]
+    result: list[np.ndarray | None] = [None] * len(texts)
+    if not non_empty:
+        return result
+    indices, batched = zip(*non_empty)
+    vectors = model.encode(
+        list(batched),
+        normalize_embeddings=True,   # unit vectors → cosine = dot product
+        show_progress_bar=False,
+        batch_size=32,
+    )
+    for idx, vec in zip(indices, vectors):
+        result[idx] = vec
+    return result
+
+
+def _cosine_sim(a: np.ndarray, b: np.ndarray) -> float:
+    """Cosine similarity in [0, 1] between two L2-normalised 1-D arrays."""
+    return float(np.dot(a, b))   # dot product of unit vectors = cosine
+
+
+def _semantic_boundaries(
+    embeddings: list[np.ndarray | None],
+) -> list[float | None]:
+    """Return per-page cosine similarity to the previous page (None at index 0
+    and wherever either neighbour has no embedding)."""
+    scores: list[float | None] = [None]
+    for i in range(1, len(embeddings)):
+        prev, curr = embeddings[i - 1], embeddings[i]
+        if prev is not None and curr is not None:
+            scores.append(_cosine_sim(prev, curr))
+        else:
+            scores.append(None)
+    return scores
+
+
+def _auto_split_boundaries_semantic(
+    page_data: list[dict],
+    embeddings: list[np.ndarray | None],
+    threshold: float,
+) -> list[bool]:
+    """Fuse semantic similarity with existing heuristic signals.
+
+    Signal priority (highest to lowest):
+      1. HIGH   within_doc_page==1  OR  'Pagina 1 van' in text  →  always split
+      2. MEDIUM cosine_sim < threshold (embedding available)      →  split
+      3. MEDIUM fresh email header after non-email page           →  split
+      4. DEFAULT                                                   →  continue
+    """
+    scores = _semantic_boundaries(embeddings)
+    n = len(page_data)
+    is_new = [False] * n
+    is_new[0] = True
+
+    prev_is_email = _is_fresh_email_start(page_data[0]["text"]) if n > 0 else False
+
+    for i in range(1, n):
+        p = page_data[i]
+        score = scores[i]
+
+        if _is_new_doc_boundary(p):                        # signal 1
+            is_new[i] = True
+        elif score is not None and score < threshold:      # signal 2
+            is_new[i] = True
+        else:
+            curr_is_email = _is_fresh_email_start(p["text"])     # signal 3
+            if curr_is_email and not prev_is_email:
+                is_new[i] = True
+            prev_is_email = curr_is_email
+            continue
+
+        # Reset email tracking at any boundary
+        prev_is_email = _is_fresh_email_start(p["text"])
+
+    return is_new
+
+
+# ---------------------------------------------------------------------------
 # Document-code assignment helpers
 # ---------------------------------------------------------------------------
 
 def _log_page(num: int, code: str, wpn: int | None,
               codes: Counter, inherited: bool) -> None:
+    """Print a single per-page assignment line to stdout."""
     status = f"doc={code}" + (" (inherited)" if inherited else "")
     if wpn is not None:
         status += f"  page-in-doc={wpn}"
@@ -395,7 +561,7 @@ def _build_docs_forward_fill(page_data: list[dict]) -> dict:
     A page where _is_new_doc_boundary() fires but no code is found gets an
     auto-generated 'unknown_N' code.
     """
-    docs: dict = defaultdict(
+    docs: dict[str, dict] = defaultdict(
         lambda: {"pages": [], "text_parts": [], "code_counts": Counter(),
                  "page_nums_in_doc": []}
     )
@@ -431,13 +597,20 @@ def _build_docs_forward_fill(page_data: list[dict]) -> dict:
     return docs
 
 
-def _build_docs_auto_split(page_data: list[dict]) -> dict:
+def _build_docs_auto_split(
+    page_data: list[dict],
+    boundaries: list[bool] | None = None,
+) -> dict:
     """
     Assign auto-generated document codes (auto_001, auto_002, …) based on
     automatically detected document boundaries.
+
+    If *boundaries* is None, the heuristic _auto_split_boundaries() is used.
+    Pass a pre-computed list to use semantic or other boundaries instead.
     """
-    boundaries = _auto_split_boundaries(page_data)
-    docs: dict = defaultdict(
+    if boundaries is None:
+        boundaries = _auto_split_boundaries(page_data)
+    docs: dict[str, dict] = defaultdict(
         lambda: {"pages": [], "text_parts": [], "code_counts": Counter(),
                  "page_nums_in_doc": []}
     )
@@ -480,10 +653,133 @@ def _finalize_docs(docs_raw: dict, method: str) -> dict[str, dict]:
 
 
 # ---------------------------------------------------------------------------
+# VLM integration helpers
+# ---------------------------------------------------------------------------
+
+def _apply_vlm_boundaries(page_data: list[dict]) -> None:
+    """
+    Inject a ``vlm_boundary`` boolean into each page_data entry based on the
+    VLM classification results already attached as ``p["vlm"]``.
+
+    Trust hierarchy:
+      - confidence >= 0.75 and is_new_document=True → set vlm_boundary=True
+        UNLESS the page already has a confirmed stamp (log warning, keep stamp).
+      - 0.60 <= confidence < 0.75 and is_new_document=True → confirm only when
+        an existing heuristic signal (within_doc_page==1 or "Pagina 1 van") also
+        fires on this page.
+      - confidence < 0.60 or skipped → leave page_data unchanged.
+    """
+    for p in page_data:
+        vlm = p.get("vlm")
+        if not vlm or vlm.get("skipped"):
+            continue
+
+        conf   = float(vlm.get("confidence") or 0.0)
+        is_new = bool(vlm.get("is_new_document", False))
+        code   = p.get("detected_code")
+
+        if not is_new:
+            continue
+
+        if conf >= 0.75:
+            if code is not None:
+                # Stamp is authoritative — log but do not override
+                print(
+                    f"[vlm] Page {p['page_num']}: VLM says new_doc (conf={conf:.2f})"
+                    f" but stamp={code} present — keeping stamp"
+                )
+            else:
+                p["vlm_boundary"] = True
+        elif conf >= 0.60:
+            # Medium confidence — only confirm if a heuristic signal already fires
+            has_signal = (
+                p.get("within_doc_page") == 1
+                or bool(re.search(r"\bpagina\s+1\s+van\b", p["text"], re.IGNORECASE))
+            )
+            if has_signal:
+                p["vlm_boundary"] = True
+
+
+def _apply_vlm_categories(result: dict, page_data: list[dict]) -> None:
+    """
+    Override document categories based on the VLM classification of each
+    document's first page.  Modifies *result* in-place.
+
+    Override thresholds:
+      - Existing category is "Other"          → VLM wins if confidence >= 0.70
+      - Existing category is anything else    → VLM wins if confidence >= 0.85
+    Sets ``doc["vlm_category_override"] = True/False`` on every document.
+    """
+    page_vlm: dict[int, dict] = {
+        p["page_num"]: p["vlm"]
+        for p in page_data
+        if p.get("vlm")
+    }
+
+    for _, doc in result.items():
+        pages = doc.get("pages", [])
+        if not pages:
+            doc["vlm_category_override"] = False
+            continue
+
+        vlm = page_vlm.get(pages[0])
+        if not vlm or vlm.get("skipped"):
+            doc["vlm_category_override"] = False
+            continue
+
+        conf     = float(vlm.get("confidence") or 0.0)
+        ptype    = vlm.get("page_type", "onbekend")
+        vlm_cat  = VLM_TO_CATEGORY.get(ptype)
+        curr_cat = doc["category"]
+
+        if not vlm_cat:
+            doc["vlm_category_override"] = False
+            continue
+
+        threshold = 0.70 if curr_cat == "Other" else 0.85
+        if conf >= threshold and vlm_cat != curr_cat:
+            doc["category"]              = vlm_cat
+            doc["vlm_category_override"] = True
+        else:
+            doc["vlm_category_override"] = False
+
+
+def _attach_vlm_metadata(result: dict, page_data: list[dict]) -> None:
+    """
+    Attach ``vlm_pages`` (list of per-page VLM dicts) and
+    ``vlm_confidence_avg`` (mean confidence of non-skipped pages) to each
+    document in *result*.  Modifies *result* in-place.
+    """
+    page_vlm: dict[int, dict] = {
+        p["page_num"]: p["vlm"]
+        for p in page_data
+        if p.get("vlm")
+    }
+
+    for _, doc in result.items():
+        vlm_pages: list[dict] = []
+        confs:     list[float] = []
+        for page_num in doc.get("pages", []):
+            vlm = page_vlm.get(page_num)
+            if vlm:
+                vlm_pages.append(vlm)
+                if not vlm.get("skipped") and vlm.get("confidence") is not None:
+                    confs.append(float(vlm["confidence"]))
+        doc["vlm_pages"]           = vlm_pages
+        doc["vlm_confidence_avg"]  = sum(confs) / len(confs) if confs else None
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
-def load_pdf(pdf_path: Path = PDF_PATH, ocr_supplement: bool = False) -> dict[str, dict]:
+def load_pdf(
+    pdf_path: Path = PDF_PATH,
+    ocr_supplement: bool = False,
+    semantic_split: bool = False,
+    semantic_threshold: float = 0.35,
+    vlm_assist: bool = False,
+) -> dict[str, dict]:
     """
     Extract text from *pdf_path* and group pages by their 4-digit document code.
 
@@ -496,6 +792,22 @@ def load_pdf(pdf_path: Path = PDF_PATH, ocr_supplement: bool = False) -> dict[st
         and OCR'd.  The redaction-code count per page is taken as the max of
         the text-layer count and the OCR count, capturing image-only stamps
         that are invisible to the text layer.  Adds ~3 s per page.
+    semantic_split : bool, default False
+        When True and no stamps are found, uses sentence-transformer cosine
+        similarity to detect document boundaries by topic shift.  Falls back
+        to the heuristic auto-split when this is False.  Requires the
+        sentence-transformers package.
+    semantic_threshold : float, default 0.35
+        Cosine similarity below which an adjacent-page transition is treated
+        as a document boundary.  Only used when semantic_split=True.
+        Tune downward (e.g. 0.20) to merge more aggressively; upward (e.g.
+        0.50) to split more finely.
+    vlm_assist : bool, default False
+        When True, runs Qwen2.5-VL (via Ollama) on selected pages after
+        Stage 1 to improve boundary detection and category classification.
+        Requires Ollama to be running with ``qwen2.5vl:7b`` pulled.
+        Reuses the 200 DPI renders from Stage 1 — no extra renders needed.
+        Attaches ``vlm_pages`` and ``vlm_confidence_avg`` to each document.
 
     Returns
     -------
@@ -520,8 +832,10 @@ def load_pdf(pdf_path: Path = PDF_PATH, ocr_supplement: bool = False) -> dict[st
     ----------------------------------------------
     1. Stamped indicators found  →  forward-fill with 'unknown_N' for readable
        boundaries that lack a code.
-    2. No stamps found anywhere  →  auto-split using within-doc page stamps,
-       'Pagina 1 van' text, and fresh email-header blocks.
+    2. No stamps found anywhere  →
+         semantic_split=True  →  sentence-transformer similarity + heuristics
+         semantic_split=False →  heuristic auto-split only (email headers,
+                                 'Pagina 1 van', within-doc page stamp == 1)
 
     Region search order
     -------------------
@@ -548,14 +862,14 @@ def load_pdf(pdf_path: Path = PDF_PATH, ocr_supplement: bool = False) -> dict[st
         print("[data_import] OCR supplement enabled — rendering all pages at 300 DPI.")
 
     # ── Stage 1: per-page data collection ────────────────────────────────────
-    page_data: list[dict] = []
+    page_data:       list[dict]        = []
+    rendered_images: list[Image.Image] = []   # collected only when vlm_assist=True
 
     with pdfplumber.open(pdf_path) as pdf:
         for i, page in enumerate(pdf.pages, start=1):
 
             if searchable:
-                # One 200 DPI render serves both page-number and doc-code detection,
-                # avoiding the previous double-render (150 DPI + 200 DPI).
+                # One 200 DPI render serves both page-number and doc-code detection.
                 rendered = page.to_image(resolution=200).original
 
                 within_doc_page = _find_within_doc_page_raster(rendered)
@@ -612,16 +926,47 @@ def load_pdf(pdf_path: Path = PDF_PATH, ocr_supplement: bool = False) -> dict[st
                 "text":            text,
                 "code_counts":     page_codes,
             })
+            if vlm_assist and rendered is not None:
+                rendered_images.append(rendered)
+
+    # ── VLM assist (optional, between stages 1 and 2) ────────────────────────
+    if vlm_assist:
+        from vlm_classifier import classify_pages as _vlm_classify
+        vlm_results = _vlm_classify(rendered_images, page_data)
+        for idx, vlm_res in enumerate(vlm_results):
+            page_data[idx]["vlm"] = vlm_res
+        _apply_vlm_boundaries(page_data)
+    rendered_images.clear()   # release memory before Stage 2
 
     # ── Stage 2: assign document codes ───────────────────────────────────────
     has_stamps = any(p["detected_code"] for p in page_data)
     if has_stamps:
         docs_raw = _build_docs_forward_fill(page_data)
+    elif semantic_split:
+        print("[data_import] No stamps found — using semantic document splitting.")
+        model = _get_sentence_model()
+        norm_texts = [_normalize_text_for_embedding(p["text"]) for p in page_data]
+        embeddings = _embed_pages(norm_texts, model)
+        scores = _semantic_boundaries(embeddings)
+        candidates = [
+            (i + 1, f"{s:.3f}")
+            for i, s in enumerate(scores[1:], start=1)
+            if s is not None and s < semantic_threshold
+        ]
+        print(f"[data_import] Semantic: {len(candidates)} boundary candidate(s)"
+              f" at threshold={semantic_threshold}")
+        for pg, sc in candidates:
+            print(f"  Page {pg}: similarity={sc}")
+        boundaries = _auto_split_boundaries_semantic(page_data, embeddings, semantic_threshold)
+        docs_raw = _build_docs_auto_split(page_data, boundaries)
     else:
-        print("[data_import] No stamps found — using automatic document splitting.")
+        print("[data_import] No stamps found — using heuristic document splitting.")
         docs_raw = _build_docs_auto_split(page_data)
 
-    result  = _finalize_docs(docs_raw, method)
+    result = _finalize_docs(docs_raw, method)
+    if vlm_assist:
+        _apply_vlm_categories(result, page_data)
+        _attach_vlm_metadata(result, page_data)
     n_pages = sum(len(d["pages"]) for d in result.values())
     print(f"[data_import] Done. {n_pages} page(s) → {len(result)} document(s).")
     return result

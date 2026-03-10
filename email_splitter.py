@@ -53,9 +53,12 @@ _SEPARATOR_RE = re.compile(
 _SUBJECT_RE = re.compile(r"^[ \t]*(?:subject|onderwerp)\s*:\s*(.+)", re.IGNORECASE)
 _FROM_RE    = re.compile(r"^[ \t]*(?:from|van)\s*:\s*(.+)",           re.IGNORECASE)
 _DATE_RE    = re.compile(r"^[ \t]*(?:sent|verzonden)\s*:\s*(.+)",     re.IGNORECASE)
+_TO_RE      = re.compile(r"^[ \t]*(?:to|aan)\s*:\s*(.+)",             re.IGNORECASE)
+_CC_RE      = re.compile(r"^[ \t]*cc\s*:\s*(.+)",                     re.IGNORECASE)
 
 
 def _normalize_field(name: str) -> str:
+    """Normalise a header field name to its English canonical form."""
     return _FIELD_NORMALIZE.get(name.lower(), name.lower())
 
 
@@ -165,6 +168,8 @@ def split_emails(text: str, doc_code: str) -> list[dict]:
             "id":      f"{doc_code}.1",
             "subject": None,
             "sender":  None,
+            "to":      None,
+            "cc":      None,
             "date":    None,
             "text":    text.strip(),
             "warning": "No header-field cluster found — kept as single block",
@@ -183,58 +188,11 @@ def split_emails(text: str, doc_code: str) -> list[dict]:
             "id":      f"{doc_code}.{j + 1}",
             "subject": _extract_field(block_lines, _SUBJECT_RE),
             "sender":  _extract_field(block_lines, _FROM_RE),
+            "to":      _extract_field(block_lines, _TO_RE),
+            "cc":      _extract_field(block_lines, _CC_RE),
             "date":    _extract_field(block_lines, _DATE_RE),
             "text":    block_text,
             "warning": None,
         })
 
     return emails
-
-
-# ---------------------------------------------------------------------------
-# Main — run report
-# ---------------------------------------------------------------------------
-
-if __name__ == "__main__":
-    from pdf_import_reader import load_pdf
-    docs = load_pdf()
-
-    email_docs = {
-        code: doc for code, doc in docs.items()
-        if doc["category"] == "E-mail"
-    }
-
-    print(f"\nE-mail documents found: {list(email_docs.keys())}  ({len(email_docs)} total)")
-    print("=" * 65)
-
-    all_emails: dict[str, list[dict]] = {}
-    issues: list[tuple[str, str]] = []
-
-    for code, doc in sorted(email_docs.items()):
-        emails = split_emails(doc["text"], code)
-        all_emails[code] = emails
-
-        print(f"\nDoc {code}  ({len(doc['pages'])} page(s), pages {doc['pages']})"
-              f"  →  {len(emails)} individual email(s)")
-
-        for email in emails:
-            subject = email["subject"] or "(no subject)"
-            sender  = email["sender"]  or "(unknown sender)"
-            date    = email["date"]    or "(no date)"
-            print(f"  [{email['id']}]  {subject[:70]}")
-            print(f"           From : {sender[:70]}")
-            print(f"           Date : {date[:50]}")
-            if email["warning"]:
-                print(f"           ⚠  {email['warning']}")
-                issues.append((email["id"], email["warning"]))
-
-    total = sum(len(v) for v in all_emails.values())
-    print(f"\n{'=' * 65}")
-    print(f"Total individual emails : {total}  across {len(email_docs)} document(s)")
-
-    if issues:
-        print(f"\nIssues ({len(issues)}):")
-        for eid, msg in issues:
-            print(f"  {eid}: {msg}")
-    else:
-        print("\nNo issues.")

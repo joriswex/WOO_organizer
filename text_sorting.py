@@ -1,13 +1,9 @@
 """
 text_sorting.py — date extraction and chronological sorting of WOO documents.
 """
-from __future__ import annotations
-
 import re
 from datetime import datetime
-from pathlib import Path
 
-from pdf_import_reader import load_pdf
 from email_splitter import split_emails
 
 # ---------------------------------------------------------------------------
@@ -137,6 +133,7 @@ def _date_from_text_scan(text: str, chars: int = 1000) -> tuple[datetime | None,
 
 
 def _get_doc_date(doc: dict) -> tuple[datetime | None, str]:
+    """Route date extraction to the right strategy based on document category."""
     category = doc['category']
 
     if category == 'E-mail':
@@ -176,20 +173,3 @@ def sort_documents(docs: dict) -> dict:
     )
 
     return {code: doc for code, doc in dated + undated}
-
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
-if __name__ == '__main__':
-    import sys
-    pdf = sys.argv[1] if len(sys.argv) > 1 else 'test.pdf'
-    docs = sort_documents(load_pdf(Path(pdf)))
-
-    print(f"\n{'#':<4} {'Code':<8} {'Date':<14} {'Category':<20} {'Date source'}")
-    print('-' * 78)
-    for rank, (code, doc) in enumerate(docs.items(), 1):
-        dt_str = doc['date'].strftime('%d-%m-%Y') if doc['date'] else '(no date)'
-        flag = '  ← WARNING' if doc['date'] is None else ''
-        print(f"{rank:<4} {code:<8} {dt_str:<14} {doc['category']:<20} "
-              f"{doc['date_raw'][:35]}{flag}")
