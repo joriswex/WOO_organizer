@@ -10,3 +10,13 @@ __pycache__/
 
 # Environment
 .env
+
+# macOS
+.DS_Store
+
+# Editor / tool config
+.claude/
+
+# Input PDFs and dossier folders
+*.pdf
+palestina dossier/
