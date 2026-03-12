@@ -56,6 +56,20 @@ _DATE_RE    = re.compile(r"^[ \t]*(?:sent|verzonden)\s*:\s*(.+)",     re.IGNOREC
 _TO_RE      = re.compile(r"^[ \t]*(?:to|aan)\s*:\s*(.+)",             re.IGNORECASE)
 _CC_RE      = re.compile(r"^[ \t]*cc\s*:\s*(.+)",                     re.IGNORECASE)
 
+# Redacted email-address patterns: "< @domain>" or "< ,@domain>" or "<@domain>"
+# where the local part has been blacked out.  Normalise to "<[REDACTED]@domain>".
+_REDACTED_ADDR_RE = re.compile(r"<\s*,?\s*@([\w.-]+\.\w{2,})\s*>", re.IGNORECASE)
+
+
+def _normalize_redacted_addrs(text: str) -> str:
+    """Replace redacted email address fragments with a legible placeholder.
+
+    Patterns like ``< @mindef.nl>`` or ``< ,@mindef.nl>`` (where the local
+    part is covered by a redaction bar) are rewritten to
+    ``<[REDACTED]@mindef.nl>`` so they are not misread as body text.
+    """
+    return _REDACTED_ADDR_RE.sub(r"<[REDACTED]@\1>", text)
+
 
 def _normalize_field(name: str) -> str:
     """Normalise a header field name to its English canonical form."""
@@ -160,6 +174,7 @@ def split_emails(text: str, doc_code: str) -> list[dict]:
             "warning": str | None,  # non-None when splitting was ambiguous
         }
     """
+    text  = _normalize_redacted_addrs(text)
     lines = text.splitlines()
     split_points = _find_split_points(lines)
 

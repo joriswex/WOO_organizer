@@ -1,28 +1,12 @@
 # Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
 .venv/
-venv/
+__pycache__/
+*.py[cod]
 *.egg-info/
 
-# macOS
-.DS_Store
-.AppleDouble
-.LSOverride
-
 # Generated outputs
-woo_timeline.html
+*.html
+*_cache*.json
 
-# Claude Code settings
-.claude/
-
-# PDF source files (large binaries — store separately or via Git LFS)
-*.pdf
-
-# Editor
-.idea/
-.vscode/
-*.swp
-*.swo
+# Environment
+.env
