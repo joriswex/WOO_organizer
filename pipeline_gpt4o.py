@@ -76,7 +76,8 @@ TEXT EXTRACTION RULES:
 - Use blank lines to separate paragraphs and sections.
 
 DOCUMENT BOUNDARY RULES:
-- is_new_document = true when: stamp says "Pagina 1 van N", or a fresh email/letter/memo starts at the top of the page.
+- is_new_document = true ONLY when: stamp says "Pagina 1 van N", or a completely fresh document starts at the top of the page (new email header, new memo heading, new letter salutation).
+- is_new_document = false if within_doc_page is 2 or higher — a continuation page is never a new document.
 - doc_code: look for a 4-digit stamp in any corner (format 0001–0999).
   If you see a 7-digit barcode stamp (e.g. 7601430), extract digits 4–6 and prefix with 0 → "0143".
 - within_doc_page: if a stamp or footer says "Pagina X van N", return X.
@@ -439,7 +440,9 @@ def _build_docs_forward_fill(page_data: list[dict]) -> dict[str, dict]:
 
     for p in page_data:
         detected = p["doc_code"]
-        is_new   = p["is_new_document"] or p["within_doc_page"] == 1
+        wpn      = p["within_doc_page"]
+        # Never start a new doc if VLM explicitly says this is page 2+
+        is_new   = (p["is_new_document"] or wpn == 1) and (wpn is None or wpn == 1)
 
         if detected:
             current_code = detected

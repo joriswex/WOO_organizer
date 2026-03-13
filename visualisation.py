@@ -20,6 +20,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 from email_splitter import split_emails
+from text_sorting import _parse_date as _parse_date_str
 
 # ---------------------------------------------------------------------------
 # Config
@@ -173,21 +174,21 @@ def make_thumbnail(doc_code: str, doc: dict,
 # Ministry domain → full name lookup
 # ---------------------------------------------------------------------------
 _MINISTRY_DOMAINS: dict[str, str] = {
-    # Core ministries
-    "minbuza.nl":       "Ministerie van Buitenlandse Zaken",
-    "minjenv.nl":       "Ministerie van Justitie en Veiligheid",
-    "minbzk.nl":        "Ministerie van Binnenlandse Zaken",
-    "minfin.nl":        "Ministerie van Financiën",
-    "minocw.nl":        "Ministerie van Onderwijs, Cultuur en Wetenschap",
-    "minvws.nl":        "Ministerie van Volksgezondheid, Welzijn en Sport",
-    "minlnv.nl":        "Ministerie van Landbouw, Natuur en Voedselkwaliteit",
-    "minszw.nl":        "Ministerie van Sociale Zaken en Werkgelegenheid",
-    "minienw.nl":       "Ministerie van Infrastructuur en Waterstaat",
-    "minav.nl":         "Ministerie van Algemene Zaken",
-    "minez.nl":         "Ministerie van Economische Zaken",
-    "minezk.nl":        "Ministerie van Economische Zaken en Klimaat",
-    "minelzk.nl":       "Ministerie van Economische Zaken en Klimaat",
-    "defensie.nl":      "Ministerie van Defensie",
+    # Core ministries (short form — no "Ministerie van" prefix to keep tags compact)
+    "minbuza.nl":       "Buitenlandse Zaken",
+    "minjenv.nl":       "Justitie en Veiligheid",
+    "minbzk.nl":        "Binnenlandse Zaken",
+    "minfin.nl":        "Financiën",
+    "minocw.nl":        "Onderwijs, Cultuur en Wetenschap",
+    "minvws.nl":        "Volksgezondheid, Welzijn en Sport",
+    "minlnv.nl":        "Landbouw, Natuur en Voedselkwaliteit",
+    "minszw.nl":        "Sociale Zaken en Werkgelegenheid",
+    "minienw.nl":       "Infrastructuur en Waterstaat",
+    "minav.nl":         "Algemene Zaken",
+    "minez.nl":         "Economische Zaken",
+    "minezk.nl":        "Economische Zaken en Klimaat",
+    "minelzk.nl":       "Economische Zaken en Klimaat",
+    "defensie.nl":      "Defensie",
     # Agencies & other government
     "rijksoverheid.nl": "Rijksoverheid",
     "nctv.nl":          "NCTV",
@@ -227,51 +228,46 @@ def _classify_domain(domain: str) -> tuple[str, str]:
     return f"@{domain} (Extern)", "external"
 
 
-def _parse_recipients(addr_str: str) -> list[tuple[str, str]]:
-    """Split a recipient string into individual (label, tag_type) tuples.
 
-    Handles semicolon/comma-separated lists and [REDACTED]@domain.nl format.
-    """
+def _recipient_tags_html(addr_str: str) -> str:
+    """Render recipient address string as individual pill tags with counts."""
+    # Re-parse to get (display_label, tag_type, count) directly
     if not addr_str:
-        return []
+        return ""
 
-    # Split on ; or ,  but not inside angle brackets
     parts = re.split(r"[;,](?![^<]*>)", addr_str)
-    results: list[tuple[str, str]] = []
-    seen: set[str] = set()
+    counts: dict[str, int] = {}
+    tag_types: dict[str, str] = {}
+    display: dict[str, str] = {}
 
     for part in parts:
         part = part.strip()
         if not part:
             continue
-
         domains = _DOMAIN_RE.findall(part)
         if domains:
             for domain in domains:
                 label, tag_type = _classify_domain(domain)
                 key = label.lower()
-                if key not in seen:
-                    seen.add(key)
-                    results.append((label, tag_type))
+                counts[key] = counts.get(key, 0) + 1
+                tag_types[key] = tag_type
+                display[key] = label
         else:
-            # Fully redacted — no domain visible
-            label = "[Redacted]"
-            if label.lower() not in seen:
-                seen.add(label.lower())
-                results.append((label, "unknown"))
+            key = "[redacted]"
+            counts[key] = counts.get(key, 0) + 1
+            tag_types[key] = "unknown"
+            display[key] = "[Redacted]"
 
-    return results
+    if not counts:
+        return _e(addr_str)
 
-
-def _recipient_tags_html(addr_str: str) -> str:
-    """Render recipient address string as individual pill tags."""
-    recipients = _parse_recipients(addr_str)
-    if not recipients:
-        return _e(addr_str) if addr_str else ""
-    return " ".join(
-        f'<span class="em-rcpt em-rcpt-{tag_type}">{_e(label)}</span>'
-        for label, tag_type in recipients
-    )
+    tags = []
+    for key, label in display.items():
+        count = counts[key]
+        tag_type = tag_types[key]
+        suffix = f' <span class="em-rcpt-count">×{count}</span>' if count > 1 else ""
+        tags.append(f'<span class="em-rcpt em-rcpt-{tag_type}">{_e(label)}{suffix}</span>')
+    return " ".join(tags)
 
 
 def _recipients_row_html(field_label: str, addr_str: str) -> str:
@@ -449,6 +445,37 @@ def _email_body(text: str, scan_lines: int = 30) -> str:
 def _e(s) -> str:
     """HTML-escape *s*, converting None to an empty string."""
     return html_mod.escape(str(s) if s is not None else "")
+
+
+def _email_card_inner_html(email: dict) -> str:
+    """Render the inner content of an inline email card."""
+    body_raw    = _email_body(email.get("text") or "")
+    body_raw    = _strip_email_boilerplate(body_raw)
+    body_raw    = _resolve_addr_in_text(body_raw)
+    attachments = _extract_attachments(body_raw)
+    if attachments:
+        body_raw = _strip_attachment_lines(body_raw)
+    body_html   = _redact_body_html(body_raw)
+
+    van_row    = _recipients_row_html("Van", email.get("sender") or "")
+    aan_row    = _recipients_row_html("Aan", email.get("to")     or "")
+    cc_row     = _recipients_row_html("CC",  email.get("cc")     or "")
+    attach_html = _attachments_html(attachments)
+    redact_html = _email_redact_summary_html(email.get("text") or "")
+    subject    = _e(email.get("subject") or "(geen onderwerp)")
+    date       = _e(email.get("date") or "")
+    eid        = _e(email.get("id") or "")
+
+    return (
+        f'<div class="ec-header">'
+        f'<div class="ec-toprow"><span class="ec-id">{eid}</span><span class="ec-date">{date}</span></div>'
+        f'{van_row}{aan_row}{cc_row}'
+        f'<div class="ec-subject">{subject}</div>'
+        f'</div>'
+        f'{redact_html}'
+        f'{attach_html}'
+        f'<div class="ec-body">{body_html}</div>'
+    )
 
 
 def _redaction_summary_html(code_counts: dict[str, int]) -> str:
@@ -694,31 +721,52 @@ def _email_thread_html(emails: list[dict]) -> str:
 # ---------------------------------------------------------------------------
 def build_html(docs: dict, out_path: Path | str = OUT_PATH,
                pdf_path: Path | str | None = None) -> None:
-    """Generate the timeline HTML file from an already-loaded, sorted docs dict."""
+    """Build the HTML timeline. Emails become individual inline cards; other docs become clickable page-image cards."""
+    print(f"Building HTML: {len(docs)} documents…")
 
-    # ── Render PDF pages: thumbnails (first page) + panel images (all pages) ──
-    page_images: dict[str, Image.Image] = {}   # first-page PIL for card thumbnail
-    doc_page_uris: dict[str, list[str]] = {}   # all pages as JPEG base64 for panel
-    if pdf_path is not None and Path(pdf_path).exists():
+    # ── Render page images ────────────────────────────────────────────────────
+    # page_images: first PIL Image per doc (for thumbnail)
+    # doc_page_uris: all pages as JPEG base64 data URIs (for panel)
+    page_images: dict[str, Image.Image] = {}
+    doc_page_uris: dict[str, list[str]] = {}
+
+    all_docs = [(c, d) for c, d in docs.items() if d.get("pages")]
+
+    # Check if pages are PIL Images (gpt4o pipeline) or ints (ocr pipeline)
+    for doc_code, doc in all_docs:
+        pages = doc["pages"]
+        uris: list[str] = []
+        if pages and isinstance(pages[0], Image.Image):
+            # GPT-4o pipeline: pages are PIL Images
+            for j, img in enumerate(pages):
+                if j == 0:
+                    page_images[doc_code] = img
+                thumb = img.copy()
+                thumb.thumbnail((800, 1200), Image.Resampling.LANCZOS)
+                buf = io.BytesIO()
+                thumb.save(buf, format="JPEG", quality=65, optimize=True)
+                uris.append("data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode())
+
+        if uris:
+            doc_page_uris[doc_code] = uris
+
+    # OCR pipeline: pages are 1-based page numbers — render from PDF
+    ocr_docs = [(c, d) for c, d in all_docs if d["pages"] and not isinstance(d["pages"][0], Image.Image)]
+    if ocr_docs and pdf_path and Path(pdf_path).exists():
         try:
             import pdfplumber
-            all_docs = [(c, d) for c, d in docs.items() if d.get("pages")]
             with pdfplumber.open(pdf_path) as pdf:
-                for doc_code, doc in all_docs:
-                    print(f"  [{doc_code}] rendering {len(doc['pages'])} page(s)…",
-                          flush=True)
-                    uris: list[str] = []
+                for doc_code, doc in ocr_docs:
+                    print(f"  [{doc_code}] rendering {len(doc['pages'])} page(s)…", flush=True)
+                    uris = []
                     for j, page_num in enumerate(doc["pages"]):
                         try:
                             img = pdf.pages[page_num - 1].to_image(resolution=100).original
                             if j == 0:
-                                page_images[doc_code] = img   # thumbnail source
+                                page_images[doc_code] = img
                             buf = io.BytesIO()
                             img.save(buf, format="JPEG", quality=65, optimize=True)
-                            uris.append(
-                                "data:image/jpeg;base64,"
-                                + base64.b64encode(buf.getvalue()).decode()
-                            )
+                            uris.append("data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode())
                         except Exception:
                             pass
                     if uris:
@@ -726,76 +774,166 @@ def build_html(docs: dict, out_path: Path | str = OUT_PATH,
         except Exception:
             pass
 
-    # ── Build per-card data ──────────────────────────────────────────────────
-    cards_data: list[dict] = []
+    # ── Build timeline items ──────────────────────────────────────────────────
+    # Two types: "email" (one per individual email) and "doc" (one per document)
+    items: list[dict] = []   # all timeline items, to be sorted
+    panel_items: list[dict] = []  # doc/chat items that have side panels
+
     for doc_code, doc in docs.items():
-        emails = (split_emails(doc["text"], doc_code)
-                  if doc["category"] == "E-mail" else None)
+        color    = CATEGORY_COLORS.get(doc["category"], DEFAULT_COLOR)
+        doc_date = doc.get("date")
 
-        thumb   = make_thumbnail(doc_code, doc, emails, page_images.get(doc_code))
-        detail  = _detail_html(doc_code, doc, emails)
-        color   = CATEGORY_COLORS.get(doc["category"], DEFAULT_COLOR)
-        date_str = doc["date"].strftime("%-d %b %Y") if doc["date"] else "(geen datum)"
-
-        if emails:
-            title    = (emails[0].get("subject") or "").strip() or f"{len(emails)} e-mails"
-            subtitle = f"{len(emails)} e-mail{'s' if len(emails) != 1 else ''} in thread"
+        if doc["category"] == "E-mail":
+            emails = split_emails(doc["text"], doc_code)
+            for email in emails:
+                raw_date = (email.get("date") or "").strip()
+                try:
+                    email_dt = _parse_date_str(raw_date) if raw_date else None
+                except Exception:
+                    email_dt = None
+                sort_dt    = email_dt or doc_date
+                date_str   = sort_dt.strftime("%-d %b %Y") if sort_dt else "(geen datum)"
+                card_inner = _email_card_inner_html(email)
+                items.append({
+                    "type":      "email",
+                    "sort_date": sort_dt,
+                    "color":     color,
+                    "date_str":  date_str,
+                    "doc_code":  doc_code,
+                    "card_inner": card_inner,
+                    "category":  "E-mail",
+                })
         else:
+            # Non-email document or Chat
+            detail = _detail_html(doc_code, doc, None)
+            panel_idx = len(panel_items)
+            panel_items.append({
+                "code":   doc_code,
+                "title":  doc_code,
+                "date":   doc_date.strftime("%-d %b %Y") if doc_date else "(geen datum)",
+                "detail": detail,
+            })
+
+            thumb = make_thumbnail(doc_code, doc, None, page_images.get(doc_code))
             lines = [l.strip() for l in doc["text"].splitlines()
                      if l.strip() and not re.fullmatch(r"0\d{3}", l.strip())]
             title    = lines[0][:65] if lines else doc_code
             subtitle = f"{len(doc['pages'])} pagina{'s' if len(doc['pages']) != 1 else ''}"
+            date_str = doc_date.strftime("%-d %b %Y") if doc_date else "(geen datum)"
 
-        cards_data.append({
-            "code":        doc_code,
-            "category":    doc["category"],
-            "color":       color,
-            "date":        date_str,
-            "title":       title,
-            "subtitle":    subtitle,
-            "thumb":       thumb,
-            "detail":      detail,
-        })
+            items.append({
+                "type":      "doc",
+                "sort_date": doc_date,
+                "color":     color,
+                "date_str":  date_str,
+                "doc_code":  doc_code,
+                "category":  doc["category"],
+                "thumb":     thumb,
+                "title":     title,
+                "subtitle":  subtitle,
+                "panel_idx": panel_idx,
+                "n_pages":   len(doc_page_uris.get(doc_code, [])),
+            })
 
-    # ── Cards HTML ───────────────────────────────────────────────────────────
-    card_items = []
-    for i, c in enumerate(cards_data):
-        card_items.append(
-            f'<div class="card" style="--cc:{_e(c["color"])}" onclick="openPanel({i})">'
-            f'<div class="card-inner">'
-            f'<div class="card-thumb">'
-            f'<img src="{c["thumb"]}" alt="Doc {_e(c["code"])}" loading="lazy"/>'
-            f'</div>'
-            f'<div class="card-meta">'
-            f'<span class="badge" style="background:{_e(c["color"])}">{_e(c["category"])}</span>'
-            f'<div class="card-date">{_e(c["date"])}</div>'
-            f'<div class="card-code">{_e(c["code"])}</div>'
-            f'<div class="card-title" title="{_e(c["title"])}">{_e(c["title"])}</div>'
-            f'<div class="card-sub">{_e(c["subtitle"])}</div>'
-            f'</div></div></div>'
-        )
-    cards_html = "\n".join(card_items)
+    # Sort chronologically (None dates go to end)
+    from datetime import datetime as _dt
+    items.sort(key=lambda x: x["sort_date"] or _dt(9999, 12, 31))
 
-    panel_json = json.dumps(
-        [{"code": c["code"], "title": c["title"], "date": c["date"],
-          "detail": c["detail"]} for c in cards_data],
-        ensure_ascii=False,
+    # ── Build date-axis labels ────────────────────────────────────────────────
+    # Insert a label item when the year-month changes
+    labelled_items: list[dict] = []
+    prev_ym = None
+    for item in items:
+        if item["sort_date"]:
+            ym = (item["sort_date"].year, item["sort_date"].month)
+            if ym != prev_ym:
+                labelled_items.append({"type": "month_label", "ym": ym})
+                prev_ym = ym
+        labelled_items.append(item)
+
+    # ── Category stats for header ─────────────────────────────────────────────
+    cat_counts: Counter[str] = Counter(it["category"] for it in items)
+    n_emails = cat_counts.get("E-mail", 0)
+    n_docs   = sum(v for k, v in cat_counts.items() if k != "E-mail")
+    n_total  = len(items)
+    header_sub = f"{n_emails} e-mails · {n_docs} documenten · {n_total} totaal"
+
+    # ── Category filter chips ─────────────────────────────────────────────────
+    present_cats = sorted(cat_counts.keys(),
+                          key=lambda c: list(CATEGORY_COLORS.keys()).index(c)
+                          if c in CATEGORY_COLORS else 99)
+    filter_chips = "".join(
+        f'<button class="flt-chip active" data-cat="{_e(cat)}" '
+        f'style="--fc:{_e(CATEGORY_COLORS.get(cat, DEFAULT_COLOR))}" '
+        f'onclick="toggleFilter(this)">'
+        f'{_e(cat)} <span class="flt-n">{cat_counts[cat]}</span></button>'
+        for cat in present_cats
     )
+    filter_bar = f'<div class="filter-bar">{filter_chips}</div>'
 
-    n = len(cards_data)
+    # ── Render cards ─────────────────────────────────────────────────────────
+    card_items_html: list[str] = []
+    DUTCH_MONTHS = ["jan","feb","mrt","apr","mei","jun","jul","aug","sep","okt","nov","dec"]
 
-    # ── Assemble HTML ────────────────────────────────────────────────────────
-    # Build JS and CSS separately to avoid f-string brace conflicts
+    for item in labelled_items:
+        if item["type"] == "month_label":
+            y, m = item["ym"]
+            label = f"{DUTCH_MONTHS[m-1]} {y}"
+            card_items_html.append(
+                f'<div class="month-marker"><span class="month-label">{label}</span></div>'
+            )
+        elif item["type"] == "email":
+            card_items_html.append(
+                f'<div class="card email-card" style="--cc:{_e(item["color"])}" '
+                f'data-cat="E-mail" onclick="this.classList.toggle(\'expanded\')">'
+                f'<div class="card-inner">'
+                f'<div class="ec-top">'
+                f'<span class="badge" style="background:{_e(item["color"])}">E-mail</span>'
+                f'<span class="ec-code-top">{_e(item["doc_code"])}</span>'
+                f'</div>'
+                f'{item["card_inner"]}'
+                f'</div></div>'
+            )
+        else:  # doc or chat
+            card_items_html.append(
+                f'<div class="card doc-card" style="--cc:{_e(item["color"])}" '
+                f'data-cat="{_e(item["category"])}" onclick="openPanel({item["panel_idx"]})">'
+                f'<div class="card-inner">'
+                f'<div class="card-thumb"><img src="{item["thumb"]}" alt="Doc {_e(item["doc_code"])}" loading="lazy"/></div>'
+                f'<div class="card-meta">'
+                f'<span class="badge" style="background:{_e(item["color"])}">{_e(item["category"])}</span>'
+                f'<div class="card-date">{_e(item["date_str"])}</div>'
+                f'<div class="card-code">{_e(item["doc_code"])}</div>'
+                f'<div class="card-title" title="{_e(item["title"])}">{_e(item["title"])}</div>'
+                f'<div class="card-sub">{_e(item["subtitle"])} — klik om te lezen</div>'
+                f'</div></div></div>'
+            )
+
+    cards_html = "\n".join(card_items_html)
+
+    panel_json = json.dumps(panel_items, ensure_ascii=False)
+    page_imgs_json = json.dumps(doc_page_uris, ensure_ascii=False)
+    n = n_total
+
+    # ── CSS ───────────────────────────────────────────────────────────────────
     css = """
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
   background:#0f172a;color:#e2e8f0;height:100vh;display:flex;
   flex-direction:column;overflow:hidden}
-.hdr{padding:14px 24px 10px;background:#1e293b;border-bottom:1px solid #334155;flex-shrink:0}
-.hdr h1{font-size:17px;font-weight:600;color:#f1f5f9;letter-spacing:.02em}
-.hdr p{font-size:11px;color:#94a3b8;margin-top:2px}
+.hdr{padding:10px 24px 0;background:#1e293b;border-bottom:1px solid #334155;flex-shrink:0}
+.hdr-top{display:flex;align-items:baseline;gap:12px;padding-bottom:8px}
+.hdr h1{font-size:16px;font-weight:600;color:#f1f5f9;letter-spacing:.02em}
+.hdr p{font-size:11px;color:#94a3b8}
+.filter-bar{display:flex;gap:6px;flex-wrap:wrap;padding:8px 0 9px;overflow-x:auto}
+.flt-chip{background:#1e293b;border:1px solid var(--fc,#6b7280);color:var(--fc,#94a3b8);
+  border-radius:20px;padding:3px 10px;font-size:10px;font-weight:600;cursor:pointer;
+  transition:background .15s,opacity .15s;white-space:nowrap}
+.flt-chip.active{background:color-mix(in srgb,var(--fc) 18%,#0f172a);color:#f1f5f9}
+.flt-chip:not(.active){opacity:.45}
+.flt-n{font-weight:400;margin-left:3px;opacity:.7}
 .tl-outer{flex:1;overflow:hidden;display:flex;align-items:center}
-.tl-scroll{overflow-x:auto;overflow-y:hidden;padding:52px 48px 20px;
+.tl-scroll{overflow-x:auto;overflow-y:hidden;padding:52px 48px 24px;
   scrollbar-width:thin;scrollbar-color:#334155 #1e293b;width:100%}
 .tl-scroll::-webkit-scrollbar{height:6px}
 .tl-scroll::-webkit-scrollbar-track{background:#1e293b}
@@ -804,32 +942,63 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
   min-width:max-content;gap:0}
 .axis{position:absolute;top:-28px;left:0;right:0;height:2px;
   background:linear-gradient(90deg,transparent,#334155 3%,#334155 97%,transparent)}
-.card{position:relative;width:185px;flex-shrink:0;margin:0 10px;cursor:pointer;
-  transition:transform .15s}
-.card:hover{transform:translateY(-5px)}
-.card:hover .card-inner{box-shadow:0 14px 36px rgba(0,0,0,.55)}
+/* Month marker */
+.month-marker{display:flex;flex-direction:column;align-items:center;
+  margin:0 6px;flex-shrink:0;padding-top:0}
+.month-marker::before{content:'';width:1px;height:28px;position:absolute;top:-28px;
+  background:#334155;margin-top:0}
+.month-label{font-size:9px;font-weight:700;color:#475569;letter-spacing:.06em;
+  text-transform:uppercase;white-space:nowrap;margin-top:2px;padding-top:0}
+/* Shared card base */
+.card{position:relative;flex-shrink:0;margin:0 8px;transition:transform .15s}
 .card::before{content:'';position:absolute;top:-36px;left:50%;
-  transform:translateX(-50%);width:11px;height:11px;border-radius:50%;
+  transform:translateX(-50%);width:10px;height:10px;border-radius:50%;
   background:var(--cc,#6b7280);border:2.5px solid #0f172a;z-index:1}
-.card::after{content:'';position:absolute;top:-25px;left:50%;
-  transform:translateX(-50%);width:1px;height:25px;
-  background:var(--cc,#6b7280);opacity:.4}
+.card::after{content:'';position:absolute;top:-26px;left:50%;
+  transform:translateX(-50%);width:1px;height:26px;
+  background:var(--cc,#6b7280);opacity:.35}
 .card-inner{background:#1e293b;border:1px solid #2d3f55;border-radius:8px;
   overflow:hidden;box-shadow:0 4px 18px rgba(0,0,0,.35);
   transition:box-shadow .15s,border-color .15s}
-.card.active .card-inner{border-color:var(--cc,#6b7280);
-  box-shadow:0 0 0 2px var(--cc,#6b7280),0 10px 28px rgba(0,0,0,.5)}
+.card.active .card-inner{border-color:var(--cc);
+  box-shadow:0 0 0 2px var(--cc),0 10px 28px rgba(0,0,0,.5)}
+/* Document card */
+.doc-card{width:175px;cursor:pointer}
+.doc-card:hover{transform:translateY(-4px)}
+.doc-card:hover .card-inner{box-shadow:0 14px 36px rgba(0,0,0,.55)}
 .card-thumb img{width:100%;display:block;border-bottom:1px solid #2d3f55}
 .card-meta{padding:8px 9px 10px}
 .badge{display:inline-block;font-size:9px;font-weight:700;color:#fff;
   padding:2px 6px;border-radius:3px;letter-spacing:.05em;text-transform:uppercase;
-  margin-bottom:5px}
+  margin-bottom:4px}
 .card-date{font-size:11px;color:#94a3b8;margin-bottom:1px}
 .card-code{font-size:10px;color:#475569;font-family:monospace;margin-bottom:3px}
 .card-title{font-size:11px;color:#e2e8f0;font-weight:500;line-height:1.35;
   overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;
   -webkit-box-orient:vertical;margin-bottom:2px}
 .card-sub{font-size:10px;color:#475569}
+/* Email card */
+.email-card{width:310px;cursor:pointer}
+.email-card:hover .card-inner{box-shadow:0 8px 28px rgba(0,0,0,.5)}
+.ec-top{padding:7px 10px 5px;display:flex;align-items:center;gap:8px;
+  border-bottom:1px solid #1e3050}
+.ec-code-top{font-family:monospace;font-size:9px;color:#475569;margin-left:auto}
+.ec-header{padding:8px 10px 6px;border-bottom:1px solid #1e3050}
+.ec-toprow{display:flex;justify-content:space-between;align-items:center;
+  margin-bottom:5px}
+.ec-id{font-family:monospace;font-size:9px;color:#475569}
+.ec-date{font-size:10px;color:#94a3b8}
+.ec-subject{font-size:11px;font-weight:600;color:#f1f5f9;margin-top:5px;
+  line-height:1.35;word-break:break-word}
+.ec-body{padding:8px 10px 10px;font-size:11px;line-height:1.6;color:#94a3b8;
+  white-space:pre-wrap;word-break:break-word;
+  max-height:120px;overflow:hidden;
+  mask-image:linear-gradient(to bottom,#000 60%,transparent 100%);
+  -webkit-mask-image:linear-gradient(to bottom,#000 60%,transparent 100%);
+  transition:max-height .25s ease,mask-image .25s}
+.email-card.expanded .ec-body{max-height:600px;
+  mask-image:none;-webkit-mask-image:none}
+/* Panel */
 #panel{position:fixed;top:0;right:0;width:540px;height:100vh;
   background:#1e293b;border-left:1px solid #334155;display:flex;
   flex-direction:column;transform:translateX(100%);
@@ -853,8 +1022,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 .det-badge{font-size:9px;font-weight:700;color:#fff;padding:2px 8px;
   border-radius:3px;text-transform:uppercase;letter-spacing:.05em}
 .det-date{font-size:12px;color:#94a3b8;margin-left:auto}
-.doc-pre{font-family:'Courier New',monospace;font-size:11px;line-height:1.6;
-  color:#cbd5e1;white-space:pre-wrap;word-break:break-word}
 .pdf-pages{display:flex;flex-direction:column;gap:6px;margin-top:12px}
 .pdf-page{width:100%;display:block;border:1px solid #2d3f55;border-radius:2px}
 .redact-section{background:#111c2d;border:1px solid #1e3050;border-radius:6px;
@@ -871,17 +1038,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 .redact-bar.has-letter{background:#d97706}
 .redact-pct{font-size:10px;color:#64748b;text-align:right}
 .redact-count{font-size:10px;color:#475569;text-align:right}
-.em-thread{display:flex;flex-direction:column;gap:10px;margin-top:8px}
-.em-block{background:#0f1e30;border:1px solid #1e3050;border-radius:6px;overflow:hidden}
-.em-head{padding:10px 12px;border-bottom:1px solid #1e3050;background:#111c2d}
-.em-id{font-family:monospace;font-size:9px;color:#475569;margin-bottom:6px}
 .em-field{display:flex;gap:8px;margin-bottom:3px;font-size:11px;line-height:1.4}
-.em-label{color:#64748b;font-weight:600;min-width:72px;flex-shrink:0}
+.em-label{color:#64748b;font-weight:600;min-width:72px;flex-shrink:0;padding-top:1px}
 .em-val{color:#cbd5e1;word-break:break-word}
 .em-from{color:#93c5fd}
-.em-to{color:#6ee7b7}
-.em-subj{color:#f1f5f9;font-weight:600}
-.em-date{color:#94a3b8}
 .em-field-recipients{align-items:flex-start}
 .em-rcpts{display:flex;flex-wrap:wrap;gap:4px}
 .em-rcpt{display:inline-flex;align-items:center;padding:2px 7px;border-radius:10px;
@@ -889,8 +1049,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 .em-rcpt-ministry{background:#1a3a5c;border:1px solid #2d5a8c;color:#93c5fd}
 .em-rcpt-external{background:#2d2010;border:1px solid #5a4010;color:#fbbf24}
 .em-rcpt-unknown{background:#1e1e2e;border:1px solid #3a3a5c;color:#64748b}
-.em-redact-summary{padding:5px 12px;display:flex;flex-wrap:wrap;align-items:center;
-  gap:8px;border-bottom:1px solid #1e3050;background:#0d1520}
+.em-rcpt-count{opacity:.7;font-size:9px;margin-left:3px}
+.em-redact-summary{padding:5px 10px;display:flex;flex-wrap:wrap;align-items:center;
+  gap:6px;border-bottom:1px solid #1e3050;background:#0d1520}
 .em-redact-label{font-size:9px;color:#475569;font-weight:600;text-transform:uppercase;
   letter-spacing:.04em;margin-right:4px}
 .em-redact-item{display:inline-flex;align-items:center;gap:3px;
@@ -898,15 +1059,27 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 .em-redact-code{font-size:9px;color:#c084fc;font-family:monospace}
 .em-redact-n{font-size:9px;color:#94a3b8}
 .em-redact-pct{font-size:9px;color:#475569}
-.em-attachments{padding:6px 12px;display:flex;flex-wrap:wrap;gap:5px;
+.em-attachments{padding:5px 10px;display:flex;flex-wrap:wrap;gap:5px;
   border-bottom:1px solid #1e3050;background:#0d1a2b}
 .em-attach-tag{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;
   background:#1e3050;border:1px solid #2d4a70;border-radius:12px;
   font-size:10px;color:#93c5fd;white-space:nowrap}
+/* Panel email thread */
+.em-thread{display:flex;flex-direction:column;gap:10px;margin-top:8px}
+.em-block{background:#0f1e30;border:1px solid #1e3050;border-radius:6px;overflow:hidden}
+.em-head{padding:10px 12px;border-bottom:1px solid #1e3050;background:#111c2d}
+.em-id{font-family:monospace;font-size:9px;color:#475569;margin-bottom:6px}
+.em-subj{color:#f1f5f9;font-weight:600}
+.em-date{color:#94a3b8}
+.em-warn{background:#1f1207;color:#f59e0b;font-size:10px;padding:5px 12px;
+  border-bottom:1px solid #2d1a00}
+.em-body{padding:10px 12px;font-size:11px;line-height:1.65;color:#94a3b8;
+  white-space:pre-wrap;word-break:break-word;max-height:280px;overflow-y:auto}
+/* Chat */
 .chat-thread{display:flex;flex-direction:column;gap:0;margin-top:8px}
 .chat-name{text-align:center;font-size:10px;font-weight:600;color:#64748b;
   padding:6px 12px;background:#0a1220;border-bottom:1px solid #1e3050;letter-spacing:.04em}
-.chat-messages{display:flex;flex-direction:column;gap:4px;padding:10px 10px}
+.chat-messages{display:flex;flex-direction:column;gap:4px;padding:10px}
 .chat-row-left{display:flex;justify-content:flex-start}
 .chat-row-right{display:flex;justify-content:flex-end}
 .chat-bubble-left,.chat-bubble-right{max-width:78%;padding:6px 10px;border-radius:12px;
@@ -919,49 +1092,51 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 .chat-redact{background:#3b1f4e;color:#c084fc;border-radius:3px;
   padding:0 3px;font-size:9px;font-family:monospace}
 .chat-empty{padding:12px;font-size:11px;color:#475569;text-align:center}
-.em-warn{background:#1f1207;color:#f59e0b;font-size:10px;padding:5px 12px;
-  border-bottom:1px solid #2d1a00}
-.em-body{padding:10px 12px;font-size:11px;line-height:1.65;color:#94a3b8;
-  white-space:pre-wrap;word-break:break-word;max-height:280px;overflow-y:auto}
+.redacted{background:#3b1f4e;color:#c084fc;border-radius:3px;
+  padding:0 3px;font-size:10px;font-family:monospace}
 #ov{display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:99}
 #ov.on{display:block}
 """
 
-    page_imgs_json = json.dumps(doc_page_uris, ensure_ascii=False)
-
-    js = """
-const DOCS=PANEL_JSON_PLACEHOLDER;
-const PAGE_IMGS=PAGE_IMGS_JSON_PLACEHOLDER;
+    # ── JS ────────────────────────────────────────────────────────────────────
+    js_template = r"""
+const PANELS=PANEL_JSON;
+const PAGE_IMGS=PAGE_IMGS_JSON;
 function openPanel(i){
-  const d=DOCS[i];
-  document.getElementById('ptitle').textContent=d.code+' \u2014 '+d.title;
+  const d=PANELS[i];
+  document.getElementById('ptitle').textContent=d.code+' \u2014 '+d.date;
   const body=document.getElementById('pbody');
   body.innerHTML=d.detail;
   const imgs=PAGE_IMGS[d.code];
   if(imgs){
     const wrap=document.createElement('div');
     wrap.className='pdf-pages';
-    imgs.forEach(src=>{
-      const im=new Image();
-      im.src=src;
-      im.className='pdf-page';
-      wrap.appendChild(im);
-    });
+    imgs.forEach(src=>{const im=new Image();im.src=src;im.className='pdf-page';wrap.appendChild(im);});
     body.appendChild(wrap);
   }
   document.getElementById('panel').classList.add('open');
   document.getElementById('ov').classList.add('on');
-  document.querySelectorAll('.card').forEach((c,j)=>c.classList.toggle('active',j===i));
+  document.querySelectorAll('.doc-card').forEach((c,j)=>c.classList.toggle('active',j===i));
 }
 function closePanel(){
   document.getElementById('panel').classList.remove('open');
   document.getElementById('ov').classList.remove('on');
-  document.querySelectorAll('.card').forEach(c=>c.classList.remove('active'));
+  document.querySelectorAll('.doc-card').forEach(c=>c.classList.remove('active'));
+}
+function toggleFilter(btn){
+  btn.classList.toggle('active');
+  const cat=btn.dataset.cat;
+  const show=btn.classList.contains('active');
+  document.querySelectorAll('.card[data-cat="'+cat+'"],.month-marker').forEach(el=>{
+    if(el.classList.contains('month-marker')) return;
+    el.style.display=show?'':'none';
+  });
 }
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closePanel();});
-""".replace("PANEL_JSON_PLACEHOLDER", panel_json
-   ).replace("PAGE_IMGS_JSON_PLACEHOLDER", page_imgs_json)
+"""
+    js = js_template.replace("PANEL_JSON", panel_json).replace("PAGE_IMGS_JSON", page_imgs_json)
 
+    # ── Assemble HTML ─────────────────────────────────────────────────────────
     page = (
         "<!DOCTYPE html>\n<html lang=\"nl\">\n<head>\n"
         "<meta charset=\"UTF-8\">\n"
@@ -970,8 +1145,8 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape')closePanel();});
         f"<style>{css}</style>\n"
         "</head>\n<body>\n\n"
         "<div class=\"hdr\">\n"
-        "  <h1>WOO Document Timeline</h1>\n"
-        f"  <p>{n} documenten &mdash; klik op een kaart voor de volledige tekst</p>\n"
+        f"  <div class=\"hdr-top\"><h1>WOO Document Timeline</h1><p>{header_sub}</p></div>\n"
+        f"  {filter_bar}\n"
         "</div>\n\n"
         "<div class=\"tl-outer\">\n"
         "  <div class=\"tl-scroll\">\n"
@@ -995,4 +1170,4 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape')closePanel();});
 
     Path(out_path).write_text(page, encoding="utf-8")
     size_kb = Path(out_path).stat().st_size // 1024
-    print(f"Written: {out_path}  ({size_kb} KB, {n} cards)")
+    print(f"Written: {out_path}  ({size_kb} KB, {n} items)")

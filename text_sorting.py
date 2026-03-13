@@ -98,8 +98,8 @@ def _date_from_email(doc: dict) -> tuple[datetime | None, str]:
 
 
 def _date_from_datum_field(text: str) -> tuple[datetime | None, str]:
-    """Extract the Datum: / Datum | field from the first 600 chars."""
-    m = re.search(r'(?i)\bdatum\b\s*[|\n:]\s*(.{2,50}?)(?:\s*\||\n|$)', text[:600])
+    """Extract the Datum: / Datum | / Datum <space> field from the first 1500 chars."""
+    m = re.search(r'(?i)\bdatum\b[\s|:]+(.{2,50}?)(?:\s*\||\n|$)', text[:1500])
     if m:
         raw = m.group(1).strip()
         dt = _parse_date(raw)
