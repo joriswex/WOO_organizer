@@ -289,10 +289,11 @@ def docs_from_cache(cache_path: Path, pdf_path: Path) -> dict[str, dict]:
 # ── Main pipeline ─────────────────────────────────────────────────────────────
 
 def load_pdf_vlm(
-    pdf_path:  Path,
-    api_key:   str | None = None,
-    max_pages: int | None = None,
+    pdf_path:   Path,
+    api_key:    str | None = None,
+    max_pages:  int | None = None,
     cache_path: Path | None = None,
+    page_range: tuple[int, int] | None = None,
 ) -> dict[str, dict]:
     """
     GPT-4o full-page VLM pipeline. Drop-in replacement for load_pdf().
@@ -327,9 +328,19 @@ def load_pdf_vlm(
     from pdf2image import convert_from_path
     images: list[Image.Image] = convert_from_path(str(pdf_path), dpi=_RENDER_DPI)
 
-    if max_pages is not None:
-        images = images[:max_pages]
+    all_images = images
+    if page_range is not None:
+        pr_start = max(1, page_range[0])
+        pr_end   = min(len(all_images), page_range[1])
+        images = all_images[pr_start - 1:pr_end]
+        page_offset = pr_start - 1  # offset to get real PDF page numbers
+        print(f"[gpt4o] Page range: {pr_start}–{pr_end} of {len(all_images)} total pages.")
+    elif max_pages is not None:
+        images = all_images[:max_pages]
+        page_offset = 0
         print(f"[gpt4o] Test mode — processing first {len(images)} pages.")
+    else:
+        page_offset = 0
 
     total = len(images)
     print(f"[gpt4o] Analysing {total} pages with {OPENAI_MODEL} (detail=high)...")
@@ -359,7 +370,7 @@ def load_pdf_vlm(
             chat_messages = []
 
         page_data.append({
-            "page_num":        i + 1,
+            "page_num":        i + 1 + page_offset,
             "image":           img,
             "text":            text,
             "doc_code":        doc_code,

@@ -648,6 +648,7 @@ def load_pdf(
     ocr_supplement: bool = False,
     semantic_split: bool = False,
     semantic_threshold: float = 0.35,
+    page_range: tuple[int, int] | None = None,
 ) -> dict[str, dict]:
     """
     Extract text from *pdf_path* and group pages by their 4-digit document code.
@@ -727,7 +728,16 @@ def load_pdf(
     page_data: list[dict] = []
 
     with pdfplumber.open(pdf_path) as pdf:
-        for i, page in enumerate(pdf.pages, start=1):
+        total_pages = len(pdf.pages)
+        if page_range is not None:
+            pr_start = max(1, page_range[0])
+            pr_end   = min(total_pages, page_range[1])
+            print(f"[data_import] Page range: {pr_start}–{pr_end} of {total_pages} total pages.")
+            pages_iter = [(idx, pdf.pages[idx - 1]) for idx in range(pr_start, pr_end + 1)]
+        else:
+            pages_iter = list(enumerate(pdf.pages, start=1))
+
+        for i, page in pages_iter:
 
             if searchable:
                 # One 200 DPI render serves both page-number and doc-code detection.
@@ -756,7 +766,7 @@ def load_pdf(
 
             else:
                 # Fully image-based PDF — everything comes from pre-rendered images
-                rendered        = images[i - 1] if images else None
+                rendered        = images[i - 1] if images and i - 1 < len(images) else None
                 within_doc_page = _find_within_doc_page_raster(rendered) if rendered else None
                 detected_code   = _find_doc_code_raster(rendered) if rendered else None
                 text            = _ocr_image(rendered) if rendered else ""
