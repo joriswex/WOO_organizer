@@ -205,7 +205,7 @@ async def _run_pipeline_sse(
     forwards captured stdout lines as SSE progress events, then emits
     a final 'done' event with the serialised result.
     """
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     q: asyncio.Queue[dict | None] = asyncio.Queue()
 
     class _StdoutCapture:
@@ -227,27 +227,33 @@ async def _run_pipeline_sse(
             pass
 
     def _run_in_thread() -> None:
-        with _pipeline_lock:
-            old_stdout = sys.stdout
-            capture = _StdoutCapture()
-            try:
-                sys.stdout = capture
-                if pipeline == "ocr":
-                    from pipeline_ocr import load_pdf
-                    result = load_pdf(pdf_path, page_range=page_range)
-                else:
-                    from pipeline_gpt4o import load_pdf_vlm
-                    result = load_pdf_vlm(pdf_path, api_key=api_key, page_range=page_range)
-                asyncio.run_coroutine_threadsafe(
-                    q.put({"type": "result", "data": result}), loop
-                )
-            except Exception as exc:
-                asyncio.run_coroutine_threadsafe(
-                    q.put({"type": "error", "msg": str(exc)}), loop
-                )
-            finally:
-                sys.stdout = old_stdout
-                asyncio.run_coroutine_threadsafe(q.put(None), loop)
+        if not _pipeline_lock.acquire(blocking=False):
+            asyncio.run_coroutine_threadsafe(
+                q.put({"type": "error", "msg": "Er loopt al een pipeline. Wacht tot deze klaar is of herstart de server."}), loop
+            )
+            asyncio.run_coroutine_threadsafe(q.put(None), loop)
+            return
+        old_stdout = sys.stdout
+        capture = _StdoutCapture()
+        try:
+            sys.stdout = capture
+            if pipeline == "ocr":
+                from pipeline_ocr import load_pdf
+                result = load_pdf(pdf_path, page_range=page_range)
+            else:
+                from pipeline_gpt4o import load_pdf_vlm
+                result = load_pdf_vlm(pdf_path, api_key=api_key, page_range=page_range)
+            asyncio.run_coroutine_threadsafe(
+                q.put({"type": "result", "data": result}), loop
+            )
+        except Exception as exc:
+            asyncio.run_coroutine_threadsafe(
+                q.put({"type": "error", "msg": str(exc)}), loop
+            )
+        finally:
+            sys.stdout = old_stdout
+            _pipeline_lock.release()
+            asyncio.run_coroutine_threadsafe(q.put(None), loop)
 
     thread = threading.Thread(target=_run_in_thread, daemon=True)
     thread.start()
