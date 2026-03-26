@@ -569,15 +569,14 @@
 
   .redact {
     display: inline-block;
-    background: var(--woo-accent);
+    background: #111;
     color: transparent;
-    border-radius: 2px;
-    padding: 0 6px;
+    border-radius: 3px;
+    padding: 2px 8px;
     font-size: 11px;
-    cursor: help;
+    cursor: pointer;
     position: relative;
     vertical-align: middle;
-    opacity: 0.85;
   }
   .redact::after {
     content: attr(data-reason);
@@ -627,6 +626,84 @@
   .timeline-card-title { font-size: 13px; font-weight: 500; color: var(--woo-text-link); line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .timeline-card-meta { font-family: var(--woo-mono); font-size: 10px; color: var(--text-dimmer); margin-top: 6px; }
 
+  /* ── HORIZONTAL TIMELINE ── */
+  .timeline-h-outer { position: relative; padding-bottom: 0; overflow: hidden; }
+  .timeline-h-header { margin-bottom: 16px; }
+  .timeline-h-scroll {
+    display: flex; align-items: flex-start; gap: 10px;
+    overflow-x: auto; overflow-y: visible;
+    padding: 8px 16px 0 4px;
+    scrollbar-width: thin; scrollbar-color: var(--woo-border) transparent;
+    position: relative;
+  }
+  .timeline-h-scroll::-webkit-scrollbar { height: 4px; }
+  .timeline-h-scroll::-webkit-scrollbar-track { background: transparent; }
+  .timeline-h-scroll::-webkit-scrollbar-thumb { background: var(--woo-border); border-radius: 2px; }
+  /* The axis line runs underneath all wrappers */
+  .timeline-h-axis-row {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 0 4px; position: relative; pointer-events: none;
+  }
+  .timeline-h-axis-row::before {
+    content: ''; position: absolute; top: 8px; left: 0; right: 0; height: 2px;
+    background: linear-gradient(90deg, transparent, var(--woo-border) 3%, var(--woo-border) 97%, transparent);
+  }
+  .timeline-h-axis-spacer { width: 260px; flex-shrink: 0; height: 18px; }
+  .timeline-h-wrapper { display: flex; flex-direction: column; align-items: center; width: 260px; flex-shrink: 0; }
+  .timeline-h-card {
+    width: 100%; background: var(--woo-white); border: 1px solid var(--woo-border);
+    border-radius: var(--woo-radius-md); padding: 12px; cursor: pointer;
+    transition: border-color 0.15s, box-shadow 0.15s; box-shadow: var(--woo-shadow-sm);
+    animation: fadeUp 0.25s ease forwards;
+  }
+  .timeline-h-card:hover { border-color: var(--border-bright); box-shadow: var(--woo-shadow-md); }
+  .timeline-h-card.email-card { border-left: 3px solid #2563a8; }
+  .timeline-h-card.doc-card  { border-left: 3px solid var(--woo-border); }
+  .timeline-h-card-type { font-family: var(--woo-mono); font-size: 9px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-dimmer); margin-bottom: 5px; }
+  .timeline-h-card-subject { font-size: 12px; font-weight: 600; color: var(--woo-dark); line-height: 1.35; margin-bottom: 4px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .timeline-h-card-sender { font-family: var(--woo-mono); font-size: 10px; color: var(--text-dimmer); margin-bottom: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .timeline-h-card-preview { font-size: 11px; color: var(--woo-text-muted); line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+  .timeline-h-connector { display: flex; flex-direction: column; align-items: center; height: 20px; }
+  .timeline-h-connector-line { width: 1px; flex: 1; background: var(--woo-border); }
+  .timeline-h-connector-dot { width: 8px; height: 8px; border-radius: 50%; border: 2px solid var(--woo-bg); flex-shrink: 0; }
+  .dot-color-email  { background: #2563a8; }
+  .dot-color-nota   { background: #2a7d52; }
+  .dot-color-brief  { background: #b07a10; }
+  .dot-color-other  { background: var(--woo-border); }
+  .timeline-h-datestamp { font-family: var(--woo-mono); font-size: 9px; color: var(--text-dimmer); margin-top: 6px; text-align: center; white-space: nowrap; }
+  .timeline-h-card-description { font-size: 10px; color: var(--text-dimmer); font-style: italic; margin-top: 3px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .timeline-h-card-snippet { font-size: 10px; color: var(--woo-text-muted); line-height: 1.4; margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--woo-border); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+
+  /* ── ATTACHMENT TAGS ── */
+  .attachment-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 2px; }
+  .attachment-tag {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-family: var(--woo-mono); font-size: 10px;
+    background: #f0f5f6; border: 1px solid var(--woo-border);
+    border-radius: 4px; padding: 2px 7px; color: var(--text-dim);
+    white-space: nowrap; max-width: 200px; overflow: hidden; text-overflow: ellipsis;
+  }
+  .attachment-tag.linked {
+    background: #edf4ff; border-color: #b3cfef; color: #2563a8; cursor: pointer;
+  }
+  .attachment-tag.linked:hover { background: #ddeaff; }
+  .attachment-tag-icon { font-size: 9px; flex-shrink: 0; }
+
+  /* ── EMAIL CLEANUP BUTTON ── */
+  .email-cleanup-btn {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-family: var(--woo-mono); font-size: 10px; font-weight: 600;
+    color: var(--woo-dark); background: var(--woo-bg);
+    border: 1px solid var(--woo-border); border-radius: 4px;
+    padding: 4px 10px; cursor: pointer; transition: all 0.15s;
+    margin-top: 10px;
+  }
+  .email-cleanup-btn:hover { border-color: var(--border-bright); background: #fff; }
+  .email-cleanup-btn:disabled { opacity: 0.5; cursor: default; }
+  .email-cleanup-btn.active { color: #2563a8; border-color: #b3cfef; background: #edf4ff; }
+  .email-cleanup-spinner { display: inline-block; animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
   /* ── RIGHT: ANALYSIS PANEL ── */
   .panel-analysis { width: 256px; flex-shrink: 0; border-left: 1px solid var(--woo-border); display: flex; flex-direction: column; overflow: hidden; background: var(--woo-white); }
   .analysis-section { border-bottom: 1px solid var(--woo-border); overflow: hidden; }
@@ -645,6 +722,11 @@
   .stat-value { font-family: var(--woo-font); font-size: 20px; font-weight: 700; color: var(--woo-dark); }
   .redaction-bar { height: 6px; background: #f0f5f6; border-radius: 3px; overflow: hidden; margin-top: 8px; border: 1px solid var(--woo-border); }
   .redaction-fill { height: 100%; background: linear-gradient(90deg, var(--woo-accent), #c43310); border-radius: 3px; transition: width 0.5s ease; }
+  .redaction-ground-row { display:flex; align-items:center; gap:6px; }
+  .redaction-ground-label { font-family:var(--woo-mono); font-size:9px; color:var(--text-dimmer); width:44px; flex-shrink:0; }
+  .redaction-ground-bar { flex:1; height:4px; background:#f0f5f6; border-radius:2px; overflow:hidden; border:1px solid var(--woo-border); }
+  .redaction-ground-fill { height:100%; background:linear-gradient(90deg,var(--woo-accent),#c43310); border-radius:2px; transition:width 0.4s ease; }
+  .redaction-ground-count { font-family:var(--woo-mono); font-size:9px; color:var(--woo-secondary-accent); width:24px; text-align:right; flex-shrink:0; }
   .source-link { display: block; font-family: var(--woo-mono); font-size: 10px; color: var(--woo-text-link); text-decoration: none; padding: 6px 0; border-bottom: 1px solid var(--woo-border); transition: color 0.15s; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .source-link:last-child { border-bottom: none; }
   .source-link:hover { color: var(--woo-text-link-hover); }
@@ -909,20 +991,18 @@
     font-weight: 500;
     color: var(--woo-text);
     line-height: 1.4;
-    display: -webkit-box;
-    -webkit-line-clamp: 3;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
     margin-top: 2px;
+    word-break: break-word;
   }
   .doc-nav-pages {
     font-family: var(--woo-mono);
     font-size: 10px;
     color: var(--text-dimmer);
     margin-top: 4px;
-    white-space: nowrap;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
     overflow: hidden;
-    text-overflow: ellipsis;
   }
 
   /* ── iPHONE EMAIL STYLE ── */
@@ -1107,10 +1187,10 @@
   /* ── SMART REDACTION ── */
   .redact {
     display: inline-block;
-    background: var(--woo-dark);
+    background: #111;
     color: transparent;
     border-radius: 3px;
-    padding: 1px 8px;
+    padding: 3px 10px;
     font-size: 11px;
     cursor: pointer;
     position: relative;
@@ -1118,22 +1198,27 @@
     user-select: none;
     transition: background 0.15s;
     margin: 0 1px;
+    overflow: hidden;      /* keep label inside the black bar */
+    min-width: 48px;       /* ensure bar is always wide enough to hint the code */
   }
   .redact::after { display: none; } /* disable old tooltip */
 
   /* Article label shown on the black bar */
   .redact-label {
-    display: inline-block;
+    display: block;
     position: absolute;
-    left: 50%;
+    left: 0; right: 0;
     top: 50%;
-    transform: translate(-50%, -50%);
+    transform: translateY(-50%);
     font-family: var(--woo-mono);
     font-size: 8px;
     font-weight: 700;
-    color: rgba(255,255,255,0.7);
-    letter-spacing: 0.05em;
+    letter-spacing: 0.03em;
     white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-align: center;
+    color: rgba(255,255,255,0.95);
     pointer-events: none;
   }
 
@@ -1567,6 +1652,28 @@
   .pipeline-pdf-title { flex: 1; color: var(--woo-dark); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .pipeline-pdf-pages { font-family: var(--woo-mono); font-size: 10px; color: var(--text-dimmer); white-space: nowrap; }
   .pipeline-pdf-loading { display: flex; align-items: center; gap: 7px; font-family: var(--woo-mono); font-size: 11px; color: var(--text-dimmer); padding: 4px 0; }
+  /* ── Inventarislijst section in pipeline selector ── */
+  .pipeline-inv-section { border: 1px solid var(--woo-border); border-radius: var(--woo-radius-md); overflow: hidden; margin-top: 4px; }
+  .pipeline-inv-header { display: flex; align-items: center; gap: 10px; padding: 11px 13px; cursor: pointer; background: var(--woo-bg); transition: background 0.15s; }
+  .pipeline-inv-header:hover { background: #edf6f7; }
+  .pipeline-inv-checkbox { width: 14px; height: 14px; border: 1.5px solid var(--woo-border); border-radius: 3px; flex-shrink: 0; transition: all 0.15s; }
+  .pipeline-inv-checkbox.checked { background: var(--woo-dark); border-color: var(--woo-dark); background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M2 5l2.5 2.5L8 3' stroke='white' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E"); }
+  .pipeline-inv-body { padding: 12px 13px; border-top: 1px solid var(--woo-border); background: var(--woo-white); }
+  .pipeline-inv-mode-row { display: flex; gap: 6px; margin-bottom: 10px; }
+  .pipeline-inv-mode-btn { flex: 1; padding: 6px 8px; font-family: var(--woo-mono); font-size: 10px; text-align: center; border: 1.5px solid var(--woo-border); border-radius: var(--woo-radius-sm); cursor: pointer; color: var(--text-dimmer); transition: all 0.15s; }
+  .pipeline-inv-mode-btn.selected { border-color: var(--woo-dark); color: var(--woo-dark); font-weight: 600; background: rgba(56,5,4,0.04); }
+  /* ── Inventarislijst results in analysis panel ── */
+  .inv-item { display: flex; align-items: flex-start; gap: 7px; padding: 6px 0; border-bottom: 1px solid var(--woo-border); }
+  .inv-item:last-child { border-bottom: none; }
+  .inv-code { font-family: var(--woo-mono); font-size: 9px; font-weight: 700; background: var(--woo-bg); border: 1px solid var(--woo-border); border-radius: 3px; padding: 1px 5px; flex-shrink: 0; color: var(--woo-dark); }
+  .inv-title { font-size: 11px; color: var(--woo-text); line-height: 1.4; flex: 1; }
+  .inv-badge { font-family: var(--woo-mono); font-size: 8px; padding: 1px 5px; border-radius: 3px; flex-shrink: 0; margin-top: 1px; }
+  .inv-badge-found { background: #d4f0d4; color: #1a5c1a; }
+  .inv-badge-missing { background: #fde8e8; color: var(--woo-accent); }
+  .inv-badge-open { background: #d4f0d4; color: #1a5c1a; }
+  .inv-badge-partial { background: #fff3cd; color: #7a5c00; }
+  .inv-badge-closed { background: #fde8e8; color: var(--woo-accent); }
+
   .pipeline-start-btn {
     width: 100%;
     padding: 13px;
@@ -1867,6 +1974,17 @@
       <div class="panel-title">Analyse</div>
     </div>
 
+    <!-- Export / Import row -->
+    <div style="padding:8px 14px;border-bottom:1px solid var(--woo-border);display:flex;gap:6px;flex-shrink:0">
+      <button onclick="_exportAnalysis()" title="Download analyse als JSON"
+              style="flex:1;font-family:var(--woo-mono);font-size:10px;padding:5px 6px;border:1px solid var(--woo-border);border-radius:4px;background:var(--woo-bg);cursor:pointer;color:var(--woo-text)">↓ Export</button>
+      <label title="Importeer eerder geëxporteerde analyse"
+             style="flex:1;font-family:var(--woo-mono);font-size:10px;padding:5px 6px;border:1px solid var(--woo-border);border-radius:4px;background:var(--woo-bg);cursor:pointer;color:var(--woo-text);text-align:center;display:flex;align-items:center;justify-content:center">
+        ↑ Import
+        <input type="file" accept=".json" style="display:none" onchange="_importAnalysis(this)">
+      </label>
+    </div>
+
     <div class="analysis-section">
       <div class="analysis-section-header" onclick="toggleSection(this)">
         <div class="analysis-section-title">Statistieken</div>
@@ -1882,7 +2000,18 @@
             <div class="redaction-fill" id="redactionFill" style="width:0%"></div>
           </div>
           <span class="stat-label" id="redactionPct" style="color:var(--woo-secondary-accent)">—</span>
+          <div id="redactionGrounds" style="width:100%;display:none;flex-direction:column;gap:5px;margin-top:2px"></div>
         </div>
+      </div>
+    </div>
+
+    <div class="analysis-section" id="invAnalysisSection" style="display:none">
+      <div class="analysis-section-header" onclick="toggleSection(this)">
+        <div class="analysis-section-title">Inventarislijst</div>
+        <span style="color:var(--text-dimmer);font-size:12px">▾</span>
+      </div>
+      <div class="analysis-section-body" id="invResultSection">
+        <span style="font-family:var(--woo-mono);font-size:11px;color:var(--text-dimmer)">Laden…</span>
       </div>
     </div>
 
@@ -1961,6 +2090,7 @@ const state = {
   currentDossier: null,
   emails: [],
   timelineItems: [],
+  pdfSource: null,
   pdfUrls: [],
 };
 
@@ -2818,6 +2948,8 @@ function buildDossierView(pid, data) {
   // Sidebar analysis
   updateAnalysis(data);
   renderDocNavPanel();
+  // Re-render inventarislijst validation now that timeline items are available
+  if (state.inventarislijst?.length) _renderInventarislijst();
 
   const defaultTab = state.emails.length > 0 ? 'emails' : 'timeline';
   setViewTab(defaultTab);
@@ -2988,8 +3120,156 @@ function makeRedactHtml(article) {
     + `</span>`;
 }
 
+const _HEADER_LINE_RE = /^[ \t]*(?:van|aan|from|to|cc|bcc|onderwerp|subject|verzonden|sent|received|datum|date)\s*:/i;
+
+function extractAttachments(emailText) {
+  const lines = (emailText || '').split('\n').slice(0, 30);
+  for (const line of lines) {
+    const m = line.match(/^[ \t]*(?:bijlagen?|attachments?|bijgevoegde?\s+bestanden?)\s*:\s*(.+)/i);
+    if (m) {
+      return [...new Set(m[1].split(/[;,|]/).map(f => f.trim()).filter(f => f.length > 1))];
+    }
+  }
+  return [];
+}
+
+function findDocForAttachment(filename) {
+  const name = filename.toLowerCase().replace(/\.[^.]+$/, '').replace(/[_\-]/g, ' ').trim();
+  if (name.length < 3) return null;
+  return state.timelineItems.find(item => {
+    const title = (item.title || '').toLowerCase();
+    return title.includes(name) || name.includes(title.slice(0, name.length));
+  }) || null;
+}
+
+function renderAttachmentTags(emailText, preExtracted) {
+  // Prefer the structured array from the pipeline; fall back to text-based extraction.
+  const files = (preExtracted && preExtracted.length) ? preExtracted : extractAttachments(emailText);
+  if (!files.length) return '';
+  const tags = files.map(f => {
+    const doc = findDocForAttachment(f);
+    if (doc) {
+      return `<span class="attachment-tag linked" onclick="openItemPreview('${escHtml(doc.id)}')" title="Open ${escHtml(doc.title || doc.id)}">
+        <span class="attachment-tag-icon">📎</span>${escHtml(f)}
+      </span>`;
+    }
+    return `<span class="attachment-tag"><span class="attachment-tag-icon">📎</span>${escHtml(f)}</span>`;
+  }).join('');
+  return `<tr>
+    <td style="padding:4px 10px 2px 0;font-weight:600;color:#888;white-space:nowrap;vertical-align:top">Bijlagen</td>
+    <td style="padding:4px 0"><div class="attachment-tags">${tags}</div></td>
+  </tr>`;
+}
+
+// ── EMAIL CLEANUP (GPT-4o) ───────────────────────────────────────────────────
+
+// Tracks per-bodyId whether we're showing the cleaned or original version
+const _cleanupState = {}; // bodyId → { cleaned: string, showing: 'original' | 'cleaned' }
+
+async function toggleEmailCleanup(bodyId, rawText) {
+  const btn    = document.getElementById('cleanupBtn-' + bodyId);
+  const bodyEl = document.getElementById(bodyId);
+  if (!btn || !bodyEl) return;
+
+  const st = _cleanupState[bodyId];
+
+  // If already cleaned, toggle between original and cleaned
+  if (st) {
+    if (st.showing === 'cleaned') {
+      bodyEl.innerHTML = formatEmailBody(rawText);
+      st.showing = 'original';
+      btn.classList.remove('active');
+      btn.innerHTML = '<span>✦</span> Opschonen';
+    } else {
+      bodyEl.innerHTML = formatEmailBody(st.cleaned);
+      st.showing = 'cleaned';
+      btn.classList.add('active');
+      btn.innerHTML = '<span>↺</span> Origineel';
+    }
+    return;
+  }
+
+  // First time: call GPT-4o
+  btn.disabled = true;
+  btn.innerHTML = '<span class="email-cleanup-spinner">◌</span> Bezig…';
+
+  try {
+    const cleaned = await cleanEmailBody(rawText);
+    _cleanupState[bodyId] = { cleaned, showing: 'cleaned' };
+    bodyEl.innerHTML = formatEmailBody(cleaned);
+    btn.disabled = false;
+    btn.classList.add('active');
+    btn.innerHTML = '<span>↺</span> Origineel';
+  } catch (err) {
+    btn.disabled = false;
+    btn.innerHTML = '<span>✦</span> Opschonen';
+    alert('Opschonen mislukt: ' + err.message);
+  }
+}
+
+async function cleanEmailBody(rawText) {
+  const apiKey = OPENAI_API_KEY || '';
+  if (!apiKey) throw new Error('Geen OpenAI API-sleutel ingesteld.');
+
+  const systemPrompt = `Je bent een assistent die e-mails opschoont die via OCR uit PDF-bestanden zijn geëxtraheerd.
+
+TAAK: Geef ALLEEN de opgeschoonde e-mailtekst terug. Geen uitleg, geen commentaar.
+
+WAT JE VERWIJDERT (alleen opmaakruis, nooit inhoud):
+- Geciteerde eerdere berichten in de mailketen (de herhaalde "Van:/Aan:/Onderwerp:" blokken met bijbehorende tekst die al zijn geciteerd)
+- Standaard e-mailhandtekeningen en disclaimers ("Dit bericht is vertrouwelijk", "Denk aan het milieu", automatische voetteksten)
+- Overbodige lege regels (meer dan twee opeenvolgend)
+- Duidelijke OCR-artefacten: gebroken woorden, losse leestekens, willekeurige spaties in het midden van woorden
+
+WAT JE BEHOUDT (alles inhoudelijks):
+- Alle namen, functies, besluiten, verzoeken, data, bedragen, locaties
+- Alle beleidsinhoud, adviezen, standpunten en argumenten
+- Alle [REDACTED: X] en [REDACTED] markeringen — exact zo laten staan
+- De toon en formulering van de schrijver
+- Bijlagen-verwijzingen
+
+Geef de opgeschoonde tekst terug in de taal van het origineel (meestal Nederlands).`;
+
+  const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+    body: JSON.stringify({
+      model: 'gpt-4o',
+      max_tokens: 2048,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user',   content: rawText.slice(0, 6000) }, // cap at ~6k chars
+      ],
+    }),
+  });
+
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    throw new Error(err.error?.message || `HTTP ${resp.status}`);
+  }
+
+  const data = await resp.json();
+  return (data.choices?.[0]?.message?.content || '').trim();
+}
+
+function stripEmailHeaders(text) {
+  // Remove the leading header block (Van:/Aan:/etc. lines + blank lines) so
+  // the body doesn't duplicate what is already shown in the header table.
+  const lines = text.split('\n');
+  let i = 0;
+  let sawHeader = false;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (_HEADER_LINE_RE.test(line)) { sawHeader = true; i++; continue; }
+    if (sawHeader && line.trim() === '') { i++; continue; } // blank after headers
+    break;
+  }
+  return sawHeader ? lines.slice(i).join('\n').trim() : text.trim();
+}
+
 function formatEmailBody(text) {
-  let html = escHtml(text);
+  const stripped = stripEmailHeaders(text);
+  let html = escHtml(stripped);
   // Apply redaction patterns
   for (const p of REDACT_PATTERNS) {
     html = html.replace(p.re, () => makeRedactHtml(p.article));
@@ -3285,7 +3565,7 @@ function renderDocNavPanel() {
   const list = document.getElementById('docNavList');
   
   list.innerHTML = items.map((item, idx) => `
-    <div class="doc-nav-item ${idx === 0 ? 'active' : ''}" onclick="docNavSelect(${idx}, this)">
+    <div class="doc-nav-item ${idx === 0 ? 'active' : ''}" onclick="docNavSelectById('${escHtml(item.id)}')">
       <div class="doc-nav-info">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:3px">
           <div class="doc-nav-type">${escHtml(item.type || 'Document')}</div>
@@ -3323,6 +3603,102 @@ function docNavSelect(idx, el) {
       if (entries[tIdx]) entries[tIdx].scrollIntoView({ behavior: 'smooth', block: 'center' });
     }, 100);
   }
+}
+
+function docNavSelectById(id) {
+  // Highlight the nav item
+  const idx = state.timelineItems.findIndex(t => t.id === id);
+  if (idx >= 0) {
+    document.querySelectorAll('.doc-nav-item').forEach((el, i) => el.classList.toggle('active', i === idx));
+  }
+  openItemPreview(id);
+}
+
+// Open email detail or doc text preview — used by timeline cards, doc nav, and alle-docs tab
+function openItemPreview(id) {
+  const item = state.timelineItems.find(t => t.id === id);
+  if (!item) return;
+  if (item.type === 'E-mail') {
+    openIphoneMailById(id); // handles prefix matching and sorted list
+  } else {
+    openDocTextPreview(item);
+  }
+}
+
+function openDocTextPreview(item) {
+  const container  = document.getElementById('viewerContent');
+  const dateDisp   = item.date ? formatDisplayDate(item.date) : '—';
+  const currentTab = state.viewTab || 'timeline';
+  const backLabel  = currentTab === 'docs' ? '‹ Alle docs' : '‹ Tijdlijn';
+  const backFn     = currentTab === 'docs' ? `setViewTab('docs')` : `setViewTab('timeline')`;
+
+  // Resolve PDF URL — three sources in priority order:
+  // 1. item.pdfUrl  (search result documents from WOO API)
+  // 2. state.pdfSource + item.pdf_page_start  (pipeline-analysed documents)
+  // 3. nothing → show metadata card only
+  let pdfUrl  = null;
+  let pdfPage = null;
+
+  if (item.pdfUrl) {
+    pdfUrl  = `/proxy?url=${encodeURIComponent(item.pdfUrl)}`;
+    pdfPage = 1;
+  } else if (item.pdf_page_start && state.pdfSource) {
+    const src = state.pdfSource;
+    if (src.type === 'url') {
+      pdfUrl  = `/proxy?url=${encodeURIComponent(src.url)}`;
+      pdfPage = item.pdf_page_start;
+    } else if (src.type === 'server' && item.pdf_page_end) {
+      pdfUrl  = `/api/session_pdf_range?start=${item.pdf_page_start}&end=${item.pdf_page_end}`;
+      pdfPage = 1;
+    } else {
+      pdfUrl  = src.blobUrl || null;
+      pdfPage = item.pdf_page_start;
+    }
+  }
+
+  const descHtml = item.description
+    ? `<div style="font-size:12px;color:var(--text-dimmer);margin-top:4px;font-style:italic">${escHtml(item.description)}</div>`
+    : '';
+
+  const metaTable = `
+    <table style="border-collapse:collapse;width:100%;font-size:12px;color:#444;margin-top:10px">
+      <tr><td style="padding:3px 10px 3px 0;font-weight:600;color:#888;white-space:nowrap">Type</td><td style="padding:3px 0;color:#1a1a1a">${escHtml(item.type || '—')}</td></tr>
+      ${item.sender ? `<tr><td style="padding:3px 10px 3px 0;font-weight:600;color:#888;white-space:nowrap">Afzender</td><td style="padding:3px 0;color:#1a1a1a">${escHtml(item.sender)}</td></tr>` : ''}
+      <tr><td style="padding:3px 10px 3px 0;font-weight:600;color:#888;white-space:nowrap">Datum</td><td style="padding:3px 0;color:#1a1a1a">${escHtml(dateDisp)}</td></tr>
+      <tr><td style="padding:3px 10px 3px 0;font-weight:600;color:#888;white-space:nowrap">Ref</td><td style="padding:3px 0;font-family:var(--woo-mono);font-size:10px;color:#888">${escHtml(item.id || '—')}</td></tr>
+    </table>`;
+
+  // Body content
+  let bodyContent;
+  if (pdfUrl) {
+    // PDF embed — jumps to the right page, user can scroll through the document
+    bodyContent = `
+      <div style="flex:1;min-height:500px;border-top:1px solid var(--woo-border);margin-top:12px">
+        <iframe src="${escHtml(pdfUrl)}#page=${pdfPage}"
+                style="width:100%;height:100%;min-height:500px;border:none;display:block"></iframe>
+      </div>`;
+  } else {
+    // No PDF available — show a short safe text excerpt (plain, no regex processing)
+    const excerpt = (item.preview || '').slice(0, 300).replace(/\[REDACTED[^\]]*\]/g, '██');
+    bodyContent = excerpt
+      ? `<div class="iphone-detail-body" style="font-size:12px;color:var(--woo-text-muted)">${escHtml(excerpt)}${item.preview?.length > 300 ? '…' : ''}</div>`
+      : `<div class="iphone-detail-body"><em style="color:var(--text-dimmer)">Geen PDF-preview beschikbaar voor dit document.</em></div>`;
+  }
+
+  container.innerHTML = `
+    <div class="iphone-detail-back" onclick="${backFn}">${escHtml(backLabel)}</div>
+    <div class="iphone-mail-detail" style="display:flex;flex-direction:column;min-height:100%">
+      <div class="iphone-detail-header" style="background:#fff;flex-shrink:0">
+        <div style="color:#1a1a1a;font-size:16px;font-weight:700;line-height:1.35;margin-bottom:2px">
+          ${escHtml(item.title || 'Ongetiteld')}
+        </div>
+        ${descHtml}
+        ${metaTable}
+      </div>
+      ${bodyContent}
+    </div>
+  `;
+  container.scrollTop = 0;
 }
 
 // ── iPHONE EMAIL VIEW ──
@@ -3526,6 +3902,20 @@ function renderIphoneRow(email, idx) {
   `;
 }
 
+function openIphoneMailById(id) {
+  // Ensure sorted list is populated
+  if (!_sortedEmails.length && state.emails.length) {
+    _sortedEmails = [...state.emails].sort((a, b) => {
+      const da = normalizeDateStr(a.date || ''), db = normalizeDateStr(b.date || '');
+      return da < db ? -1 : da > db ? 1 : 0;
+    });
+  }
+  const emails = _sortedEmails.length ? _sortedEmails : state.emails;
+  // Match exact id ('0003.1') OR doc-code prefix ('0003' → first email '0003.1')
+  const idx = emails.findIndex(e => e.id === id || e.id.startsWith(id + '.'));
+  if (idx >= 0) openIphoneMail(idx);
+}
+
 function openIphoneMail(idx) {
   const emails = _sortedEmails.length ? _sortedEmails : state.emails;
   const email = emails[idx];
@@ -3533,9 +3923,10 @@ function openIphoneMail(idx) {
   
   const container = document.getElementById('viewerContent');
   const bodyHtml = formatEmailBody(email.text || '');
-  const initials = (email.sender || 'X').split(' ').map(w => w[0]).slice(0,2).join('').toUpperCase();
-  
   const formattedDate = formatDisplayDate(email.date);
+  const bodyId = 'email-body-' + (email.id || 'x').replace(/\./g, '-');
+  const hasApiKey = !!(OPENAI_API_KEY || '').trim();
+
   container.innerHTML = `
     <div class="iphone-detail-back" onclick="renderEmailView(document.getElementById('viewerContent'))">
       ‹ Alle e-mails
@@ -3549,17 +3940,24 @@ function openIphoneMail(idx) {
           ${email.cc ? `<tr><td style="padding:2px 10px 2px 0;font-weight:600;color:#888;white-space:nowrap;vertical-align:top">CC</td><td style="padding:2px 0;color:#1a1a1a">${escHtml(email.cc)}</td></tr>` : ''}
           <tr><td style="padding:2px 10px 2px 0;font-weight:600;color:#888;white-space:nowrap">Datum</td><td style="padding:2px 0;color:#1a1a1a">${escHtml(formattedDate)}</td></tr>
           <tr><td style="padding:2px 10px 2px 0;font-weight:600;color:#888;white-space:nowrap">Ref</td><td style="padding:2px 0;font-family:var(--woo-mono);font-size:10px;color:#888">${escHtml(email.id || '—')}</td></tr>
+          ${renderAttachmentTags(email.text || '', email.attachments)}
         </table>
+        ${hasApiKey ? `<button class="email-cleanup-btn" id="cleanupBtn-${bodyId}"
+            onclick="toggleEmailCleanup('${bodyId}', ${JSON.stringify(email.text || '').replace(/'/g, "\\'")})"
+            title="Verwijder geciteerde tekst en opmaakruis, behoudt alle inhoud">
+          <span>✦</span> Opschonen
+        </button>` : ''}
       </div>
-      <div class="iphone-detail-body">${bodyHtml}</div>
+      <div class="iphone-detail-body" id="${bodyId}">${bodyHtml}</div>
     </div>
   `;
   
   // Scroll to top
   container.scrollTop = 0;
   
-  // Highlight this email in doc nav
-  const tIdx = state.timelineItems.findIndex(t => t.id === email.id);
+  // Highlight this email in doc nav (email.id is '0003.1', timeline item id is '0003')
+  const docCode = (email.id || '').split('.')[0];
+  const tIdx = state.timelineItems.findIndex(t => t.id === docCode || t.id === email.id);
   if (tIdx >= 0) {
     document.querySelectorAll('.doc-nav-item').forEach((el,i) => {
       el.classList.toggle('active', i === tIdx);
@@ -3572,50 +3970,127 @@ function toggleEmailBody(id) {
   if (body) body.classList.toggle('open');
 }
 
+function extractTimeStr(dateStr) {
+  if (!dateStr) return null;
+  const m = (dateStr || '').match(/(\d{1,2}):(\d{2})(?::\d{2})?/);
+  return m ? `${m[1].padStart(2,'0')}:${m[2]}` : null;
+}
+
+function _dotColor(type) {
+  const t = (type || '').toLowerCase();
+  if (t.includes('e-mail') || t.includes('email')) return 'dot-color-email';
+  if (t.includes('nota') || t.includes('memo'))    return 'dot-color-nota';
+  if (t.includes('brief') || t.includes('letter')) return 'dot-color-brief';
+  return 'dot-color-other';
+}
+
 function renderTimelineView(container) {
-  const items = state.timelineItems;
-  if (!items || !items.length) {
+  const emails = state.emails || [];
+  const items  = state.timelineItems || [];
+  if (!items.length && !emails.length) {
     container.innerHTML = renderNoDataState('Tijdlijn');
     return;
   }
 
-  // Group by year
-  const byYear = {};
-  items.forEach(item => {
-    const year = item.date ? item.date.slice(0,4) : 'Ongedateerd';
-    if (!byYear[year]) byYear[year] = [];
-    byYear[year].push(item);
-  });
+  // Build unified sorted list
+  // Email IDs are '0003.1' but timeline item IDs are '0003' — match on prefix
+  const emailDocSet = new Set(emails.map(e => e.id.split('.')[0]));
+  const allCards = [];
+
+  for (const em of emails) {
+    const iso  = normalizeDateStr(em.date || '');
+    const time = extractTimeStr(em.date || '');
+    allCards.push({ kind: 'email', id: em.id, sortKey: iso + (time || '00:00'), iso, time, data: em });
+  }
+  for (const it of items) {
+    if (it.type === 'E-mail' && emailDocSet.has(it.id)) continue; // already via emails
+    allCards.push({ kind: 'doc', id: it.id, sortKey: (it.date || '') + '00:00', iso: it.date || '', time: null, data: it });
+  }
+  allCards.sort((a, b) => a.sortKey < b.sortKey ? -1 : a.sortKey > b.sortKey ? 1 : 0);
+
+  const cardHtml  = allCards.map((c, i) => _renderHCard(c, i)).join('');
+  const spacers   = allCards.map(() => `<div class="timeline-h-axis-spacer"></div>`).join('');
+  const dossier   = state.activeResult;
 
   container.innerHTML = `
-    <div class="doc-meta-header" style="margin-bottom:24px">
-      <div class="doc-meta-type">Chronologische tijdlijn</div>
-      <div class="doc-meta-title" style="font-size:16px">${escHtml(state.activeResult?.title || 'Dossier')}</div>
+    <div class="timeline-h-outer">
+      <div class="doc-meta-header timeline-h-header">
+        <div class="doc-meta-type">Chronologische tijdlijn</div>
+        <div class="doc-meta-title" style="font-size:15px">${escHtml(dossier?.title || 'Dossier')}</div>
+        <div style="font-family:var(--woo-mono);font-size:10px;color:var(--text-dimmer);margin-top:4px">${allCards.length} document${allCards.length !== 1 ? 'en' : ''} — scroll horizontaal</div>
+      </div>
+      <div class="timeline-h-scroll">${cardHtml}</div>
+      <div class="timeline-h-axis-row">${spacers}</div>
     </div>
-    <div class="timeline-view">
-      ${Object.entries(byYear).sort().map(([year, yearItems]) => `
-        <div class="timeline-year">${escHtml(year)}</div>
-        <div class="timeline-track">
-          ${yearItems.map((item, i) => renderTimelineEntry(item, i)).join('')}
-        </div>
-      `).join('')}
+  `;
+}
+
+function _renderHCard(c, idx) {
+  const delay = Math.min(idx * 30, 400);
+  if (c.kind === 'email') return _renderEmailHCard(c, idx, delay);
+  return _renderDocHCard(c, idx, delay);
+}
+
+function _renderEmailHCard(c, idx, delay) {
+  const em      = c.data;
+  const preview = (em.text || '').replace(/\[REDACTED[^\]]*\]/g, '██').replace(/\n+/g, ' ').trim().slice(0, 120);
+  const dateDisp = c.iso ? formatDisplayDate(c.iso) : '—';
+  const stamp   = c.time ? `${dateDisp} · ${c.time}` : dateDisp;
+  return `
+    <div class="timeline-h-wrapper">
+      <div class="timeline-h-card email-card" style="animation-delay:${delay}ms" onclick="openIphoneMailById('${escHtml(em.id)}')">
+        <div class="timeline-h-card-type">E-mail</div>
+        <div class="timeline-h-card-subject">${escHtml(em.subject || '(geen onderwerp)')}</div>
+        <div class="timeline-h-card-sender">${escHtml((em.sender || '').split('(')[0].trim() || '—')}</div>
+        <div class="timeline-h-card-preview">${escHtml(preview)}</div>
+      </div>
+      <div class="timeline-h-connector">
+        <div class="timeline-h-connector-line"></div>
+        <div class="timeline-h-connector-dot dot-color-email"></div>
+      </div>
+      <div class="timeline-h-datestamp">${escHtml(stamp)}</div>
+    </div>
+  `;
+}
+
+function _renderDocHCard(c, idx, delay) {
+  const it      = c.data;
+  const dateDisp = c.iso ? formatDisplayDate(c.iso) : '—';
+  const desc    = it.description && it.description !== it.title ? it.description : '';
+  const snippet = (it.preview || '').replace(/\[REDACTED[^\]]*\]/g, '██').replace(/\n+/g, ' ').trim().slice(0, 150);
+  return `
+    <div class="timeline-h-wrapper">
+      <div class="timeline-h-card doc-card" style="animation-delay:${delay}ms" onclick="openItemPreview('${escHtml(it.id)}')">
+        <div class="timeline-h-card-type">${escHtml(it.type || 'Document')}</div>
+        <div class="timeline-h-card-subject">${escHtml(it.title || 'Ongetiteld')}</div>
+        ${it.sender ? `<div class="timeline-h-card-sender">${escHtml(it.sender.split('(')[0].trim())}</div>` : ''}
+        ${desc ? `<div class="timeline-h-card-description">${escHtml(desc)}</div>` : ''}
+        ${snippet ? `<div class="timeline-h-card-snippet">${escHtml(snippet)}</div>` : ''}
+      </div>
+      <div class="timeline-h-connector">
+        <div class="timeline-h-connector-line"></div>
+        <div class="timeline-h-connector-dot ${_dotColor(it.type)}"></div>
+      </div>
+      <div class="timeline-h-datestamp">
+        ${escHtml(dateDisp)}
+        <button onclick="event.stopPropagation();_editDocDate('${escHtml(it.id)}')"
+                title="Datum aanpassen"
+                style="background:none;border:none;cursor:pointer;padding:0 0 0 4px;font-size:10px;color:var(--text-dimmer);vertical-align:middle;line-height:1">✎</button>
+      </div>
     </div>
   `;
 }
 
 function renderTimelineEntry(item, idx) {
-  const dotClasses = ['dot-email','dot-nota','dot-brief','dot-besluit'];
-  const finalDot = dotClasses.find(c => c.includes((item.type||'').toLowerCase().slice(0,4))) || 'dot-other';
-
+  // kept for any legacy callers
+  const finalDot = _dotColor(item.type).replace('dot-color-','dot-');
   return `
     <div class="timeline-entry" style="animation-delay:${idx * 50}ms">
-      <div class="timeline-date-col">
-        <div class="timeline-dot ${finalDot}"></div>
-      </div>
+      <div class="timeline-date-col"><div class="timeline-dot ${finalDot}"></div></div>
       <div class="timeline-card">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:4px">
           <div class="timeline-card-type">${escHtml(item.type || 'Document')}</div>
-          ${item.date ? `<div style="font-family:var(--mono);font-size:10px;color:var(--accent2);flex-shrink:0;font-weight:600">${escHtml(item.date)}</div>` : ''}
+          ${item.date ? `<div style="font-family:var(--woo-mono);font-size:10px;color:var(--accent2);flex-shrink:0;font-weight:600">${escHtml(item.date)}</div>` : ''}
         </div>
         <div class="timeline-card-title">${escHtml(item.title || 'Ongetiteld')}</div>
         ${item.sender ? `<div class="timeline-card-meta">Van: ${escHtml(item.sender)}</div>` : ''}
@@ -3632,10 +4107,13 @@ function renderDocsView(container) {
 
   container.innerHTML = `
     <div style="display:flex;flex-direction:column;gap:10px">
-      ${items.map(item => `
+      ${items.map((item, idx) => `
         <div style="background:var(--woo-white);border:1px solid var(--woo-border);border-radius:8px;padding:16px;cursor:pointer;transition:border-color 0.15s"
              onmouseenter="this.style.borderColor='var(--border-bright)'"
-             onmouseleave="this.style.borderColor='var(--woo-border)'">
+             onmouseleave="this.style.borderColor='var(--woo-border)'"
+             onclick="openItemPreview('${escHtml(item.id)}')"
+             data-id="${escHtml(item.id)}"
+             >
           <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
             <span class="result-type-badge ${getBadgeClass(item.type)}">${escHtml(item.type||'Doc')}</span>
             <span style="font-family:var(--woo-mono);font-size:10px;color:var(--text-dimmer)">${escHtml(item.date||'—')}</span>
@@ -4798,6 +5276,11 @@ let _selectedPdfUrl   = null;   // chosen PDF URL (online dossiers)
 let _pipelineApiKey   = '';     // OpenAI key entered in pipeline selector
 let _pageRangeStart   = null;   // first page (1-indexed, null = all)
 let _pageRangeEnd     = null;   // last page  (1-indexed, null = all)
+let _invEnabled       = false;  // whether to extract inventarislijst
+let _invMode          = 'range'; // 'range' | 'file'
+let _invPageStart     = null;
+let _invPageEnd       = null;
+let _invFile          = null;
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -4963,6 +5446,42 @@ function _renderPipelineSelector({ mode, title }) {
       </div>
       ` : ''}
 
+      <div class="pipeline-inv-section">
+        <div class="pipeline-inv-header" onclick="_toggleInv()">
+          <div class="pipeline-inv-checkbox" id="invCheckbox"></div>
+          <div>
+            <span style="font-size:12px;font-weight:600;color:var(--woo-dark)">Inventarislijst koppelen</span>
+            <span style="font-size:10px;color:var(--text-dimmer);margin-left:5px">(optioneel)</span>
+            <div style="font-size:10px;color:var(--text-dimmer);font-family:var(--woo-mono);margin-top:1px">Verifieer gevonden documenten tegen de officiële lijst</div>
+          </div>
+        </div>
+        <div class="pipeline-inv-body" id="invBody" style="display:none">
+          <div class="pipeline-inv-mode-row">
+            <div class="pipeline-inv-mode-btn selected" id="invModeRange" onclick="_setInvMode('range')">Zelfde bestand</div>
+            <div class="pipeline-inv-mode-btn" id="invModeFile" onclick="_setInvMode('file')">Apart bestand</div>
+          </div>
+          <div id="invRangeSection" style="display:flex;align-items:center;gap:6px">
+            <span style="font-size:11px;color:var(--text-dimmer);font-family:var(--woo-mono);flex-shrink:0">Pagina's</span>
+            <input type="number" min="1" placeholder="Van" id="invPageStartInput"
+                   style="width:60px;padding:5px 7px;font-family:var(--woo-mono);font-size:11px;border:1.5px solid var(--woo-border);border-radius:4px;background:var(--woo-white);color:var(--woo-dark);outline:none"
+                   onfocus="this.style.borderColor='var(--woo-dark)'" onblur="this.style.borderColor='var(--woo-border)'"
+                   oninput="_invPageStart=this.value?parseInt(this.value):null" />
+            <span style="color:var(--text-dimmer)">–</span>
+            <input type="number" min="1" placeholder="Tot" id="invPageEndInput"
+                   style="width:60px;padding:5px 7px;font-family:var(--woo-mono);font-size:11px;border:1.5px solid var(--woo-border);border-radius:4px;background:var(--woo-white);color:var(--woo-dark);outline:none"
+                   onfocus="this.style.borderColor='var(--woo-dark)'" onblur="this.style.borderColor='var(--woo-border)'"
+                   oninput="_invPageEnd=this.value?parseInt(this.value):null" />
+          </div>
+          <div id="invFileSection" style="display:none">
+            <div style="font-size:11px;color:var(--text-dimmer);font-family:var(--woo-mono);margin-bottom:6px">Upload Inventarislijst PDF</div>
+            <input type="file" id="invFileInput" accept=".pdf"
+                   style="font-size:11px;font-family:var(--woo-mono);color:var(--woo-text);width:100%"
+                   onchange="_invFile=this.files[0]" />
+          </div>
+          <div style="margin-top:8px;font-size:10px;color:var(--text-dimmer);font-family:var(--woo-mono)">Vereist OpenAI API-sleutel</div>
+        </div>
+      </div>
+
       <button class="pipeline-start-btn" id="pipelineStartBtn" onclick="_startSelectedPipeline()">
         Verwerken →
       </button>
@@ -4974,6 +5493,102 @@ function _renderPipelineSelector({ mode, title }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Pipeline option selection
 // ─────────────────────────────────────────────────────────────────────────────
+
+// ── Inventarislijst toggle + mode ─────────────────────────────────────────────
+
+function _toggleInv() {
+  _invEnabled = !_invEnabled;
+  const cb   = document.getElementById('invCheckbox');
+  const body = document.getElementById('invBody');
+  if (cb)   cb.classList.toggle('checked', _invEnabled);
+  if (body) body.style.display = _invEnabled ? 'block' : 'none';
+}
+
+function _setInvMode(mode) {
+  _invMode = mode;
+  const rangeEl = document.getElementById('invRangeSection');
+  const fileEl  = document.getElementById('invFileSection');
+  const btnR    = document.getElementById('invModeRange');
+  const btnF    = document.getElementById('invModeFile');
+  if (rangeEl) rangeEl.style.display = mode === 'range' ? 'flex'  : 'none';
+  if (fileEl)  fileEl.style.display  = mode === 'file'  ? 'block' : 'none';
+  if (btnR)    btnR.classList.toggle('selected', mode === 'range');
+  if (btnF)    btnF.classList.toggle('selected', mode === 'file');
+}
+
+async function _runInventarislijst() {
+  const section = document.getElementById('invAnalysisSection');
+  const body    = document.getElementById('invResultSection');
+  if (section) section.style.display = 'flex';
+  if (body)    body.innerHTML = '<span style="font-family:var(--woo-mono);font-size:11px;color:var(--text-dimmer)">Inventarislijst analyseren…</span>';
+
+  const form = new FormData();
+  form.append('api_key', _pipelineApiKey || '');
+
+  if (_invMode === 'file' && _invFile) {
+    form.append('file', _invFile);
+  } else if (_invMode === 'range' && _invPageStart && _invPageEnd) {
+    form.append('page_start', _invPageStart);
+    form.append('page_end',   _invPageEnd);
+  }
+  // If mode=range with no range given, the server uses the entire session PDF
+
+  try {
+    const r = await fetch('/api/inventarislijst', { method: 'POST', body: form });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({ detail: r.statusText }));
+      throw new Error(err.detail || r.statusText);
+    }
+    const data = await r.json();
+    state.inventarislijst = data.items || [];
+    _renderInventarislijst();
+  } catch (err) {
+    if (body) body.innerHTML =
+      `<span style="font-size:11px;color:var(--woo-accent);font-family:var(--woo-mono)">Fout: ${escHtml(String(err))}</span>`;
+  }
+}
+
+function _renderInventarislijst() {
+  const body = document.getElementById('invResultSection');
+  if (!body) return;
+  const items = state.inventarislijst || [];
+  if (!items.length) {
+    body.innerHTML = '<span style="font-family:var(--woo-mono);font-size:11px;color:var(--text-dimmer)">Geen rijen gevonden</span>';
+    return;
+  }
+
+  // Build set of codes found by the pipeline
+  const foundCodes = new Set((state.timelineItems || []).map(t => t.id));
+
+  const decisionClass = d =>
+    d === 'openbaar'                ? 'inv-badge-open'
+    : d === 'gedeeltelijk openbaar' ? 'inv-badge-partial'
+    : d === 'niet openbaar'         ? 'inv-badge-closed'
+    : '';
+
+  const missing = items.filter(it => it.code && !foundCodes.has(it.code)).length;
+  const summary = `<div style="font-family:var(--woo-mono);font-size:10px;color:var(--text-dimmer);margin-bottom:8px">`
+    + `${items.length} documenten · `
+    + (missing > 0
+        ? `<span style="color:var(--woo-accent)">${missing} ontbreekt in pipeline</span>`
+        : `<span style="color:#1a5c1a">alle gevonden</span>`)
+    + `</div>`;
+
+  body.innerHTML = summary + items.map(it => {
+    const found   = it.code && foundCodes.has(it.code);
+    const unknown = !it.code || foundCodes.size === 0;
+    const validBadge = unknown ? '' :
+      `<span class="inv-badge ${found ? 'inv-badge-found' : 'inv-badge-missing'}">${found ? '✓' : '✗'}</span>`;
+    const decBadge = it.decision
+      ? `<span class="inv-badge ${decisionClass(it.decision)}" style="margin-top:3px">${escHtml(it.decision)}</span>`
+      : '';
+    return `<div class="inv-item">
+      ${it.code ? `<span class="inv-code">${escHtml(it.code)}</span>` : ''}
+      <div class="inv-title">${escHtml(it.title || '—')}${decBadge ? '<br>' + decBadge : ''}</div>
+      ${validBadge}
+    </div>`;
+  }).join('');
+}
 
 function _selectPipelineOption(el) {
   document.querySelectorAll('.pipeline-option').forEach(o => o.classList.remove('selected'));
@@ -5079,6 +5694,17 @@ function _startSelectedPipeline() {
     _runServerPipeline({ pipeline: _selectedPipeline, url: _selectedPdfUrl, apiKey: _pipelineApiKey, pid: _pendingPid, ...rangeOpts });
   } else {
     alert('Kies eerst een PDF-bestand om te verwerken, of gebruik "Snel laden via WOO API".');
+    return;
+  }
+
+  // Start inventarislijst extraction in parallel (needs an API key)
+  if (_invEnabled && _pipelineApiKey) {
+    _runInventarislijst();
+  } else if (_invEnabled && !_pipelineApiKey) {
+    const section = document.getElementById('invAnalysisSection');
+    const body    = document.getElementById('invResultSection');
+    if (section) section.style.display = 'flex';
+    if (body)    body.innerHTML = '<span style="font-size:11px;color:var(--woo-accent);font-family:var(--woo-mono)">Voer een OpenAI API-sleutel in om de inventarislijst te analyseren</span>';
   }
 }
 
@@ -5090,6 +5716,10 @@ function _startSelectedPipeline() {
 async function _runServerPipeline({ pipeline, url, file, apiKey, pid, pageStart, pageEnd }) {
   const content = document.getElementById('viewerContent');
   const logLines = [];
+
+  // Store PDF source so doc previews can show the right page later
+  if (url)  state.pdfSource = { type: 'url',  url };
+  if (file) state.pdfSource = { type: 'file', blobUrl: URL.createObjectURL(file) };
 
   const form = new FormData();
   form.append('pipeline', pipeline);
@@ -5400,7 +6030,9 @@ function _applyPipelineResult(data, pid, file) {
 
   state.emails        = data.emails        || [];
   state.timelineItems = data.timeline      || [];
+  if (data.pdf_url) state.pdfSource = { type: 'server', url: data.pdf_url };
   const stats         = data.stats         || {};
+  state._lastStats    = stats; // persisted for export
   const redactions    = stats.redactionCodes || {};
   const totalRed      = Object.values(redactions).reduce((a, b) => a + b, 0);
 
@@ -5422,14 +6054,29 @@ function _applyPipelineResult(data, pid, file) {
   document.getElementById('statDocs').textContent   = stats.docs           || '—';
   document.getElementById('statPages').textContent  = stats.pages          || state.activeResult.pages || '—';
 
+  const groundsEl = document.getElementById('redactionGrounds');
   if (totalRed > 0) {
     const redPct = Math.min(100, Math.round(totalRed / Math.max(stats.pages || 1, 1) * 4));
     document.getElementById('redactionFill').style.width = redPct + '%';
     document.getElementById('redactionPct').textContent  =
       `${totalRed} redactie${totalRed !== 1 ? 's' : ''} · ${Object.keys(redactions).length} grond${Object.keys(redactions).length !== 1 ? 'en' : ''}`;
+    if (groundsEl && Object.keys(redactions).length > 0) {
+      const maxCount = Math.max(...Object.values(redactions));
+      const sorted   = Object.entries(redactions).sort((a, b) => b[1] - a[1]);
+      groundsEl.style.display = 'flex';
+      groundsEl.innerHTML = sorted.map(([code, count]) => `
+        <div class="redaction-ground-row">
+          <span class="redaction-ground-label">${escHtml(code)}</span>
+          <div class="redaction-ground-bar">
+            <div class="redaction-ground-fill" style="width:${Math.round(count / maxCount * 100)}%"></div>
+          </div>
+          <span class="redaction-ground-count">${count}</span>
+        </div>`).join('');
+    }
   } else {
     document.getElementById('redactionFill').style.width = '0%';
     document.getElementById('redactionPct').textContent  = 'Geen redacties gedetecteerd';
+    if (groundsEl) { groundsEl.style.display = 'none'; groundsEl.innerHTML = ''; }
   }
 
   document.getElementById('entitiesPersons').innerHTML =
@@ -5453,6 +6100,98 @@ function _applyPipelineResult(data, pid, file) {
   // ── Show best tab ─────────────────────────────────────────────────────────
   setViewTab(state.emails.length ? 'emails' : 'timeline');
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Manual date editing
+// ─────────────────────────────────────────────────────────────────────────────
+
+let _dateEditId = null;
+
+function _editDocDate(id) {
+  _dateEditId = id;
+  const item  = (state.timelineItems || []).find(t => t.id === id);
+  const input = document.getElementById('dateEditInput');
+  if (input) input.value = item?.date || '';
+  const overlay = document.getElementById('dateEditOverlay');
+  if (overlay) overlay.style.display = 'flex';
+}
+
+function _saveDateEdit() {
+  const input = document.getElementById('dateEditInput');
+  const val   = input?.value?.trim();
+  if (!val || !_dateEditId) {
+    document.getElementById('dateEditOverlay').style.display = 'none';
+    return;
+  }
+  const idx = (state.timelineItems || []).findIndex(t => t.id === _dateEditId);
+  if (idx >= 0) state.timelineItems[idx].date = val;
+  document.getElementById('dateEditOverlay').style.display = 'none';
+  // Re-render the active view so the timeline re-sorts
+  const content = document.getElementById('viewerContent');
+  if (content) {
+    if (state.viewTab === 'timeline') renderTimelineView(content);
+    else if (state.viewTab === 'docs') renderDocsView(content);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Export / Import analysis
+// ─────────────────────────────────────────────────────────────────────────────
+
+function _exportAnalysis() {
+  if (!state.timelineItems?.length && !state.emails?.length) {
+    alert('Geen analysedata om te exporteren. Verwerk eerst een PDF.');
+    return;
+  }
+  const payload = {
+    emails:   state.emails        || [],
+    timeline: state.timelineItems || [],
+    stats:    state._lastStats    || {},
+    pdf_url:  state.pdfSource?.url || null,
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const a    = document.createElement('a');
+  a.href     = URL.createObjectURL(blob);
+  a.download = `woo-analyse-${new Date().toISOString().slice(0, 10)}.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function _importAnalysis(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const data = JSON.parse(e.target.result);
+      if (!data.timeline && !data.emails) throw new Error('Geen geldige analysedata (verwacht "timeline" of "emails" veld)');
+      _applyPipelineResult(data, null, { name: file.name.replace(/\.json$/i, '') });
+    } catch (err) {
+      alert('Import mislukt: ' + err.message);
+    }
+  };
+  reader.readAsText(file);
+  input.value = ''; // allow re-importing the same file
+}
 </script>
+
+<!-- ── Date-edit overlay ──────────────────────────────────────────────────── -->
+<div id="dateEditOverlay"
+     style="display:none;position:fixed;inset:0;z-index:9100;background:rgba(0,0,0,0.25);align-items:center;justify-content:center"
+     onclick="if(event.target===this)this.style.display='none'">
+  <div style="background:var(--woo-white);border:1px solid var(--woo-border);border-radius:10px;padding:22px 24px;box-shadow:0 8px 32px rgba(0,0,0,0.18);min-width:260px">
+    <div style="font-family:var(--woo-font);font-weight:600;font-size:13px;margin-bottom:14px">Datum aanpassen</div>
+    <input type="date" id="dateEditInput"
+           style="width:100%;padding:7px 10px;border:1px solid var(--woo-border);border-radius:5px;font-family:var(--woo-mono);font-size:13px;box-sizing:border-box;background:var(--woo-bg)">
+    <div style="font-size:10px;font-family:var(--woo-mono);color:var(--text-dimmer);margin-top:6px">Formaat: JJJJ-MM-DD</div>
+    <div style="display:flex;gap:8px;margin-top:14px">
+      <button onclick="_saveDateEdit()"
+              style="flex:1;padding:8px;background:var(--woo-dark);color:#fff;border:none;border-radius:5px;cursor:pointer;font-family:var(--woo-mono);font-size:11px;font-weight:600">Opslaan</button>
+      <button onclick="document.getElementById('dateEditOverlay').style.display='none'"
+              style="flex:1;padding:8px;background:var(--woo-bg);color:var(--woo-text);border:1px solid var(--woo-border);border-radius:5px;cursor:pointer;font-family:var(--woo-mono);font-size:11px">Annuleren</button>
+    </div>
+  </div>
+</div>
+
 </body>
 </html>
