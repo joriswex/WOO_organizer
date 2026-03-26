@@ -37,8 +37,12 @@ app.add_middleware(
 )
 
 ALLOWED_HOSTS = {"pid.wooverheid.nl", "open.overheid.nl"}
-INDEX_HTML = Path(__file__).parent / "index.html"
-HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; WOOLens/1.0; +https://woozm.nl)"}
+INDEX_HTML    = Path(__file__).parent / "index.html"
+HEADERS       = {"User-Agent": "Mozilla/5.0 (compatible; WOOLens/1.0; +https://woozm.nl)"}
+
+# Valid pipeline identifiers.
+_PIPELINE_OCR   = "ocr"
+_PIPELINE_GPT4O = "gpt4o"
 
 # Prevent concurrent pipeline runs — stdout capture is process-wide.
 _pipeline_lock = threading.Lock()
@@ -102,6 +106,8 @@ async def session_pdf_range(
     """Extract a page range from the session PDF and return it as a new PDF."""
     if not _SESSION_PDF.exists():
         raise HTTPException(status_code=404, detail="No session PDF available")
+    if start > end:
+        raise HTTPException(status_code=400, detail="start must be ≤ end")
     import io
     from pypdf import PdfReader, PdfWriter
     reader = PdfReader(str(_SESSION_PDF))
@@ -147,20 +153,47 @@ async def text(pid: str = Query(...)):
 # ── Pipeline helpers ──────────────────────────────────────────────────────────
 
 def _sse(data: dict) -> str:
-    """Format a dict as an SSE data line."""
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
+def _write_temp_pdf(pdf_bytes: bytes) -> Path:
+    """Write bytes to a named temp file and return its Path."""
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+    tmp.write(pdf_bytes)
+    tmp.close()
+    return Path(tmp.name)
+
+
+# Matches email header field lines — used to skip them when scanning for
+# the first meaningful body line in non-email documents.
+_HEADER_LINE_RE = re.compile(
+    r"^(?:van|aan|from|to|cc|bcc|datum|onderwerp|subject|verzonden|sent)\s*:",
+    re.IGNORECASE,
+)
+
+
+def _get_first_email_subject(doc: dict) -> str | None:
+    """Return the subject of the first email in a structured email doc, or None."""
+    # GPT-4o pipeline: structured emails already extracted — no re-parsing needed.
+    structured = doc.get("emails") or []
+    if structured:
+        return structured[0].get("subject") or None
+    # OCR pipeline fallback: parse from raw text.
+    try:
+        from email_splitter import split_emails
+        emails = split_emails(doc.get("annotated_text") or doc.get("text", ""),
+                              doc.get("doc_code", ""))
+        return (emails[0].get("subject") or None) if emails else None
+    except Exception:
+        return None
+
+
 def _extract_title(doc: dict) -> str:
-    """Best-effort title for a document (email subject or first line)."""
+    """Best-effort title: email subject, or first non-empty text line."""
     if doc.get("category") == "E-mail":
-        try:
-            from email_splitter import split_emails
-            emails = split_emails(doc["text"], doc.get("doc_code", ""))
-            if emails and emails[0].get("subject"):
-                return emails[0]["subject"]
-        except Exception:
-            pass
+        subject = _get_first_email_subject(doc)
+        if subject:
+            return subject[:120]
     for line in doc.get("text", "").split("\n"):
         stripped = line.strip()
         if stripped and len(stripped) > 5:
@@ -174,37 +207,23 @@ def _extract_sender(doc: dict) -> str:
     return m.group(1).strip()[:80] if m else ""
 
 
-_HEADER_LINE_RE = re.compile(
-    r"^(?:van|aan|from|to|cc|bcc|datum|onderwerp|subject|verzonden|sent)\s*:",
-    re.IGNORECASE,
-)
-
 def _generate_description(doc: dict) -> str:
-    """Short human-readable description of a document for display in cards."""
-    category = doc.get("category", "Other")
-    text = doc.get("text", "")
+    """Short human-readable description for document cards."""
+    category        = doc.get("category", "Other")
+    text            = doc.get("text", "")
     redaction_codes = doc.get("redaction_codes", {})
 
-    # Email: use subject of first email
     if category == "E-mail":
-        try:
-            from email_splitter import split_emails
-            emails = split_emails(doc.get("annotated_text") or text, doc.get("doc_code", ""))
-            if emails and emails[0].get("subject"):
-                return emails[0]["subject"][:100]
-        except Exception:
-            pass
-        return "E-mail"
+        subject = _get_first_email_subject(doc)
+        return subject[:100] if subject else "E-mail"
 
-    # For other types, find the first meaningful non-header line
     for line in text.split("\n")[:20]:
         stripped = line.strip()
-        if len(stripped) > 8 and not _HEADER_LINE_RE.match(stripped):
-            # Skip lines that are purely digits/codes
-            if not re.fullmatch(r"[\d\s\.\-\/]+", stripped):
-                return stripped[:100]
+        if (len(stripped) > 8
+                and not _HEADER_LINE_RE.match(stripped)
+                and not re.fullmatch(r"[\d\s.\-\/]+", stripped)):
+            return stripped[:100]
 
-    # Fallback: mention redaction codes if any
     if redaction_codes:
         top_codes = ", ".join(list(redaction_codes.keys())[:3])
         return f"Geredigeerd document ({top_codes})"
@@ -212,32 +231,69 @@ def _generate_description(doc: dict) -> str:
     return category
 
 
+def _pick_emails(doc: dict, code: str) -> list[dict]:
+    """
+    Choose the best email split for one E-mail document.
+
+    Runs both the GPT-4o structured list and the text-based splitter, then
+    keeps whichever finds more individual emails.  When the text splitter
+    wins, any GPT-4o metadata (subject/sender/date) that the text splitter
+    missed is copied in for the emails where indices align.
+    """
+    from email_splitter import split_emails
+
+    gpt_emails: list[dict] = doc.get("emails") or []
+
+    try:
+        text_emails = split_emails(doc.get("annotated_text") or doc["text"], code)
+    except Exception as exc:
+        print(f"[server] Warning: text email split failed for {code}: {exc}")
+        text_emails = []
+
+    if len(text_emails) <= len(gpt_emails):
+        return gpt_emails or text_emails
+
+    # Text splitter found more splits — enrich with GPT-4o metadata where available.
+    for i, em in enumerate(text_emails):
+        if i >= len(gpt_emails):
+            break
+        g = gpt_emails[i]
+        if not em.get("subject") and g.get("subject"):
+            em["subject"] = g["subject"]
+        if not em.get("sender") and g.get("sender"):
+            em["sender"] = g["sender"]
+        if not em.get("date") and g.get("date"):
+            em["date"] = g["date"]
+    return text_emails
+
+
 def _pipeline_to_json(docs: dict) -> dict:
     """
     Convert pipeline output (dict[str, dict]) to frontend-ready JSON.
-    Calls text_sorting.sort_documents and email_splitter.split_emails.
-    PIL Image objects in 'pages' are intentionally excluded.
+
+    PIL Image objects in 'pages' are excluded; only page counts are forwarded.
     """
     from text_sorting import sort_documents
-    from email_splitter import split_emails
 
     sorted_docs = sort_documents(docs)
 
-    emails: list[dict] = []
-    timeline: list[dict] = []
-    all_redaction: dict[str, int] = {}
+    emails:        list[dict]      = []
+    timeline:      list[dict]      = []
+    all_redaction: dict[str, int]  = {}
+    total_pages                    = 0
 
     for code, doc in sorted_docs.items():
-        dt = doc.get("date")
+        dt       = doc.get("date")
         date_str = dt.strftime("%Y-%m-%d") if dt else ""
         category = doc.get("category", "Other")
 
-        preview_text = (doc.get("annotated_text") or doc.get("text", ""))[:800]
-        # First actual PDF page for this document (int for OCR, tracked separately for GPT-4o)
+        # pdf_pages is set by GPT-4o pipeline; OCR stores PIL Images in 'pages'.
         raw_pages = doc.get("pages", [])
-        pdf_pages = doc.get("pdf_pages") or (raw_pages if raw_pages and isinstance(raw_pages[0], int) else [])
-        pdf_page_start = pdf_pages[0]  if pdf_pages else None
-        pdf_page_end   = pdf_pages[-1] if pdf_pages else None
+        pdf_pages = doc.get("pdf_pages") or (
+            raw_pages if raw_pages and isinstance(raw_pages[0], int) else []
+        )
+        total_pages += len(raw_pages)
+
         timeline.append({
             "id":             code,
             "type":           category,
@@ -245,34 +301,14 @@ def _pipeline_to_json(docs: dict) -> dict:
             "title":          _extract_title(doc),
             "description":    _generate_description(doc),
             "sender":         doc.get("doc_sender") or _extract_sender(doc),
-            "preview":        preview_text,
-            "pdf_page_start": pdf_page_start,
-            "pdf_page_end":   pdf_page_end,
+            "preview":        (doc.get("annotated_text") or doc.get("text", ""))[:800],
+            "pdf_page_start": pdf_pages[0]  if pdf_pages else None,
+            "pdf_page_end":   pdf_pages[-1] if pdf_pages else None,
         })
 
         if category == "E-mail":
             try:
-                # Always run both splitters; use whichever finds more individual emails.
-                # Enrich text-based results with GPT-4o metadata (subject/sender/date)
-                # when the text splitter finds more splits.
-                gpt_emails = doc.get("emails") or []
-                try:
-                    text_emails = split_emails(doc.get("annotated_text") or doc["text"], code)
-                except Exception:
-                    text_emails = []
-                if len(text_emails) > len(gpt_emails):
-                    for i, em in enumerate(text_emails):
-                        if i < len(gpt_emails):
-                            g = gpt_emails[i]
-                            if not em.get("subject") and g.get("subject"): em["subject"] = g["subject"]
-                            if not em.get("sender")  and g.get("sender"):  em["sender"]  = g["sender"]
-                            if not em.get("date")    and g.get("date"):    em["date"]    = g["date"]
-                    src_emails = text_emails
-                elif gpt_emails:
-                    src_emails = gpt_emails
-                else:
-                    src_emails = text_emails
-                for em in src_emails:
+                for em in _pick_emails(doc, code):
                     emails.append({
                         "id":          em.get("id", f"{code}.?"),
                         "subject":     em.get("subject")     or "",
@@ -283,13 +319,11 @@ def _pipeline_to_json(docs: dict) -> dict:
                         "attachments": em.get("attachments") or [],
                         "text":        em.get("text")        or "",
                     })
-            except Exception:
-                pass
+            except Exception as exc:
+                print(f"[server] Warning: email processing failed for {code}: {exc}")
 
         for rc, count in doc.get("redaction_codes", {}).items():
             all_redaction[rc] = all_redaction.get(rc, 0) + count
-
-    total_pages = sum(len(d.get("pages", [])) for d in docs.values())
 
     return {
         "emails":   emails,
@@ -347,7 +381,9 @@ async def _run_pipeline_sse(
         capture = _StdoutCapture()
         try:
             sys.stdout = capture
-            if pipeline == "ocr":
+            # Deferred imports: pipeline modules are heavy (pdf2image, tesseract,
+            # openai) and only needed when a run actually starts.
+            if pipeline == _PIPELINE_OCR:
                 from pipeline_ocr import load_pdf
                 result = load_pdf(pdf_path, page_range=page_range)
             else:
@@ -376,6 +412,7 @@ async def _run_pipeline_sse(
         if item is None:
             break
         if item["type"] == "log":
+            # Thread emits "log"; frontend expects "progress" — translate here.
             yield _sse({"type": "progress", "msg": item["msg"], "pct": None})
         elif item["type"] == "result":
             result_data = item["data"]
@@ -436,10 +473,10 @@ async def analyse(
       {"type": "done",     "emails": [...], "timeline": [...], "stats": {...}}
       {"type": "error",    "msg": "..."}
     """
-    if pipeline not in ("ocr", "gpt4o"):
+    if pipeline not in (_PIPELINE_OCR, _PIPELINE_GPT4O):
         raise HTTPException(
             status_code=400,
-            detail="pipeline must be 'ocr' or 'gpt4o'",
+            detail=f"pipeline must be '{_PIPELINE_OCR}' or '{_PIPELINE_GPT4O}'",
         )
 
     # ── Obtain PDF bytes ──────────────────────────────────────────────────────
@@ -463,11 +500,7 @@ async def analyse(
             detail="Geef 'file' of 'url' op",
         )
 
-    # ── Write to temp file ────────────────────────────────────────────────────
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
-    tmp.write(pdf_bytes)
-    tmp.close()
-    pdf_path = Path(tmp.name)
+    pdf_path = _write_temp_pdf(pdf_bytes)
 
     page_range = (page_start, page_end) if page_start and page_end else None
 
@@ -487,14 +520,16 @@ async def analyse(
 async def analyse_inventarislijst(
     api_key:    str            = Form(...,  description="OpenAI API key for GPT-4o-mini"),
     file:       UploadFile | None = File(None, description="Separate Inventarislijst PDF"),
-    page_start: int | None    = Form(None, description="First page in session PDF (1-indexed)"),
-    page_end:   int | None    = Form(None, description="Last page in session PDF (1-indexed)"),
+    pdf_url:    str | None     = Form(None, description="Remote PDF URL to download"),
+    page_start: int | None     = Form(None, description="First page in session PDF (1-indexed)"),
+    page_end:   int | None     = Form(None, description="Last page in session PDF (1-indexed)"),
 ):
     """
     Extract the document inventory table from a WOO Inventarislijst.
 
-    Accepts either:
+    Accepts:
       - multipart 'file' — a dedicated Inventarislijst PDF upload
+      - 'pdf_url' — a remote PDF URL (downloaded server-side via proxy)
       - no file + page_start/page_end — a page range within the current session PDF
       - no file + no range — the entire session PDF
 
@@ -502,11 +537,21 @@ async def analyse_inventarislijst(
     Each item: {code, title, date, pages, decision, grounds}
     """
     if file is not None:
-        pdf_bytes = await file.read()
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
-        tmp.write(pdf_bytes)
-        tmp.close()
-        pdf_path   = Path(tmp.name)
+        pdf_path   = _write_temp_pdf(await file.read())
+        is_tmp     = True
+        page_range = None
+    elif pdf_url:
+        try:
+            async with httpx.AsyncClient(follow_redirects=True, timeout=60) as client:
+                r = await client.get(pdf_url, headers=HEADERS)
+            if not r.is_success:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Kon inventarislijst PDF niet ophalen: HTTP {r.status_code}",
+                )
+            pdf_path = _write_temp_pdf(r.content)
+        except httpx.RequestError as exc:
+            raise HTTPException(status_code=502, detail=f"PDF ophalen mislukt: {exc}")
         is_tmp     = True
         page_range = None
     elif _SESSION_PDF.exists():

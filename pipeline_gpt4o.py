@@ -45,7 +45,7 @@ _SYSTEM_PROMPT = (
     "You are analyzing pages from Dutch government WOO (Wet Open Overheid) disclosure dossiers. "
     "These documents were released under Dutch freedom-of-information law. "
     "Key context you must apply:\n"
-    "- Every document in the dossier has a 4-digit inventory code stamped in a corner (0001–0999).\n"
+    "- Every document in the dossier has a 4-digit inventory code stamped in a corner or at the bottom-centre of the page (0001–0999).\n"
     "- Sensitive content is redacted with black rectangles. The applicable WOO legal ground is "
     "printed in small text next to each black box, in the format 5.1.X or 5.2.X (e.g. '5.1.2e', "
     "'5.1.1', '5.2.1'). These are articles of the Wet Open Overheid.\n"
@@ -61,7 +61,6 @@ _PAGE_PROMPT = """\
 Analyze this Dutch government document page and return a JSON object with exactly these fields:
 
 {
-  "text": "<all text from the page, preserving structure — see rules below>",
   "is_new_document": <true if this is clearly the first page of a new document>,
   "doc_code": "<4-digit stamp code like 0143, or null if not visible>",
   "within_doc_page": <integer — page number within this document, e.g. 1, 2, 3 — or null>,
@@ -76,7 +75,8 @@ Analyze this Dutch government document page and return a JSON object with exactl
   "email_subject": "<subject from Onderwerp:/Subject: field, or null>",
   "email_date": "<sent/datum date as YYYY-MM-DD, or null — parse any format to ISO>",
   "chat_name": "<name of the chat group or contact if this is a Chat page, else null>",
-  "chat_messages": <array of message objects if this is a Chat page, else []>
+  "chat_messages": <array of message objects if this is a Chat page, else []>,
+  "text": "<all text from the page, preserving structure — see TEXT EXTRACTION RULES below>"
 }
 
 TEXT EXTRACTION RULES:
@@ -98,9 +98,14 @@ TEXT EXTRACTION RULES:
 - Use blank lines to separate paragraphs and sections.
 
 DOCUMENT BOUNDARY RULES:
-- is_new_document = true ONLY when: stamp says "Pagina 1 van N", or a completely fresh document starts at the top of the page (new email header, new memo heading, new letter salutation).
-- is_new_document = false if within_doc_page is 2 or higher — a continuation page is never a new document.
-- doc_code: look for a 4-digit stamp in any corner (format 0001–0999).
+- is_new_document = true ONLY when: stamp says "Pagina 1 van N", OR the very top of the page shows a complete new document header — meaning a full Van:/Aan:/Onderwerp: email block, or a new memo/letter heading with a fresh date and reference number, starting at line 1 or 2 of the page.
+- is_new_document = false in ALL of the following cases:
+    - within_doc_page is 2 or higher
+    - the page starts with a salutation like "Geachte" or "Beste" but has NO Van:/Aan:/Onderwerp: header above it (this is the body of an email, not a new document)
+    - the page starts mid-sentence or mid-paragraph (clear continuation)
+    - the page contains only quoted/forwarded email headers deep in the body (not at the top)
+    - there is no stamp and the preceding page has a stamp (continuation is the safe default)
+- doc_code: look for a 4-digit stamp in any corner OR at the bottom-centre of the page (format 0001–0999).
   If you see a 7-digit barcode stamp (e.g. 7601430), extract digits 4–6 and prefix with 0 → "0143".
 - within_doc_page: if a stamp or footer says "Pagina X van N", return X.
 
@@ -203,6 +208,57 @@ def _encode_image(img: Image.Image) -> str:
     return base64.b64encode(buf.getvalue()).decode()
 
 
+# ── JSON repair ───────────────────────────────────────────────────────────────
+
+def _repair_truncated_json(raw: str) -> dict:
+    """
+    Close a JSON string that was truncated mid-value (hit max_tokens).
+    Walks the string to close any open string literal, then closes open
+    arrays/objects in reverse order so json.loads can parse the result.
+    """
+    s = raw.rstrip()
+
+    # Determine whether we ended inside a string literal
+    in_string = False
+    escaped   = False
+    for ch in s:
+        if escaped:
+            escaped = False
+            continue
+        if ch == "\\" and in_string:
+            escaped = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+
+    if in_string:
+        s += '"'   # close the open string
+
+    # Count unclosed brackets/braces (ignoring string contents)
+    stack     = []
+    in_string = False
+    escaped   = False
+    for ch in s:
+        if escaped:
+            escaped = False
+            continue
+        if ch == "\\" and in_string:
+            escaped = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch in "{[":
+            stack.append("}" if ch == "{" else "]")
+        elif ch in "}]" and stack:
+            stack.pop()
+
+    s += "".join(reversed(stack))
+    return json.loads(s)
+
+
 # ── GPT-4o call ───────────────────────────────────────────────────────────────
 
 def _call_gpt4o(image_b64: str, client, page_index: int, pdf_page_num: int) -> dict:
@@ -212,7 +268,7 @@ def _call_gpt4o(image_b64: str, client, page_index: int, pdf_page_num: int) -> d
         try:
             response = client.chat.completions.create(
                 model=OPENAI_MODEL,
-                max_tokens=4096,
+                max_tokens=8192,
                 temperature=0,
                 response_format={"type": "json_object"},
                 messages=[
@@ -233,7 +289,12 @@ def _call_gpt4o(image_b64: str, client, page_index: int, pdf_page_num: int) -> d
                 ],
             )
             raw = response.choices[0].message.content or "{}"
-            return json.loads(raw)
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError:
+                result = _repair_truncated_json(raw)
+                print(f"  [gpt4o] p{page_index+1}: JSON truncated — repaired, text may be partial")
+                return result
 
         except json.JSONDecodeError as e:
             print(f"  [gpt4o] p{page_index+1}: JSON parse error (attempt {attempt+1}): {e}")
@@ -544,8 +605,8 @@ _BOUNDARY_SYSTEM = (
 
 _BOUNDARY_PROMPT = """\
 Below is a {n}-page WOO dossier summary. Each line:
-  p<num>: stamp=<4-digit code|null> wpn=<within-doc page|null> new=<Y|N> cat=<category> eml=<Y|N> | "<first 80 chars of text>"
-  (new=Y means pass-1 suggested a new doc starts here; eml=Y means an email header was detected)
+  p<num>: stamp=<4-digit code|null> wpn=<within-doc page|null> new=<Y|N> cont=<Y|N> cat=<category> eml=<Y|N> | "<first 300 chars of text>"
+  (new=Y means pass-1 suggested a new doc starts here; cont=Y means the page text begins mid-sentence — a near-certain continuation of the previous page; eml=Y means email header fields were detected on this page)
 
 {summary}
 
@@ -560,15 +621,22 @@ Return ONLY this JSON (all page numbers are the p<num> indices above, 1-based):
   ]
 }}
 
-Rules:
+Document boundary rules:
 - Every page belongs to exactly one document. Documents listed in ascending page order with no gaps.
 - New document signals (use in combination): stamp code changes, wpn=1, new=Y, content clearly shifts to a new letterhead/header/thread.
-- Stamps are the strongest signal but may be absent from some pages — use wpn and text as support.
+- Stamps are the strongest signal. Two consecutive pages with the SAME stamp code ALWAYS belong to the same document.
+- Stamps may be absent from continuation pages — use wpn and text as support.
 - When in doubt, keep pages together rather than creating a spurious split.
-- email_starts: list the page numbers where a new Van:/From: + Aan:/To: + Onderwerp:/Subject: header block begins.
-  Multiple emails can start on the same page; one email can span multiple pages.
-  Always include the first page of the document in email_starts for email-type documents.
-  Leave empty ([]) for non-email documents.
+- A page with stamp=null that follows a stamped page and shows no sign of a fresh document start (new letterhead, "Pagina 1 van", fresh salutation) is a continuation page of the same document.
+- cont=Y is a near-certain signal that a sentence carried over from the previous page — this page CANNOT be a new document start regardless of other signals.
+
+Email boundary rules:
+- email_starts: list the page numbers where a genuinely NEW email begins — one with a fresh Van:/From: + Aan:/To: + Onderwerp:/Subject: header block.
+- eml=Y means pass-1 detected email header fields on that page, but it also fires on QUOTED or FORWARDED headers inside an email body. Do NOT treat eml=Y alone as evidence of a new document or new email start.
+- A page that continues an email body (quoted reply chain, long body text, page 2 of a multi-page email) is NOT a new email start even if eml=Y.
+- One email can span multiple pages; a multi-page email body does not create multiple email_starts entries.
+- Always include the first page of the document in email_starts for email-type documents.
+- Leave email_starts empty ([]) for non-email documents.
 """
 
 
@@ -676,6 +744,19 @@ def _extract_emails_full_doc(code: str, text: str, client) -> list[dict]:
     return []
 
 
+_STAMP_NOISE_RE = re.compile(r"^\s*(?:\d{4,}|[A-Z]{2,}\d+|\[PDF page \d+\])\s*", re.IGNORECASE)
+
+
+def _continuation_flag(text: str) -> str:
+    """Return 'Y' if the page text starts mid-sentence (strong continuation signal)."""
+    # Strip leading stamp/barcode noise to get to the actual first word
+    clean = _STAMP_NOISE_RE.sub("", text).lstrip()
+    if not clean:
+        return "N"
+    # Starts with a lowercase letter → almost certainly continues from previous page
+    return "Y" if clean[0].islower() else "N"
+
+
 def _build_page_summary(page_data: list[dict]) -> str:
     """Build the compact per-page text table sent to pass 2."""
     lines = []
@@ -685,15 +766,17 @@ def _build_page_summary(page_data: list[dict]) -> str:
         new     = "Y" if p.get("is_new_document") else "N"
         cat     = p.get("category") or "Other"
         eml     = "Y" if p.get("email_start") else "N"
+        text    = p.get("text") or ""
+        cont    = _continuation_flag(text)
         extra   = ""
         if p.get("email_start"):
             if p.get("email_from"):
                 extra += f' from="{str(p["email_from"])[:30]}"'
             if p.get("email_subject"):
                 extra += f' subj="{str(p["email_subject"])[:40]}"'
-        preview = " ".join((p.get("text") or "").split())[:80]
+        preview = " ".join(text.split())[:300]
         lines.append(
-            f'p{i:03d}: stamp={stamp} wpn={wpn} new={new} cat={cat} eml={eml}{extra} | "{preview}"'
+            f'p{i:03d}: stamp={stamp} wpn={wpn} new={new} cont={cont} cat={cat} eml={eml}{extra} | "{preview}"'
         )
     return "\n".join(lines)
 

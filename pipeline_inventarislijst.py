@@ -99,7 +99,7 @@ def extract_inventarislijst(
             try:
                 response = client.chat.completions.create(
                     model=_MODEL,
-                    max_tokens=2048,
+                    max_tokens=4096,
                     temperature=0,
                     response_format={"type": "json_object"},
                     messages=[

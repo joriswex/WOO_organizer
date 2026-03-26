@@ -572,8 +572,9 @@
     background: #111;
     color: transparent;
     border-radius: 3px;
-    padding: 2px 8px;
-    font-size: 11px;
+    padding: 0.1em 0.5em;
+    font-size: inherit;
+    line-height: inherit;
     cursor: pointer;
     position: relative;
     vertical-align: middle;
@@ -1190,8 +1191,9 @@
     background: #111;
     color: transparent;
     border-radius: 3px;
-    padding: 3px 10px;
-    font-size: 11px;
+    padding: 0.1em 0.5em;
+    font-size: inherit;
+    line-height: inherit;
     cursor: pointer;
     position: relative;
     vertical-align: middle;
@@ -1766,7 +1768,7 @@
   .doc-browser-item-pages { font-size: 10px; font-family: var(--woo-mono); color: var(--text-dimmer); }
   .doc-browser-pipeline {
     border-top: 1px solid var(--woo-border); padding: 12px;
-    flex-shrink: 0; background: var(--woo-white);
+    flex-shrink: 1; min-height: 0; overflow-y: auto; background: var(--woo-white);
   }
   .doc-browser-pipeline-label {
     font-size: 10px; font-weight: 600; text-transform: uppercase;
@@ -2603,7 +2605,7 @@ function selectResult(idx) {
   const item = filtered[idx];
   state.activeResult = item;
   renderResults(state.results);
-  _showOnlinePipelineSelector(item);
+  _confirmAndRun(() => _showOnlinePipelineSelector(item));
 }
 
 // ─────────────────────────────────────────────
@@ -2645,7 +2647,7 @@ function loadCaseStudy() {
     pages: 146,
   };
   state.activeResult = item;
-  _showOnlinePipelineSelector(item);
+  _confirmAndRun(() => _showOnlinePipelineSelector(item));
 }
 
 async function loadDossierByPid(pid) {
@@ -3704,6 +3706,22 @@ function openDocTextPreview(item) {
 // ── iPHONE EMAIL VIEW ──
 let iphoneState = { openIdx: null };
 let _sortedEmails = []; // holds the currently-displayed sorted email list
+let _savedTimelineScroll = 0; // scroll position of .timeline-h-scroll before navigating to email detail
+
+let _confirmResetCallback = null;
+
+function _confirmAndRun(fn) {
+  const hasAnalysis = (state.emails?.length || state.timelineItems?.length);
+  if (!hasAnalysis) { fn(); return; }
+  _confirmResetCallback = fn;
+  const overlay = document.getElementById('confirmResetOverlay');
+  overlay.style.display = 'flex';
+  document.getElementById('confirmResetYes').onclick = () => {
+    overlay.style.display = 'none';
+    _confirmResetCallback?.();
+    _confirmResetCallback = null;
+  };
+}
 
 function renderNoDataState(tabLabel) {
   const meta = state.activeResult;
@@ -3916,20 +3934,38 @@ function openIphoneMailById(id) {
   if (idx >= 0) openIphoneMail(idx);
 }
 
+function _backToTimeline() {
+  setViewTab('timeline');
+  const el = document.querySelector('.timeline-h-scroll');
+  if (el) el.scrollLeft = _savedTimelineScroll;
+}
+
 function openIphoneMail(idx) {
   const emails = _sortedEmails.length ? _sortedEmails : state.emails;
   const email = emails[idx];
   if (!email) return;
-  
+
+  // Capture context before rendering so the back button returns to the right view
+  const sourceTab = state.viewTab;
+  if (sourceTab === 'timeline') {
+    const scroller = document.querySelector('.timeline-h-scroll');
+    _savedTimelineScroll = scroller ? scroller.scrollLeft : 0;
+  }
+
   const container = document.getElementById('viewerContent');
   const bodyHtml = formatEmailBody(email.text || '');
   const formattedDate = formatDisplayDate(email.date);
   const bodyId = 'email-body-' + (email.id || 'x').replace(/\./g, '-');
   const hasApiKey = !!(OPENAI_API_KEY || '').trim();
 
+  const backLabel = sourceTab === 'timeline' ? '‹ Tijdlijn' : '‹ Alle e-mails';
+  const backFn    = sourceTab === 'timeline'
+    ? '_backToTimeline()'
+    : 'renderEmailView(document.getElementById(\'viewerContent\'))';
+
   container.innerHTML = `
-    <div class="iphone-detail-back" onclick="renderEmailView(document.getElementById('viewerContent'))">
-      ‹ Alle e-mails
+    <div class="iphone-detail-back" onclick="${backFn}">
+      ${backLabel}
     </div>
     <div class="iphone-mail-detail">
       <div class="iphone-detail-header" style="background:#fff">
@@ -5277,10 +5313,11 @@ let _pipelineApiKey   = '';     // OpenAI key entered in pipeline selector
 let _pageRangeStart   = null;   // first page (1-indexed, null = all)
 let _pageRangeEnd     = null;   // last page  (1-indexed, null = all)
 let _invEnabled       = false;  // whether to extract inventarislijst
-let _invMode          = 'range'; // 'range' | 'file'
+let _invMode          = 'dossier'; // 'dossier' | 'range' | 'file'
 let _invPageStart     = null;
 let _invPageEnd       = null;
 let _invFile          = null;
+let _invDossierUrl    = null;  // URL of a dossier PDF chosen as inventarislijst
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -5501,19 +5538,30 @@ function _toggleInv() {
   const cb   = document.getElementById('invCheckbox');
   const body = document.getElementById('invBody');
   if (cb)   cb.classList.toggle('checked', _invEnabled);
-  if (body) body.style.display = _invEnabled ? 'block' : 'none';
+  if (body) {
+    body.style.display = _invEnabled ? 'block' : 'none';
+    // If dossier section is absent (upload-only view), fall back to range mode
+    if (_invEnabled && _invMode === 'dossier' && !document.getElementById('invDossierSection')) {
+      _invMode = 'range';
+      _setInvMode('range');
+    }
+  }
 }
 
 function _setInvMode(mode) {
   _invMode = mode;
-  const rangeEl = document.getElementById('invRangeSection');
-  const fileEl  = document.getElementById('invFileSection');
-  const btnR    = document.getElementById('invModeRange');
-  const btnF    = document.getElementById('invModeFile');
-  if (rangeEl) rangeEl.style.display = mode === 'range' ? 'flex'  : 'none';
-  if (fileEl)  fileEl.style.display  = mode === 'file'  ? 'block' : 'none';
-  if (btnR)    btnR.classList.toggle('selected', mode === 'range');
-  if (btnF)    btnF.classList.toggle('selected', mode === 'file');
+  const dossierEl = document.getElementById('invDossierSection');
+  const rangeEl   = document.getElementById('invRangeSection');
+  const fileEl    = document.getElementById('invFileSection');
+  const btnD      = document.getElementById('invModeDossier');
+  const btnR      = document.getElementById('invModeRange');
+  const btnF      = document.getElementById('invModeFile');
+  if (dossierEl) dossierEl.style.display = mode === 'dossier' ? 'block' : 'none';
+  if (rangeEl)   rangeEl.style.display   = mode === 'range'   ? 'flex'  : 'none';
+  if (fileEl)    fileEl.style.display    = mode === 'file'    ? 'block' : 'none';
+  if (btnD)      btnD.classList.toggle('selected', mode === 'dossier');
+  if (btnR)      btnR.classList.toggle('selected', mode === 'range');
+  if (btnF)      btnF.classList.toggle('selected', mode === 'file');
 }
 
 async function _runInventarislijst() {
@@ -5525,7 +5573,9 @@ async function _runInventarislijst() {
   const form = new FormData();
   form.append('api_key', _pipelineApiKey || '');
 
-  if (_invMode === 'file' && _invFile) {
+  if (_invMode === 'dossier' && _invDossierUrl) {
+    form.append('pdf_url', _invDossierUrl);
+  } else if (_invMode === 'file' && _invFile) {
     form.append('file', _invFile);
   } else if (_invMode === 'range' && _invPageStart && _invPageEnd) {
     form.append('page_start', _invPageStart);
@@ -5866,6 +5916,10 @@ function _renderDocumentBrowser() {
   // If no files, default pipeline to ocr
   if (files.length === 0) _selectedPipeline = 'ocr';
 
+  // Pre-select first dossier file as inventarislijst source
+  _invDossierUrl = files[0]?.url || null;
+  _invMode       = files.length > 0 ? 'dossier' : 'range';
+
   const apiOption = files.length > 0 ? `
     <div class="compact-pipeline-option selected" data-pipeline="api" onclick="_selectCompactPipeline(this)">
       <div class="compact-pipeline-radio"></div>⚡ Snel laden (WOO API)
@@ -5895,6 +5949,16 @@ function _renderDocumentBrowser() {
                     ${f.pages ? `<span class="doc-browser-item-pages">${f.pages} pag.</span>` : ''}
                   </div>
                 </div>`).join('')}
+            <label id="docBrowserUploadItem" class="doc-browser-item"
+                   style="cursor:pointer;margin-top:4px;border-style:dashed;display:flex;align-items:center;gap:8px;color:var(--text-dimmer)">
+              <span style="font-size:13px">↑</span>
+              <div>
+                <div style="font-size:11px;font-weight:500;color:var(--woo-dark)">Upload lokaal PDF-bestand</div>
+                <div style="font-size:10px;font-family:var(--woo-mono)">Klik of sleep een bestand</div>
+              </div>
+              <input type="file" accept=".pdf" style="display:none"
+                     onchange="_selectUploadInBrowser(this.files[0])" />
+            </label>
           </div>
           <div class="doc-browser-pipeline">
             <div class="doc-browser-pipeline-label">Verwerkingsmethode</div>
@@ -5927,6 +5991,57 @@ function _renderDocumentBrowser() {
                 <span style="font-size:10px;color:var(--text-dimmer);font-family:var(--woo-mono)">pag.</span>
               </div>
             </div>
+            <div style="border:1.5px solid var(--woo-border);border-radius:7px;overflow:hidden;margin-bottom:9px">
+              <div onclick="_toggleInv()" style="display:flex;align-items:center;gap:9px;padding:10px 12px;cursor:pointer;background:var(--woo-bg);transition:background 0.15s"
+                   onmouseenter="this.style.background='#edf6f7'" onmouseleave="this.style.background='var(--woo-bg)'">
+                <div class="pipeline-inv-checkbox" id="invCheckbox"></div>
+                <div>
+                  <div style="font-size:11px;font-weight:600;color:var(--woo-dark);font-family:var(--woo-font)">Inventarislijst koppelen</div>
+                  <div style="font-size:10px;color:var(--text-dimmer);font-family:var(--woo-mono);margin-top:1px">Verifieer docs tegen de officiële lijst</div>
+                </div>
+              </div>
+              <div id="invBody" style="display:none;padding:10px 12px;border-top:1px solid var(--woo-border);background:var(--woo-white)">
+                <div style="display:flex;gap:5px;margin-bottom:8px">
+                  <div class="pipeline-inv-mode-btn${files.length > 0 ? ' selected' : ''}" id="invModeDossier" onclick="_setInvMode('dossier')">Dossier PDF</div>
+                  <div class="pipeline-inv-mode-btn" id="invModeRange" onclick="_setInvMode('range')">Paginabereik</div>
+                  <div class="pipeline-inv-mode-btn" id="invModeFile" onclick="_setInvMode('file')">Apart bestand</div>
+                </div>
+                <div id="invDossierSection" style="display:${files.length > 0 ? 'block' : 'none'}">
+                  ${files.length > 0
+                    ? files.map((f, i) => `
+                      <div class="doc-browser-item${i === 0 ? ' selected' : ''}"
+                           style="padding:7px 10px;margin-bottom:3px;border-radius:5px"
+                           onclick="_selectInvDossierFile(this, ${i})">
+                        <div class="doc-browser-item-title" style="font-size:11px" title="${escHtml(f.title)}">${escHtml(f.title)}</div>
+                        <div class="doc-browser-item-meta">
+                          ${f.type ? `<span class="doc-browser-item-type">${escHtml(f.type)}</span>` : ''}
+                          ${f.pages ? `<span class="doc-browser-item-pages">${f.pages} pag.</span>` : ''}
+                        </div>
+                      </div>`).join('')
+                    : `<div style="font-size:11px;color:var(--text-dimmer);font-family:var(--woo-mono);padding:4px 0">Geen PDF-bestanden gevonden in dit dossier.</div>`
+                  }
+                </div>
+                <div id="invRangeSection" style="display:none;align-items:center;gap:6px">
+                  <span style="font-size:11px;color:var(--text-dimmer);font-family:var(--woo-mono);flex-shrink:0">Pagina's</span>
+                  <input type="number" min="1" placeholder="Van" id="invPageStartInput"
+                         style="width:60px;padding:5px 7px;font-family:var(--woo-mono);font-size:11px;border:1.5px solid var(--woo-border);border-radius:4px;background:var(--woo-white);color:var(--woo-dark);outline:none"
+                         onfocus="this.style.borderColor='var(--woo-dark)'" onblur="this.style.borderColor='var(--woo-border)'"
+                         oninput="_invPageStart=this.value?parseInt(this.value):null" />
+                  <span style="color:var(--text-dimmer)">–</span>
+                  <input type="number" min="1" placeholder="Tot" id="invPageEndInput"
+                         style="width:60px;padding:5px 7px;font-family:var(--woo-mono);font-size:11px;border:1.5px solid var(--woo-border);border-radius:4px;background:var(--woo-white);color:var(--woo-dark);outline:none"
+                         onfocus="this.style.borderColor='var(--woo-dark)'" onblur="this.style.borderColor='var(--woo-border)'"
+                         oninput="_invPageEnd=this.value?parseInt(this.value):null" />
+                </div>
+                <div id="invFileSection" style="display:none">
+                  <div style="font-size:11px;color:var(--text-dimmer);font-family:var(--woo-mono);margin-bottom:6px">Upload Inventarislijst PDF</div>
+                  <input type="file" id="invFileInput" accept=".pdf"
+                         style="font-size:11px;font-family:var(--woo-mono);color:var(--woo-text);width:100%"
+                         onchange="_invFile=this.files[0]" />
+                </div>
+                <div style="margin-top:7px;font-size:10px;color:var(--text-dimmer);font-family:var(--woo-mono)">Vereist OpenAI API-sleutel</div>
+              </div>
+            </div>
             <button class="doc-browser-start-btn" onclick="_startSelectedPipeline()">
               Analyseren →
             </button>
@@ -5950,8 +6065,33 @@ function _renderDocumentBrowser() {
 function _selectDocInBrowser(el, idx) {
   document.querySelectorAll('.doc-browser-item').forEach(i => i.classList.remove('selected'));
   el.classList.add('selected');
+  _pendingFile    = null;
   _selectedPdfUrl = _pendingPdfUrls[idx]?.url || null;
   if (_selectedPdfUrl) _previewPdfInBrowser(_selectedPdfUrl);
+}
+
+function _selectUploadInBrowser(file) {
+  if (!file) return;
+  _pendingFile    = file;
+  _selectedPdfUrl = null;
+  // Visually mark as selected
+  document.querySelectorAll('.doc-browser-item').forEach(i => i.classList.remove('selected'));
+  document.getElementById('docBrowserUploadItem')?.classList.add('selected');
+  // Preview the uploaded file directly (blob URL, no proxy needed)
+  const blobUrl = URL.createObjectURL(file);
+  _previewPdfInBrowser(blobUrl);
+  // Update label text
+  const label = document.getElementById('docBrowserUploadItem');
+  if (label) {
+    const title = label.querySelector('div > div:first-child');
+    if (title) title.textContent = file.name;
+  }
+}
+
+function _selectInvDossierFile(el, idx) {
+  _invDossierUrl = _pendingPdfUrls[idx]?.url || null;
+  document.querySelectorAll('#invDossierSection .doc-browser-item').forEach(i => i.classList.remove('selected'));
+  el.classList.add('selected');
 }
 
 function _selectCompactPipeline(el) {
@@ -5973,7 +6113,7 @@ async function _previewPdfInBrowser(url) {
     </div>`;
 
   try {
-    const proxyUrl = '/proxy?url=' + encodeURIComponent(url);
+    const proxyUrl = url.startsWith('blob:') ? url : '/proxy?url=' + encodeURIComponent(url);
     const pdfjsLib = window['pdfjs-dist/build/pdf'];
     pdfjsLib.GlobalWorkerOptions.workerSrc =
       'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
@@ -6174,6 +6314,22 @@ function _importAnalysis(input) {
   input.value = ''; // allow re-importing the same file
 }
 </script>
+
+<!-- ── Confirm-reset overlay ─────────────────────────────────────────────── -->
+<div id="confirmResetOverlay"
+     style="display:none;position:fixed;inset:0;z-index:9200;background:rgba(0,0,0,0.35);align-items:center;justify-content:center"
+     onclick="if(event.target===this)this.style.display='none'">
+  <div style="background:var(--woo-white);border:1px solid var(--woo-border);border-radius:10px;padding:22px 24px;box-shadow:0 8px 32px rgba(0,0,0,0.18);max-width:340px;width:90%">
+    <div style="font-family:var(--woo-font);font-weight:600;font-size:13px;margin-bottom:10px">Analyse verwijderen?</div>
+    <div style="font-family:var(--woo-font);font-size:12px;color:var(--text-dimmer);margin-bottom:16px;line-height:1.5">Weet je zeker dat je een nieuw dossier wilt laden? De huidige analyse en alle wijzigingen gaan verloren.</div>
+    <div style="display:flex;gap:8px">
+      <button id="confirmResetYes"
+              style="flex:1;padding:8px;background:#c0392b;color:#fff;border:none;border-radius:5px;cursor:pointer;font-family:var(--woo-mono);font-size:11px;font-weight:600">Verwijderen &amp; doorgaan</button>
+      <button onclick="document.getElementById('confirmResetOverlay').style.display='none'"
+              style="flex:1;padding:8px;background:var(--woo-bg);color:var(--woo-text);border:1px solid var(--woo-border);border-radius:5px;cursor:pointer;font-family:var(--woo-mono);font-size:11px">Annuleren</button>
+    </div>
+  </div>
+</div>
 
 <!-- ── Date-edit overlay ──────────────────────────────────────────────────── -->
 <div id="dateEditOverlay"
