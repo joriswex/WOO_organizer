@@ -147,19 +147,18 @@ DOCUMENT METADATA RULES (apply to ALL document types, including emails):
   Return null if not determinable. Do NOT include email addresses.
 
 EMAIL HEADER RULES (only when category = "Email"):
-- email_start: true if this page begins a new email. This includes:
-  * A fresh Van:/From: + Aan:/To: + Onderwerp: block at the top
-  * An Outlook meeting invite (From: + Required Attendees: + Subject: + Start Date/Time:)
-  * A reply email that starts with body text but has NO preceding email header on the same page
-    (e.g. page starts with "Hoi," or "Beste," and then shows quoted headers further down)
-  In the reply case: set email_start = true, but leave email_from/email_to/email_subject/email_date
-  as the headers of the REPLY (which are often absent), not the quoted original below.
-- email_from, email_to, email_cc, email_subject: extract from the Van/Aan/CC/Onderwerp fields
-  of the NEW email starting on this page. For meeting invites use From/Required Attendees/Subject.
-  Null if the reply has no explicit header fields.
-- email_date: parse the Datum:/Verzonden:/Sent:/Date:/Start Date/Time: field and return as YYYY-MM-DD HH:MM (24h).
-  Always include the time when it is visible (e.g. "14:32"). Null if not visible or not parseable.
-- If multiple emails start on the same page, report the FIRST one's headers.
+- email_start: true if a new individual email's header block appears ANYWHERE on this page.
+  An email start is signalled by ANY TWO OR MORE of these fields (Dutch or English):
+    Van:/From:/Afzender:   Aan:/To:   CC:/BCC:   Onderwerp:/Subject:/Betreft:   Datum:/Verzonden:/Sent:/Date:
+  Headers may appear at the TOP or HALFWAY DOWN the page (e.g. quoted originals in a reply chain).
+  Also set email_start = true for:
+    * Outlook meeting invites (Required Attendees, Start Date/Time, Location)
+    * A page whose body text begins before any header block (reply-first format: salutation at top,
+      then quoted Van:/Aan:/Onderwerp: headers appear further down) — in this case the TOP is the newest email
+    * Redacted addresses like <[REDACTED]@domain.nl> or < @domain.nl> are valid Van/Aan field values
+- If multiple emails start on this page, report the FIRST (topmost) one's headers.
+- email_from, email_to, email_cc, email_subject: from the first new email's header. Null if absent or redacted.
+- email_date: YYYY-MM-DD HH:MM (24h). Include time when visible. Null if not found.
 - For non-email pages: email_start = false, all email_* fields = null.
 """
 
@@ -402,6 +401,19 @@ def _update_cache_boundaries(documents: list[dict], cache_path: Path) -> None:
         print(f"[gpt4o] Warning: could not update cache boundaries: {e}")
 
 
+def _update_cache_emails(emails_by_doc: dict, cache_path: Path) -> None:
+    """Store pass-3 full-document email extraction results in the cache file."""
+    try:
+        with open(cache_path, encoding="utf-8") as f:
+            data = json.load(f)
+        data["emails_by_doc"] = emails_by_doc
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        print(f"[gpt4o] Email extraction saved to cache → {cache_path}")
+    except Exception as e:
+        print(f"[gpt4o] Warning: could not update cache emails: {e}")
+
+
 def docs_from_cache(cache_path: Path, pdf_path: Path) -> dict[str, dict]:
     """
     Rebuild the docs dict from a saved JSON cache without calling the API.
@@ -631,11 +643,18 @@ Document boundary rules:
 - cont=Y is a near-certain signal that a sentence carried over from the previous page — this page CANNOT be a new document start regardless of other signals.
 
 Email boundary rules:
-- email_starts: list the page numbers where a genuinely NEW email begins — one with a fresh Van:/From: + Aan:/To: + Onderwerp:/Subject: header block.
-- eml=Y means pass-1 detected email header fields on that page, but it also fires on QUOTED or FORWARDED headers inside an email body. Do NOT treat eml=Y alone as evidence of a new document or new email start.
-- A page that continues an email body (quoted reply chain, long body text, page 2 of a multi-page email) is NOT a new email start even if eml=Y.
-- One email can span multiple pages; a multi-page email body does not create multiple email_starts entries.
-- Always include the first page of the document in email_starts for email-type documents.
+- email_starts: list page numbers where a NEW individual email begins. Signals (ANY TWO OR MORE of):
+    Van:/From:/Afzender:,  Aan:/To:,  Onderwerp:/Subject:/Betreft:,  Datum:/Verzonden:/Sent:,  CC:/BCC:
+  Also counts: Outlook separators (-----Original Message----- / -----Oorspronkelijk bericht-----),
+  or a salutation (Hoi/Beste/Geachte/Dear) at the top of the page with quoted headers appearing below.
+  Headers may appear ANYWHERE on the page, not just within the first 300 characters.
+  Redacted addresses (< @domain> or [REDACTED]@domain) still count as valid Van/Aan fields.
+- eml=Y means pass-1 detected email header fields — useful but may miss headers outside the text preview.
+  Do NOT treat eml=Y alone as a new email start (it also fires on quoted/forwarded headers in a body).
+- A continuation page (page 2+, quoted reply text, long email body) is NOT a new email start.
+- One email can span multiple pages; do not add email_starts for its continuation pages.
+- CRITICAL: For every document classified as E-mail — include its first page in email_starts even if
+  no header fields were detected. Every email document contains at least one email.
 - Leave email_starts empty ([]) for non-email documents.
 """
 
@@ -775,7 +794,7 @@ def _build_page_summary(page_data: list[dict]) -> str:
                 extra += f' from="{str(p["email_from"])[:30]}"'
             if p.get("email_subject"):
                 extra += f' subj="{str(p["email_subject"])[:40]}"'
-        preview = " ".join(text.split())[:300]
+        preview = " ".join(text.split())[:500]
         lines.append(
             f'p{i:03d}: stamp={stamp} wpn={wpn} new={new} cont={cont} cat={cat} eml={eml}{extra} | "{preview}"'
         )
@@ -934,6 +953,16 @@ def _finalise_pipeline(
             "chat_messages":    chat_messages,
             "emails":           structured_emails,
         }
+
+    # Save pass-3 email results to cache so annotate.py can use them without API calls
+    if cache_path:
+        emails_by_doc = {
+            code: doc["emails"]
+            for code, doc in docs.items()
+            if doc.get("emails")
+        }
+        if emails_by_doc:
+            _update_cache_emails(emails_by_doc, cache_path)
 
     total = len(page_data)
     print(f"[gpt4o] Done — {len(docs)} documents from {total} pages.")
