@@ -3821,33 +3821,41 @@ function renderNoDataState(tabLabel) {
 function normalizeDateStr(dateStr) {
   if (!dateStr) return '';
   const s = dateStr.trim();
-  // Already ISO: 2024-03-15
-  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
-  // European: DD-MM-YYYY or DD/MM/YYYY
-  const mEuro = s.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
-  if (mEuro) {
-    const [, d, m, y] = mEuro;
-    if (+d <= 31 && +m <= 12) return `${y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`;
+  // Extract HH:MM time suffix from a string, returns ' HH:MM' or ''
+  function _timeSuffix(src) {
+    const tm = src.match(/\b(\d{1,2}):(\d{2})\b/);
+    return tm ? ` ${tm[1].padStart(2,'0')}:${tm[2]}` : '';
   }
-  // Dutch long: "15 maart 2024" / "vrijdag 15 maart 2024"
+  // Already ISO: 2024-03-15 or 2024-03-15 14:32
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10) + _timeSuffix(s.slice(10));
+  // European: DD-MM-YYYY or DD/MM/YYYY (with optional time after)
+  const mEuro = s.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})(.*)/);
+  if (mEuro) {
+    const [, d, m, y, rest] = mEuro;
+    if (+d <= 31 && +m <= 12) return `${y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}${_timeSuffix(rest)}`;
+  }
+  // Dutch long: "15 maart 2024" / "vrijdag 15 maart 2024 14:32"
   const dutchMon = {jan:1,feb:2,maa:3,mar:3,apr:4,mei:5,jun:6,jul:7,aug:8,sep:9,okt:10,oct:10,nov:11,dec:12};
-  const mDutch = s.match(/(\d{1,2})\s+([a-z]+\.?)\s+(\d{4})/i);
+  const mDutch = s.match(/(\d{1,2})\s+([a-z]+\.?)\s+(\d{4})(.*)/i);
   if (mDutch) {
     const mon = dutchMon[mDutch[2].toLowerCase().slice(0,3)];
-    if (mon) return `${mDutch[3]}-${String(mon).padStart(2,'0')}-${mDutch[1].padStart(2,'0')}`;
+    if (mon) return `${mDutch[3]}-${String(mon).padStart(2,'0')}-${mDutch[1].padStart(2,'0')}${_timeSuffix(mDutch[4])}`;
   }
-  // Fallback: try native Date
+  // Fallback: try native Date (date only)
   const d = new Date(s);
   if (!isNaN(d.getTime())) return d.toISOString().slice(0,10);
   return s;
 }
 
+const _NL_MONTHS_FULL = ['januari','februari','maart','april','mei','juni','juli','augustus','september','oktober','november','december'];
+
 function formatDisplayDate(dateStr) {
   const iso = normalizeDateStr(dateStr);
   if (!iso || iso.length < 10) return dateStr || '—';
-  const [y, m, d] = iso.split('-');
-  const months = ['jan','feb','mrt','apr','mei','jun','jul','aug','sep','okt','nov','dec'];
-  return `${parseInt(d)} ${months[parseInt(m)-1]} ${y}`;
+  const [y, m, d] = iso.slice(0, 10).split('-');
+  const base = `${parseInt(d)} ${_NL_MONTHS_FULL[parseInt(m)-1]} ${y}`;
+  const time = extractTimeStr(iso);
+  return time ? `${base} ${time}` : base;
 }
 
 function renderEmailView(container) {

@@ -41,14 +41,14 @@ _DUTCH_MONTHS: dict[str, int] = {
 
 
 def _normalize_date(raw: str | None) -> str | None:
-    """Convert common Dutch/European date strings to YYYY-MM-DD.
+    """Convert common Dutch/European date strings to YYYY-MM-DD HH:MM.
 
     Handles:
-      - Already ISO: 2024-01-03
-      - European:    DD-MM-YYYY  or  DD/MM/YYYY
-      - Dutch long:  3 januari 2024  (optionally preceded by weekday name)
-      - With time:   maandag 6 mei 2024 14:32  →  2024-05-06
+      - Already ISO: 2024-01-03  or  2024-01-03 14:32
+      - European:    DD-MM-YYYY  or  DD/MM/YYYY  (with optional HH:MM)
+      - Dutch long:  3 januari 2024  or  maandag 6 mei 2024 14:32
 
+    Always preserves HH:MM time when present in the source string.
     Returns the original string unchanged when parsing is not possible
     (the frontend's normalizeDateStr() will attempt a second parse).
     """
@@ -56,17 +56,22 @@ def _normalize_date(raw: str | None) -> str | None:
         return None
     s = raw.strip()
 
-    # Already ISO
+    def _time(src: str) -> str:
+        """Extract ' HH:MM' suffix from src, or empty string."""
+        tm = re.search(r'\b(\d{1,2}):(\d{2})\b', src)
+        return f" {int(tm.group(1)):02d}:{tm.group(2)}" if tm else ""
+
+    # Already ISO (with optional time already attached)
     m = re.match(r"(\d{4})-(\d{2})-(\d{2})", s)
     if m:
-        return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+        return f"{m.group(1)}-{m.group(2)}-{m.group(3)}{_time(s[m.end():])}"
 
     # European: DD-MM-YYYY or DD/MM/YYYY
     m = re.search(r"(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})", s)
     if m:
         d, mo, y = m.group(1), m.group(2), m.group(3)
         if 1 <= int(d) <= 31 and 1 <= int(mo) <= 12:
-            return f"{y}-{mo.zfill(2)}-{d.zfill(2)}"
+            return f"{y}-{mo.zfill(2)}-{d.zfill(2)}{_time(s[m.end():])}"
 
     # Dutch long: "3 januari 2024" or "maandag 3 januari 2024 14:32"
     m = re.search(r"(\d{1,2})\s+([a-zA-Z]+)\s+(\d{4})", s)
@@ -74,7 +79,7 @@ def _normalize_date(raw: str | None) -> str | None:
         d, mon_str, y = m.group(1), m.group(2).lower(), m.group(3)
         mon = _DUTCH_MONTHS.get(mon_str) or _DUTCH_MONTHS.get(mon_str[:3])
         if mon:
-            return f"{y}-{str(mon).zfill(2)}-{d.zfill(2)}"
+            return f"{y}-{str(mon).zfill(2)}-{d.zfill(2)}{_time(s[m.end():])}"
 
     return raw  # Return raw — frontend will try again
 

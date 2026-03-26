@@ -73,7 +73,7 @@ Analyze this Dutch government document page and return a JSON object with exactl
   "email_to": "<recipient(s) from Aan:/To: field, or null>",
   "email_cc": "<CC field, or null>",
   "email_subject": "<subject from Onderwerp:/Subject: field, or null>",
-  "email_date": "<sent/datum date as YYYY-MM-DD, or null — parse any format to ISO>",
+  "email_date": "<sent/datum date as YYYY-MM-DD HH:MM (24h), or null — always include time when visible>",
   "chat_name": "<name of the chat group or contact if this is a Chat page, else null>",
   "chat_messages": <array of message objects if this is a Chat page, else []>,
   "text": "<all text from the page, preserving structure — see TEXT EXTRACTION RULES below>"
@@ -157,8 +157,8 @@ EMAIL HEADER RULES (only when category = "Email"):
 - email_from, email_to, email_cc, email_subject: extract from the Van/Aan/CC/Onderwerp fields
   of the NEW email starting on this page. For meeting invites use From/Required Attendees/Subject.
   Null if the reply has no explicit header fields.
-- email_date: parse the Datum:/Verzonden:/Sent:/Date:/Start Date/Time: field and return as YYYY-MM-DD.
-  Null if not visible or not parseable.
+- email_date: parse the Datum:/Verzonden:/Sent:/Date:/Start Date/Time: field and return as YYYY-MM-DD HH:MM (24h).
+  Always include the time when it is visible (e.g. "14:32"). Null if not visible or not parseable.
 - If multiple emails start on the same page, report the FIRST one's headers.
 - For non-email pages: email_start = false, all email_* fields = null.
 """
@@ -659,7 +659,7 @@ Extract every individual email and return:
       "sender":      "<From/Van/Afzender — name only, no email address; '[REDACTED]' if redacted>",
       "to":          "<To/Aan field, or null>",
       "cc":          "<CC field, or null>",
-      "date":        "<date as YYYY-MM-DD — parse any format; null if not found>",
+      "date":        "<date as YYYY-MM-DD HH:MM (24h) — parse any format; always include time when visible; null if not found>",
       "attachments": ["<filename or description>"],
       "body":        "<email body text only — no header lines>"
     }}
@@ -671,11 +671,12 @@ Extraction rules:
 - A new email starts at a Van:/From:/Afzender: + Aan:/To: + Onderwerp:/Subject:/Betreft: header block,
   OR at a separator line like "-----Oorspronkelijk bericht-----" / "-----Original Message-----".
 - A reply body appearing BEFORE the first quoted header is the newest email — list it LAST.
-- date: parse ALL Dutch and European formats to YYYY-MM-DD:
-    "3 januari 2024"       → "2024-01-03"
-    "maandag 6 mei 2024"   → "2024-05-06"
-    "06-03-2024"           → "2024-03-06"
-    "DD/MM/YYYY"           → "YYYY-MM-DD"
+- date: parse ALL Dutch and European formats to YYYY-MM-DD HH:MM (24h):
+    "3 januari 2024 14:32"         → "2024-01-03 14:32"
+    "maandag 6 mei 2024 09:07"     → "2024-05-06 09:07"
+    "06-03-2024 14:32"             → "2024-03-06 14:32"
+    "DD/MM/YYYY HH:MM"             → "YYYY-MM-DD HH:MM"
+  Always include time when the Verzonden/Sent/Datum field contains it.
   Return null only if truly no date is present.
 - attachments: look for "Bijlage:", "Bijlagen:", "Attachment:", or filenames (.pdf, .docx, .xlsx, etc.).
   Return [] if none found.
