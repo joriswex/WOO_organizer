@@ -33,6 +33,14 @@ def _parse_date(raw: str) -> datetime | None:
         return None
     s = raw.strip()
 
+    # "2025-03-25" (ISO YYYY-MM-DD — returned directly by GPT-4o)
+    m = re.fullmatch(r'(\d{4})-(\d{1,2})-(\d{1,2})', s)
+    if m:
+        try:
+            return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            pass
+
     # "Mon 3/17/2025 7:23:28 PM" / "Thur 6/5/2025 12:58:26 PM"  (short weekday + M/D/YYYY)
     m = re.match(r'\w{2,5}\.?\s+(\d{1,2})/(\d{1,2})/(\d{4})', s)
     if m:
@@ -87,6 +95,14 @@ def _parse_date(raw: str) -> datetime | None:
 # ---------------------------------------------------------------------------
 def _date_from_email(doc: dict) -> tuple[datetime | None, str]:
     """Sent date of the first email in the thread that has a parseable date."""
+    # Use structured emails from GPT-4o pipeline if available
+    for em in (doc.get("emails") or []):
+        raw = (em.get("date") or "").strip()
+        if raw:
+            dt = _parse_date(raw)
+            if dt:
+                return dt, raw
+    # Fall back to text-based extraction (OCR pipeline)
     emails = split_emails(doc['text'], doc['doc_code'])
     for email in emails:
         raw = (email.get('date') or '').strip()
@@ -98,8 +114,8 @@ def _date_from_email(doc: dict) -> tuple[datetime | None, str]:
 
 
 def _date_from_datum_field(text: str) -> tuple[datetime | None, str]:
-    """Extract the Datum: / Datum | / Datum <space> field from the first 1500 chars."""
-    m = re.search(r'(?i)\bdatum\b[\s|:]+(.{2,50}?)(?:\s*\||\n|$)', text[:1500])
+    """Extract the Datum: / Datum | / Datum <space> field from the first 3000 chars."""
+    m = re.search(r'(?i)\bdatum\b[\s|:\t]+(.{2,60}?)(?:\s*\||\n|$)', text[:3000])
     if m:
         raw = m.group(1).strip()
         dt = _parse_date(raw)
@@ -134,6 +150,13 @@ def _date_from_text_scan(text: str, chars: int = 1000) -> tuple[datetime | None,
 
 def _get_doc_date(doc: dict) -> tuple[datetime | None, str]:
     """Route date extraction to the right strategy based on document category."""
+    # GPT-4o pipeline: use the structured doc_date field if available (any category)
+    raw_gpt = (doc.get("doc_date") or "").strip()
+    if raw_gpt:
+        dt = _parse_date(raw_gpt)
+        if dt:
+            return dt, raw_gpt
+
     category = doc['category']
 
     if category == 'E-mail':

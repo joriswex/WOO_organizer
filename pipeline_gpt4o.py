@@ -22,17 +22,19 @@ import os
 import re
 import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from PIL import Image
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-OPENAI_MODEL  = "gpt-4o"
-_RENDER_DPI   = 200
-_MAX_IMG_PX   = 1568      # GPT-4o "high" detail works best ≤ 2048px; 1568 is optimal tile size
-_CALL_SLEEP   = 0.15      # seconds between API calls (polite rate limiting)
-_MAX_RETRIES  = 3
+OPENAI_MODEL    = "gpt-4o"
+_BOUNDARY_MODEL = "gpt-4o-mini"   # text-only boundary pass — no vision needed, much cheaper
+_RENDER_DPI     = 200
+_MAX_IMG_PX     = 1568      # GPT-4o "high" detail works best ≤ 2048px; 1568 is optimal tile size
+_MAX_RETRIES    = 3
+_MAX_WORKERS    = 10        # concurrent GPT-4o API calls
 
 # WOO redaction code pattern — same as pipeline_ocr.py
 _REDACTION_RE = re.compile(r"5\.[12]\.[1-9][a-z]{0,2}", re.IGNORECASE)
@@ -40,7 +42,17 @@ _REDACTION_RE = re.compile(r"5\.[12]\.[1-9][a-z]{0,2}", re.IGNORECASE)
 # ── Prompt ────────────────────────────────────────────────────────────────────
 
 _SYSTEM_PROMPT = (
-    "You are analyzing pages from Dutch government documents (WOO — Wet Open Overheid). "
+    "You are analyzing pages from Dutch government WOO (Wet Open Overheid) disclosure dossiers. "
+    "These documents were released under Dutch freedom-of-information law. "
+    "Key context you must apply:\n"
+    "- Every document in the dossier has a 4-digit inventory code stamped in a corner (0001–0999).\n"
+    "- Sensitive content is redacted with black rectangles. The applicable WOO legal ground is "
+    "printed in small text next to each black box, in the format 5.1.X or 5.2.X (e.g. '5.1.2e', "
+    "'5.1.1', '5.2.1'). These are articles of the Wet Open Overheid.\n"
+    "- The dossier often starts with an Inventarislijst: a table listing all documents with their "
+    "codes, titles, page counts, and the WOO decision for each.\n"
+    "- Documents are typically internal government emails, memos (nota's), formal letters (brieven), "
+    "reports, or meeting minutes.\n"
     "Respond ONLY with a valid JSON object matching the schema in the user message. "
     "Do not include markdown code fences or any text outside the JSON object."
 )
@@ -53,8 +65,16 @@ Analyze this Dutch government document page and return a JSON object with exactl
   "is_new_document": <true if this is clearly the first page of a new document>,
   "doc_code": "<4-digit stamp code like 0143, or null if not visible>",
   "within_doc_page": <integer — page number within this document, e.g. 1, 2, 3 — or null>,
-  "category": "<Email | Chat | Nota | Report | Brief | Timeline | Vergadernotulen | Other>",
+  "category": "<Email | Chat | Nota | Report | Brief | Timeline | Vergadernotulen | Inventarislijst | Other>",
   "has_redactions": <true if black boxes or censored areas are visible>,
+  "doc_date": "<the primary date of this document as YYYY-MM-DD, or null — see DOCUMENT METADATA RULES>",
+  "doc_sender": "<author or sender of this document as a plain name string, or null>",
+  "email_start": <true if a new email header block starts on this page, else false>,
+  "email_from": "<sender from Van:/From: field of that email, or null>",
+  "email_to": "<recipient(s) from Aan:/To: field, or null>",
+  "email_cc": "<CC field, or null>",
+  "email_subject": "<subject from Onderwerp:/Subject: field, or null>",
+  "email_date": "<sent/datum date as YYYY-MM-DD, or null — parse any format to ISO>",
   "chat_name": "<name of the chat group or contact if this is a Chat page, else null>",
   "chat_messages": <array of message objects if this is a Chat page, else []>
 }
@@ -70,8 +90,10 @@ TEXT EXTRACTION RULES:
     Verzonden: ...
 - For redacted email addresses where only the domain is visible (e.g. a black box before @minbuza.nl):
     write: <[REDACTED]@minbuza.nl>
-- For all other redacted sections (black rectangles / censored words):
-    write: [REDACTED]
+- For redacted sections (black rectangles / censored areas), look for a WOO article code
+  printed in small text next to the black box (e.g. "5.1.2e", "5.1.1", "5.2.1"):
+    If article code is visible:  write [REDACTED: 5.1.2e]  (substitute the actual code)
+    If no article code visible:  write [REDACTED]
 - Include any visible stamps, codes, or page markers.
 - Use blank lines to separate paragraphs and sections.
 
@@ -83,13 +105,14 @@ DOCUMENT BOUNDARY RULES:
 - within_doc_page: if a stamp or footer says "Pagina X van N", return X.
 
 CATEGORY RULES:
-- Email: contains Van/Aan/Onderwerp header block
+- Email: contains Van/Aan/Onderwerp header block OR From/To/Subject block OR meeting invite fields (Required Attendees, Start Date/Time, Location) OR a reply body followed by quoted email headers
 - Chat: screenshot of a messaging app (WhatsApp, Signal, Telegram, SMS, etc.) showing chat bubbles
 - Nota: internal memo or briefing note ("Nota", "Memorandum", "Briefing")
 - Brief: formal letter with salutation ("Geachte", "Beste", "Dear")
 - Report: rapport, onderzoek, analyse
 - Timeline: chronological list of events or dates
 - Vergadernotulen: meeting minutes or agenda
+- Inventarislijst: a table inventorying all documents in this WOO dossier — shows doc codes, titles, page counts, and the WOO decision for each
 - Other: anything that does not fit the above
 
 CHAT PAGE RULES (only when category = "Chat"):
@@ -105,6 +128,34 @@ CHAT PAGE RULES (only when category = "Chat"):
 - If a sender name is redacted but the same redaction code appears consistently (e.g. always '5.1.2.e'),
   use that code as the sender_label so we can track the same person across messages.
 - For the text field, write a plain concatenation of all message contents (for search/sorting).
+
+DOCUMENT METADATA RULES (apply to ALL document types, including emails):
+- doc_date: the primary date of THIS document — the date it was written, sent, or issued.
+  Look for: letterhead date, "Datum:", "Date:", "Verzonden:", "Sent:", "Start Date/Time:", meeting date.
+  Parse ANY visible date format (Dutch or English) and return as YYYY-MM-DD.
+  For email threads: use the date of the most recent / topmost email on this page.
+  Return null only if no date is visible anywhere on the page.
+- doc_sender: the author, sender, or issuing party of this document.
+  For emails: the From/Van field name (without email address).
+  For Nota/Brief: the name or team in the signature block or "Van:" header line.
+  For reports: the organisation or author listed on the title page.
+  Return null if not determinable. Do NOT include email addresses.
+
+EMAIL HEADER RULES (only when category = "Email"):
+- email_start: true if this page begins a new email. This includes:
+  * A fresh Van:/From: + Aan:/To: + Onderwerp: block at the top
+  * An Outlook meeting invite (From: + Required Attendees: + Subject: + Start Date/Time:)
+  * A reply email that starts with body text but has NO preceding email header on the same page
+    (e.g. page starts with "Hoi," or "Beste," and then shows quoted headers further down)
+  In the reply case: set email_start = true, but leave email_from/email_to/email_subject/email_date
+  as the headers of the REPLY (which are often absent), not the quoted original below.
+- email_from, email_to, email_cc, email_subject: extract from the Van/Aan/CC/Onderwerp fields
+  of the NEW email starting on this page. For meeting invites use From/Required Attendees/Subject.
+  Null if the reply has no explicit header fields.
+- email_date: parse the Datum:/Verzonden:/Sent:/Date:/Start Date/Time: field and return as YYYY-MM-DD.
+  Null if not visible or not parseable.
+- If multiple emails start on the same page, report the FIRST one's headers.
+- For non-email pages: email_start = false, all email_* fields = null.
 """
 
 
@@ -120,16 +171,18 @@ _GPT4O_TO_CATEGORY: dict[str, str] = {
     "report":          "Report",
     "brief":           "Brief",
     "timeline":        "Timeline",
-    "vergadernotulen": "Vergadernotulen",
-    "other":           "Other",
+    "vergadernotulen":  "Vergadernotulen",
+    "inventarislijst":  "Inventarislijst",
+    "Inventarislijst":  "Inventarislijst",
+    "other":            "Other",
     # Canonical pass-through (already normalised, e.g. loaded from cache)
-    "E-mail":          "E-mail",
-    "Nota":            "Nota",
-    "Report":          "Report",
-    "Brief":           "Brief",
-    "Timeline":        "Timeline",
-    "Vergadernotulen": "Vergadernotulen",
-    "Other":           "Other",
+    "E-mail":           "E-mail",
+    "Nota":             "Nota",
+    "Report":           "Report",
+    "Brief":            "Brief",
+    "Timeline":         "Timeline",
+    "Vergadernotulen":  "Vergadernotulen",
+    "Other":            "Other",
 }
 
 
@@ -152,13 +205,15 @@ def _encode_image(img: Image.Image) -> str:
 
 # ── GPT-4o call ───────────────────────────────────────────────────────────────
 
-def _call_gpt4o(image_b64: str, client, page_index: int) -> dict:
+def _call_gpt4o(image_b64: str, client, page_index: int, pdf_page_num: int) -> dict:
     """Call GPT-4o vision with retry logic. Returns parsed JSON dict."""
+    page_hint = f"[PDF page {pdf_page_num}]\n\n"
     for attempt in range(_MAX_RETRIES):
         try:
             response = client.chat.completions.create(
                 model=OPENAI_MODEL,
-                max_tokens=2048,
+                max_tokens=4096,
+                temperature=0,
                 response_format={"type": "json_object"},
                 messages=[
                     {"role": "system", "content": _SYSTEM_PROMPT},
@@ -172,7 +227,7 @@ def _call_gpt4o(image_b64: str, client, page_index: int) -> dict:
                                     "detail": "high",
                                 },
                             },
-                            {"type": "text", "text": _PAGE_PROMPT},
+                            {"type": "text", "text": page_hint + _PAGE_PROMPT},
                         ],
                     },
                 ],
@@ -201,7 +256,15 @@ def _count_redaction_codes(text: str) -> dict[str, int]:
 
 
 def _annotate_text(text: str) -> str:
-    return _REDACTION_RE.sub(lambda m: f"[REDACTED: {m.group()}]", text)
+    # Negative lookbehind: skip codes already inside [REDACTED: ...] to prevent
+    # GPT-4o's own [REDACTED: 5.1.2e] from becoming [REDACTED: [REDACTED: 5.1.2e]].
+    # "[REDACTED: " is exactly 11 chars — a fixed-length lookbehind.
+    return re.sub(
+        r"(?<!\[REDACTED: )5\.[12]\.[1-9][a-z]{0,2}",
+        lambda m: f"[REDACTED: {m.group()}]",
+        text,
+        flags=re.IGNORECASE,
+    )
 
 
 def _normalise_doc_code(raw) -> str | None:
@@ -236,6 +299,14 @@ def save_cache(page_data: list[dict], cache_path: Path) -> None:
             "category":        p["category"],
             "chat_name":       p.get("chat_name"),
             "chat_messages":   p.get("chat_messages") or [],
+            "email_start":     p.get("email_start", False),
+            "email_from":      p.get("email_from"),
+            "email_to":        p.get("email_to"),
+            "email_cc":        p.get("email_cc"),
+            "email_subject":   p.get("email_subject"),
+            "email_date":      p.get("email_date"),
+            "doc_date":        p.get("doc_date"),
+            "doc_sender":      p.get("doc_sender"),
         }
         for p in page_data
     ]
@@ -244,16 +315,30 @@ def save_cache(page_data: list[dict], cache_path: Path) -> None:
     print(f"[gpt4o] Cache saved → {cache_path}")
 
 
-def _load_cache_pages(cache_path: Path) -> tuple[list[dict], int]:
-    """Load page metadata from JSON cache. Returns (pages_without_images, dpi)."""
+def _load_cache_pages(cache_path: Path) -> tuple[list[dict], int, list[dict]]:
+    """Load page metadata from JSON cache. Returns (pages_without_images, dpi, boundary_docs)."""
     with open(cache_path, encoding="utf-8") as f:
         data = json.load(f)
-    dpi   = data.get("dpi", _RENDER_DPI)
-    pages = data["pages"]
+    dpi      = data.get("dpi", _RENDER_DPI)
+    pages    = data["pages"]
+    boundary = data.get("boundary_documents") or []
     # Re-normalise category in case cache was written before the fix
     for p in pages:
         p["category"] = _normalise_category(str(p.get("category") or "Other"))
-    return pages, dpi
+    return pages, dpi, boundary
+
+
+def _update_cache_boundaries(documents: list[dict], cache_path: Path) -> None:
+    """Append pass-2 boundary decisions to an existing cache file."""
+    try:
+        with open(cache_path, encoding="utf-8") as f:
+            data = json.load(f)
+        data["boundary_documents"] = documents
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        print(f"[gpt4o] Boundary decisions saved to cache → {cache_path}")
+    except Exception as e:
+        print(f"[gpt4o] Warning: could not update cache boundaries: {e}")
 
 
 def docs_from_cache(cache_path: Path, pdf_path: Path) -> dict[str, dict]:
@@ -269,7 +354,7 @@ def docs_from_cache(cache_path: Path, pdf_path: Path) -> dict[str, dict]:
         Same dict[str, dict] as load_pdf_vlm().
     """
     print(f"[gpt4o] Loading cache from {cache_path} ...")
-    pages_meta, dpi = _load_cache_pages(cache_path)
+    pages_meta, dpi, boundary_docs = _load_cache_pages(cache_path)
     total = len(pages_meta)
 
     print(f"[gpt4o] Re-rendering {total} page images from PDF at {dpi} DPI...")
@@ -283,7 +368,7 @@ def docs_from_cache(cache_path: Path, pdf_path: Path) -> dict[str, dict]:
         img = all_images[idx] if idx < len(all_images) else all_images[-1]
         page_data.append({**p, "image": img})
 
-    return _finalise_pipeline(page_data)
+    return _finalise_pipeline(page_data, boundary_docs=boundary_docs or None)
 
 
 # ── Main pipeline ─────────────────────────────────────────────────────────────
@@ -343,14 +428,28 @@ def load_pdf_vlm(
         page_offset = 0
 
     total = len(images)
-    print(f"[gpt4o] Analysing {total} pages with {OPENAI_MODEL} (detail=high)...")
+    print(f"[gpt4o] Analysing {total} pages with {OPENAI_MODEL} (detail=high, workers={_MAX_WORKERS})...")
 
-    # ── Stage 1: per-page GPT-4o analysis ───────────────────────────────────
-    page_data: list[dict] = []
-
-    for i, img in enumerate(images):
+    # ── Stage 1: per-page GPT-4o analysis (parallel) ────────────────────────
+    def _process_page(args: tuple[int, Image.Image]) -> tuple[int, dict]:
+        i, img = args
         image_b64 = _encode_image(img)
-        result    = _call_gpt4o(image_b64, client, i)
+        return i, _call_gpt4o(image_b64, client, i, pdf_page_num=i + 1 + page_offset)
+
+    raw_results: dict[int, dict] = {}
+    completed = 0
+
+    with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as executor:
+        futures = {executor.submit(_process_page, (i, img)): i for i, img in enumerate(images)}
+        for future in as_completed(futures):
+            i, result = future.result()
+            completed += 1
+            print(f"[gpt4o] Page {completed}/{total} done (pdf page {i + 1 + page_offset})")
+            raw_results[i] = result
+
+    page_data: list[dict] = []
+    for i, img in enumerate(images):
+        result = raw_results.get(i, {})
 
         text            = str(result.get("text") or "").strip()
         is_new_doc      = bool(result.get("is_new_document", False))
@@ -369,6 +468,15 @@ def load_pdf_vlm(
         if not isinstance(chat_messages, list):
             chat_messages = []
 
+        email_start   = bool(result.get("email_start", False)) if category == "E-mail" else False
+        email_from    = result.get("email_from")    or None
+        email_to      = result.get("email_to")      or None
+        email_cc      = result.get("email_cc")      or None
+        email_subject = result.get("email_subject") or None
+        email_date    = result.get("email_date")    or None
+        doc_date      = result.get("doc_date")      or None
+        doc_sender    = result.get("doc_sender")    or None
+
         page_data.append({
             "page_num":        i + 1 + page_offset,
             "image":           img,
@@ -377,37 +485,321 @@ def load_pdf_vlm(
             "is_new_document": is_new_doc,
             "within_doc_page": within_doc_page,
             "category":        category,
+            "doc_date":        doc_date,
+            "doc_sender":      doc_sender,
             "chat_name":       chat_name,
             "chat_messages":   chat_messages,
+            "email_start":     email_start,
+            "email_from":      email_from,
+            "email_to":        email_to,
+            "email_cc":        email_cc,
+            "email_subject":   email_subject,
+            "email_date":      email_date,
         })
-
-        status = (
-            f"code={doc_code or '?':>4} | "
-            f"wpn={str(within_doc_page or '?'):>3} | "
-            f"new={str(is_new_doc):<5} | "
-            f"cat={category}"
-        )
-        print(f"[gpt4o] Page {i+1:>{len(str(total))}}/{total} — {status}")
-        time.sleep(_CALL_SLEEP)
 
     # ── Save cache ───────────────────────────────────────────────────────────
     if cache_path:
         save_cache(page_data, cache_path)
 
-    return _finalise_pipeline(page_data)
+    return _finalise_pipeline(page_data, client=client, cache_path=cache_path)
 
 
-def _finalise_pipeline(page_data: list[dict]) -> dict[str, dict]:
+def _build_emails_from_pages(doc_code: str, email_pages: list[dict]) -> list[dict]:
+    """Assemble individual email dicts from per-page GPT-4o email metadata."""
+    emails: list[dict] = []
+    current: dict | None = None
+    email_idx = 0
+
+    for p in email_pages:
+        if p.get("email_start") or current is None:
+            if current is not None:
+                emails.append(current)
+            email_idx += 1
+            current = {
+                "id":      f"{doc_code}.{email_idx}",
+                "subject": p.get("email_subject"),
+                "sender":  p.get("email_from"),
+                "to":      p.get("email_to"),
+                "cc":      p.get("email_cc"),
+                "date":    p.get("email_date"),
+                "text":    p["text"],
+            }
+        else:
+            current["text"] += "\n\n" + p["text"]
+
+    if current:
+        emails.append(current)
+
+    return emails
+
+
+# ── Pass 2: context-aware boundary detection ──────────────────────────────────
+
+_BOUNDARY_SYSTEM = (
+    "You are analyzing a Dutch government WOO (Wet Open Overheid) disclosure dossier. "
+    "You receive a compact per-page summary and must draw document boundaries and, for "
+    "email documents, individual email boundaries. "
+    "Respond ONLY with a valid JSON object — no markdown fences, no extra text."
+)
+
+_BOUNDARY_PROMPT = """\
+Below is a {n}-page WOO dossier summary. Each line:
+  p<num>: stamp=<4-digit code|null> wpn=<within-doc page|null> new=<Y|N> cat=<category> eml=<Y|N> | "<first 80 chars of text>"
+  (new=Y means pass-1 suggested a new doc starts here; eml=Y means an email header was detected)
+
+{summary}
+
+Return ONLY this JSON (all page numbers are the p<num> indices above, 1-based):
+{{
+  "documents": [
+    {{
+      "doc_code": "<4-digit stamp code, or null if absent>",
+      "start_page": <integer>,
+      "email_starts": [<page numbers where individual emails start — include the first page of email docs>]
+    }}
+  ]
+}}
+
+Rules:
+- Every page belongs to exactly one document. Documents listed in ascending page order with no gaps.
+- New document signals (use in combination): stamp code changes, wpn=1, new=Y, content clearly shifts to a new letterhead/header/thread.
+- Stamps are the strongest signal but may be absent from some pages — use wpn and text as support.
+- When in doubt, keep pages together rather than creating a spurious split.
+- email_starts: list the page numbers where a new Van:/From: + Aan:/To: + Onderwerp:/Subject: header block begins.
+  Multiple emails can start on the same page; one email can span multiple pages.
+  Always include the first page of the document in email_starts for email-type documents.
+  Leave empty ([]) for non-email documents.
+"""
+
+
+# ── Full-document email extraction (pass 3) ───────────────────────────────────
+
+_EMAIL_EXTRACT_SYSTEM = (
+    "You are a structured data extractor for Dutch government WOO (Wet Open Overheid) email documents. "
+    "Extract every individual email from the provided document text with accurate metadata. "
+    "Respond ONLY with a valid JSON object — no markdown fences, no extra text."
+)
+
+_EMAIL_EXTRACT_PROMPT = """\
+Below is the full text of WOO document {code} — an email document (possibly a thread).
+
+Extract every individual email and return:
+{{
+  "emails": [
+    {{
+      "subject":     "<Onderwerp/Subject/Betreft line, or null>",
+      "sender":      "<From/Van/Afzender — name only, no email address; '[REDACTED]' if redacted>",
+      "to":          "<To/Aan field, or null>",
+      "cc":          "<CC field, or null>",
+      "date":        "<date as YYYY-MM-DD — parse any format; null if not found>",
+      "attachments": ["<filename or description>"],
+      "body":        "<email body text only — no header lines>"
+    }}
+  ]
+}}
+
+Extraction rules:
+- List emails oldest-first (in a reply chain the quoted original is oldest).
+- A new email starts at a Van:/From:/Afzender: + Aan:/To: + Onderwerp:/Subject:/Betreft: header block,
+  OR at a separator line like "-----Oorspronkelijk bericht-----" / "-----Original Message-----".
+- A reply body appearing BEFORE the first quoted header is the newest email — list it LAST.
+- date: parse ALL Dutch and European formats to YYYY-MM-DD:
+    "3 januari 2024"       → "2024-01-03"
+    "maandag 6 mei 2024"   → "2024-05-06"
+    "06-03-2024"           → "2024-03-06"
+    "DD/MM/YYYY"           → "YYYY-MM-DD"
+  Return null only if truly no date is present.
+- attachments: look for "Bijlage:", "Bijlagen:", "Attachment:", or filenames (.pdf, .docx, .xlsx, etc.).
+  Return [] if none found.
+- body: message body only — strip all Van/Aan/CC/Onderwerp/Datum header lines from the top.
+  Preserve [REDACTED: 5.1.2e] markers exactly as found.
+- sender: name only. Strip angle brackets and email addresses entirely.
+  If redacted, use "[REDACTED]".
+- If this is a single email (no thread), return an array with one item.
+
+Document text:
+{text}
+"""
+
+_EMAIL_EXTRACT_MAX_CHARS = 24_000   # ~6 000 tokens — keeps cost low for gpt-4o-mini
+
+
+def _extract_emails_full_doc(code: str, text: str, client) -> list[dict]:
+    """
+    Full-document email extraction via GPT-4o-mini.
+
+    Sends the complete email document text in a single call so GPT can see
+    the whole thread, correctly identify split points, parse Dutch dates,
+    and extract attachment lists — without page-boundary fragmentation.
+
+    Falls back to an empty list on failure; the caller should then fall back
+    to _build_emails_from_pages().
+    """
+    truncated = text[:_EMAIL_EXTRACT_MAX_CHARS]
+    prompt    = _EMAIL_EXTRACT_PROMPT.format(code=code, text=truncated)
+
+    for attempt in range(_MAX_RETRIES):
+        try:
+            response = client.chat.completions.create(
+                model=_BOUNDARY_MODEL,   # gpt-4o-mini — text only, no vision needed
+                max_tokens=4096,
+                temperature=0,
+                response_format={"type": "json_object"},
+                messages=[
+                    {"role": "system", "content": _EMAIL_EXTRACT_SYSTEM},
+                    {"role": "user",   "content": prompt},
+                ],
+            )
+            data = json.loads(response.choices[0].message.content or "{}")
+            raw  = data.get("emails") or []
+            result: list[dict] = []
+            for i, em in enumerate(raw, 1):
+                result.append({
+                    "id":          f"{code}.{i}",
+                    "subject":     em.get("subject")     or None,
+                    "sender":      em.get("sender")      or None,
+                    "to":          em.get("to")          or None,
+                    "cc":          em.get("cc")          or None,
+                    "date":        em.get("date")        or None,
+                    "attachments": em.get("attachments") or [],
+                    "text":        em.get("body")        or "",
+                })
+            print(f"  [gpt4o-email] {code}: {len(result)} email(s) via full-doc extraction")
+            return result
+        except json.JSONDecodeError as e:
+            print(f"  [gpt4o-email] {code}: JSON error (attempt {attempt + 1}): {e}")
+        except Exception as e:
+            print(f"  [gpt4o-email] {code}: API error (attempt {attempt + 1}): {str(e)[:120]}")
+            if attempt < _MAX_RETRIES - 1:
+                time.sleep(2 ** attempt)
+
+    return []
+
+
+def _build_page_summary(page_data: list[dict]) -> str:
+    """Build the compact per-page text table sent to pass 2."""
+    lines = []
+    for i, p in enumerate(page_data, 1):
+        stamp   = p["doc_code"] or "null"
+        wpn     = str(p["within_doc_page"]) if p["within_doc_page"] is not None else "null"
+        new     = "Y" if p.get("is_new_document") else "N"
+        cat     = p.get("category") or "Other"
+        eml     = "Y" if p.get("email_start") else "N"
+        extra   = ""
+        if p.get("email_start"):
+            if p.get("email_from"):
+                extra += f' from="{str(p["email_from"])[:30]}"'
+            if p.get("email_subject"):
+                extra += f' subj="{str(p["email_subject"])[:40]}"'
+        preview = " ".join((p.get("text") or "").split())[:80]
+        lines.append(
+            f'p{i:03d}: stamp={stamp} wpn={wpn} new={new} cat={cat} eml={eml}{extra} | "{preview}"'
+        )
+    return "\n".join(lines)
+
+
+def _call_boundary_pass(summary: str, n_pages: int, client) -> list[dict]:
+    """Single GPT-4o-mini text-only call that returns document + email boundaries."""
+    prompt = _BOUNDARY_PROMPT.format(n=n_pages, summary=summary)
+    for attempt in range(_MAX_RETRIES):
+        try:
+            response = client.chat.completions.create(
+                model=_BOUNDARY_MODEL,
+                max_tokens=4096,
+                temperature=0,
+                response_format={"type": "json_object"},
+                messages=[
+                    {"role": "system", "content": _BOUNDARY_SYSTEM},
+                    {"role": "user",   "content": prompt},
+                ],
+            )
+            data = json.loads(response.choices[0].message.content or "{}")
+            return data.get("documents") or []
+        except json.JSONDecodeError as e:
+            print(f"  [gpt4o-pass2] JSON parse error (attempt {attempt + 1}): {e}")
+        except Exception as e:
+            print(f"  [gpt4o-pass2] API error (attempt {attempt + 1}): {str(e)[:120]}")
+            if attempt < _MAX_RETRIES - 1:
+                time.sleep(2 ** attempt)
+    return []
+
+
+def _build_docs_from_boundaries(
+    page_data: list[dict],
+    documents: list[dict],
+) -> dict[str, dict]:
+    """Assign pages to documents based on pass-2 boundary decisions."""
+    if not documents:
+        docs_raw: dict[str, dict] = {}
+        for p in page_data:
+            _append_page(docs_raw, "auto_001", p)
+        return docs_raw
+
+    n           = len(page_data)
+    docs_sorted = sorted(documents, key=lambda d: int(d.get("start_page", 1)))
+
+    idx_to_code: dict[int, str] = {}
+    email_start_idxs: set[int]  = set()
+
+    for i, doc in enumerate(docs_sorted):
+        start    = int(doc.get("start_page", 1))
+        end      = (int(docs_sorted[i + 1].get("start_page", n + 1)) - 1
+                    if i + 1 < len(docs_sorted) else n)
+        raw_code = doc.get("doc_code")
+        code     = (_normalise_doc_code(raw_code) if raw_code
+                    else f"auto_{i + 1:03d}")
+        for idx in range(start, end + 1):
+            idx_to_code[idx] = code
+        for ep in (doc.get("email_starts") or []):
+            email_start_idxs.add(int(ep))
+
+    docs_raw: dict[str, dict] = {}
+    for seq_idx, p in enumerate(page_data, 1):
+        code  = idx_to_code.get(seq_idx, f"auto_{seq_idx:03d}")
+        p_mod = dict(p)
+        # Override pass-1 email_start with pass-2 decisions (more context-aware)
+        p_mod["email_start"] = seq_idx in email_start_idxs
+        _append_page(docs_raw, code, p_mod)
+
+    return docs_raw
+
+
+def _finalise_pipeline(
+    page_data: list[dict],
+    client=None,
+    cache_path: Path | None = None,
+    boundary_docs: list[dict] | None = None,
+) -> dict[str, dict]:
     """Stage 2 + 3: assign doc codes and build the final docs dict."""
-    has_stamps = any(p["doc_code"] for p in page_data)
-
-    if has_stamps:
-        docs_raw = _build_docs_forward_fill(page_data)
-        method   = "gpt4o-stamp"
+    if boundary_docs is not None:
+        # Cached boundary decisions — skip pass 2 entirely
+        docs_raw = _build_docs_from_boundaries(page_data, boundary_docs)
+        method   = "gpt4o-2pass"
+    elif client is not None:
+        print(f"[gpt4o] Pass 2: identifying boundaries across {len(page_data)} pages...")
+        summary   = _build_page_summary(page_data)
+        documents = _call_boundary_pass(summary, len(page_data), client)
+        if documents:
+            docs_raw = _build_docs_from_boundaries(page_data, documents)
+            method   = "gpt4o-2pass"
+            if cache_path:
+                _update_cache_boundaries(documents, cache_path)
+        else:
+            print("[gpt4o] Pass 2 failed — falling back to stamp-based logic.")
+            has_stamps = any(p["doc_code"] for p in page_data)
+            docs_raw   = (_build_docs_forward_fill(page_data) if has_stamps
+                          else _build_docs_boundary(page_data))
+            method     = "gpt4o-stamp" if has_stamps else "gpt4o-boundary"
     else:
-        print("[gpt4o] No doc-code stamps found — using VLM boundary detection.")
-        docs_raw = _build_docs_boundary(page_data)
-        method   = "gpt4o-boundary"
+        # No client, no cached boundaries — original stamp/boundary logic
+        has_stamps = any(p["doc_code"] for p in page_data)
+        if has_stamps:
+            docs_raw = _build_docs_forward_fill(page_data)
+            method   = "gpt4o-stamp"
+        else:
+            print("[gpt4o] No doc-code stamps found — using VLM boundary detection.")
+            docs_raw = _build_docs_boundary(page_data)
+            method   = "gpt4o-boundary"
 
     docs: dict[str, dict] = {}
     for code, d in docs_raw.items():
@@ -415,25 +807,48 @@ def _finalise_pipeline(page_data: list[dict]) -> dict[str, dict]:
         annotated       = _annotate_text(full_text)
         redaction_codes = _count_redaction_codes(full_text)
 
-        cat_counts = Counter(d["categories"])
-        category   = cat_counts.most_common(1)[0][0] if cat_counts else "Other"
+        # First non-"Other" page category wins: email headers only appear on the
+        # first page, so majority vote would wrongly demote multi-page emails.
+        category = next((c for c in d["categories"] if c != "Other"), "Other")
 
         # Chat: use most common chat name across pages
         chat_names    = d.get("chat_names") or []
         chat_name     = Counter(chat_names).most_common(1)[0][0] if chat_names else None
         chat_messages = d.get("chat_messages") or []
 
+        # Build structured emails for E-mail documents.
+        # Prefer the full-document GPT-4o-mini pass (sees the whole thread at once,
+        # handles Dutch dates, attachments, reply chains correctly).
+        # Fall back to per-page assembly if extraction fails or client is unavailable.
+        if category == "E-mail":
+            if client is not None:
+                structured_emails = _extract_emails_full_doc(code, annotated, client)
+                if not structured_emails:
+                    structured_emails = _build_emails_from_pages(code, d.get("email_pages", []))
+            else:
+                structured_emails = _build_emails_from_pages(code, d.get("email_pages", []))
+        else:
+            structured_emails = []
+
+        # First non-null doc_date / doc_sender across all pages of this document
+        doc_date   = next((v for v in d.get("doc_dates", [])   if v), None)
+        doc_sender = next((v for v in d.get("doc_senders", []) if v), None)
+
         docs[code] = {
             "doc_code":         code,
             "pages":            d["pages"],
+            "pdf_pages":        d.get("pdf_pages") or [],
             "page_nums_in_doc": d["page_nums_in_doc"],
             "text":             full_text,
             "annotated_text":   annotated,
             "redaction_codes":  redaction_codes,
             "category":         category,
             "method":           method,
+            "doc_date":         doc_date,
+            "doc_sender":       doc_sender,
             "chat_name":        chat_name,
             "chat_messages":    chat_messages,
+            "emails":           structured_emails,
         }
 
     total = len(page_data)
@@ -495,16 +910,34 @@ def _append_page(docs_raw: dict, code: str, p: dict) -> None:
         docs_raw[code] = {
             "doc_code":         code,
             "pages":            [],
+            "pdf_pages":        [],
             "page_nums_in_doc": [],
             "texts":            [],
             "categories":       [],
+            "doc_dates":        [],   # per-page doc_date values; first non-null wins
+            "doc_senders":      [],   # per-page doc_sender values; first non-null wins
             "chat_names":       [],
             "chat_messages":    [],
+            "email_pages":      [],
         }
     docs_raw[code]["pages"].append(p["image"])
+    docs_raw[code]["pdf_pages"].append(p["page_num"])
     docs_raw[code]["page_nums_in_doc"].append(p["within_doc_page"])
     docs_raw[code]["texts"].append(p["text"])
     docs_raw[code]["categories"].append(p["category"])
+    if p.get("doc_date"):
+        docs_raw[code]["doc_dates"].append(p["doc_date"])
+    if p.get("doc_sender"):
+        docs_raw[code]["doc_senders"].append(p["doc_sender"])
     if p.get("chat_name"):
         docs_raw[code]["chat_names"].append(p["chat_name"])
     docs_raw[code]["chat_messages"].extend(p.get("chat_messages") or [])
+    docs_raw[code]["email_pages"].append({
+        "email_start":   p.get("email_start", False),
+        "email_from":    p.get("email_from"),
+        "email_to":      p.get("email_to"),
+        "email_cc":      p.get("email_cc"),
+        "email_subject": p.get("email_subject"),
+        "email_date":    p.get("email_date"),
+        "text":          p["text"],
+    })

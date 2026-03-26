@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import shutil
 import sys
 import tempfile
 import threading
@@ -24,7 +25,7 @@ from typing import AsyncIterator
 import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 
 app = FastAPI(title="WOOLens + WOO Organizer")
 
@@ -41,6 +42,9 @@ HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; WOOLens/1.0; +https://woozm.n
 
 # Prevent concurrent pipeline runs — stdout capture is process-wide.
 _pipeline_lock = threading.Lock()
+
+# Last uploaded PDF kept for in-app page preview.
+_SESSION_PDF: Path = Path(tempfile.gettempdir()) / "woo_session.pdf"
 
 
 # ── Root ─────────────────────────────────────────────────────────────────────
@@ -74,6 +78,43 @@ async def proxy(url: str = Query(..., description="Full URL to proxy")):
         content_type = head.headers.get("content-type", "application/octet-stream")
 
     return StreamingResponse(_stream(), media_type=content_type)
+
+
+# ── /api/session_pdf & /api/session_pdf_range ────────────────────────────────
+
+@app.get("/api/session_pdf")
+async def session_pdf():
+    """Serve the most recently analysed PDF for in-app page preview."""
+    if not _SESSION_PDF.exists():
+        raise HTTPException(status_code=404, detail="No session PDF available")
+    return FileResponse(
+        _SESSION_PDF,
+        media_type="application/pdf",
+        headers={"Content-Disposition": "inline"},
+    )
+
+
+@app.get("/api/session_pdf_range")
+async def session_pdf_range(
+    start: int = Query(..., description="First page (1-indexed, inclusive)"),
+    end:   int = Query(..., description="Last page (1-indexed, inclusive)"),
+):
+    """Extract a page range from the session PDF and return it as a new PDF."""
+    if not _SESSION_PDF.exists():
+        raise HTTPException(status_code=404, detail="No session PDF available")
+    import io
+    from pypdf import PdfReader, PdfWriter
+    reader = PdfReader(str(_SESSION_PDF))
+    writer = PdfWriter()
+    for page_num in range(start - 1, min(end, len(reader.pages))):
+        writer.add_page(reader.pages[page_num])
+    buf = io.BytesIO()
+    writer.write(buf)
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/pdf",
+        headers={"Content-Disposition": "inline"},
+    )
 
 
 # ── /infobox?pid=XXX ─────────────────────────────────────────────────────────
@@ -133,6 +174,44 @@ def _extract_sender(doc: dict) -> str:
     return m.group(1).strip()[:80] if m else ""
 
 
+_HEADER_LINE_RE = re.compile(
+    r"^(?:van|aan|from|to|cc|bcc|datum|onderwerp|subject|verzonden|sent)\s*:",
+    re.IGNORECASE,
+)
+
+def _generate_description(doc: dict) -> str:
+    """Short human-readable description of a document for display in cards."""
+    category = doc.get("category", "Other")
+    text = doc.get("text", "")
+    redaction_codes = doc.get("redaction_codes", {})
+
+    # Email: use subject of first email
+    if category == "E-mail":
+        try:
+            from email_splitter import split_emails
+            emails = split_emails(doc.get("annotated_text") or text, doc.get("doc_code", ""))
+            if emails and emails[0].get("subject"):
+                return emails[0]["subject"][:100]
+        except Exception:
+            pass
+        return "E-mail"
+
+    # For other types, find the first meaningful non-header line
+    for line in text.split("\n")[:20]:
+        stripped = line.strip()
+        if len(stripped) > 8 and not _HEADER_LINE_RE.match(stripped):
+            # Skip lines that are purely digits/codes
+            if not re.fullmatch(r"[\d\s\.\-\/]+", stripped):
+                return stripped[:100]
+
+    # Fallback: mention redaction codes if any
+    if redaction_codes:
+        top_codes = ", ".join(list(redaction_codes.keys())[:3])
+        return f"Geredigeerd document ({top_codes})"
+
+    return category
+
+
 def _pipeline_to_json(docs: dict) -> dict:
     """
     Convert pipeline output (dict[str, dict]) to frontend-ready JSON.
@@ -153,25 +232,56 @@ def _pipeline_to_json(docs: dict) -> dict:
         date_str = dt.strftime("%Y-%m-%d") if dt else ""
         category = doc.get("category", "Other")
 
+        preview_text = (doc.get("annotated_text") or doc.get("text", ""))[:800]
+        # First actual PDF page for this document (int for OCR, tracked separately for GPT-4o)
+        raw_pages = doc.get("pages", [])
+        pdf_pages = doc.get("pdf_pages") or (raw_pages if raw_pages and isinstance(raw_pages[0], int) else [])
+        pdf_page_start = pdf_pages[0]  if pdf_pages else None
+        pdf_page_end   = pdf_pages[-1] if pdf_pages else None
         timeline.append({
-            "id":     code,
-            "type":   category,
-            "date":   date_str,
-            "title":  _extract_title(doc),
-            "sender": _extract_sender(doc),
+            "id":             code,
+            "type":           category,
+            "date":           date_str,
+            "title":          _extract_title(doc),
+            "description":    _generate_description(doc),
+            "sender":         doc.get("doc_sender") or _extract_sender(doc),
+            "preview":        preview_text,
+            "pdf_page_start": pdf_page_start,
+            "pdf_page_end":   pdf_page_end,
         })
 
         if category == "E-mail":
             try:
-                for em in split_emails(doc["text"], code):
+                # Always run both splitters; use whichever finds more individual emails.
+                # Enrich text-based results with GPT-4o metadata (subject/sender/date)
+                # when the text splitter finds more splits.
+                gpt_emails = doc.get("emails") or []
+                try:
+                    text_emails = split_emails(doc.get("annotated_text") or doc["text"], code)
+                except Exception:
+                    text_emails = []
+                if len(text_emails) > len(gpt_emails):
+                    for i, em in enumerate(text_emails):
+                        if i < len(gpt_emails):
+                            g = gpt_emails[i]
+                            if not em.get("subject") and g.get("subject"): em["subject"] = g["subject"]
+                            if not em.get("sender")  and g.get("sender"):  em["sender"]  = g["sender"]
+                            if not em.get("date")    and g.get("date"):    em["date"]    = g["date"]
+                    src_emails = text_emails
+                elif gpt_emails:
+                    src_emails = gpt_emails
+                else:
+                    src_emails = text_emails
+                for em in src_emails:
                     emails.append({
-                        "id":      em.get("id", f"{code}.?"),
-                        "subject": em.get("subject") or "",
-                        "sender":  em.get("sender") or "",
-                        "to":      em.get("to") or "",
-                        "cc":      em.get("cc") or "",
-                        "date":    em.get("date") or "",
-                        "text":    em.get("text") or "",
+                        "id":          em.get("id", f"{code}.?"),
+                        "subject":     em.get("subject")     or "",
+                        "sender":      em.get("sender")      or "",
+                        "to":          em.get("to")          or "",
+                        "cc":          em.get("cc")          or "",
+                        "date":        em.get("date")        or "",
+                        "attachments": em.get("attachments") or [],
+                        "text":        em.get("text")        or "",
                     })
             except Exception:
                 pass
@@ -281,6 +391,7 @@ async def _run_pipeline_sse(
         })
         try:
             output = _pipeline_to_json(result_data)
+            output["pdf_url"] = "/api/session_pdf"
             yield _sse({"type": "done", **output})
         except Exception as exc:
             yield _sse({"type": "error", "msg": f"Resultaten verwerken mislukt: {exc}"})
@@ -292,7 +403,9 @@ async def _pipeline_with_cleanup(
     api_key: str | None,
     page_range: tuple[int, int] | None = None,
 ) -> AsyncIterator[str]:
-    """Wraps _run_pipeline_sse to delete the temp PDF when done."""
+    """Wraps _run_pipeline_sse to delete the temp PDF when done.
+    Saves a copy to _SESSION_PDF first so the frontend can display PDF pages."""
+    shutil.copy2(pdf_path, _SESSION_PDF)
     try:
         async for chunk in _run_pipeline_sse(pipeline, pdf_path, api_key, page_range=page_range):
             yield chunk
@@ -366,6 +479,58 @@ async def analyse(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ── /api/inventarislijst ─────────────────────────────────────────────────────
+
+@app.post("/api/inventarislijst")
+async def analyse_inventarislijst(
+    api_key:    str            = Form(...,  description="OpenAI API key for GPT-4o-mini"),
+    file:       UploadFile | None = File(None, description="Separate Inventarislijst PDF"),
+    page_start: int | None    = Form(None, description="First page in session PDF (1-indexed)"),
+    page_end:   int | None    = Form(None, description="Last page in session PDF (1-indexed)"),
+):
+    """
+    Extract the document inventory table from a WOO Inventarislijst.
+
+    Accepts either:
+      - multipart 'file' — a dedicated Inventarislijst PDF upload
+      - no file + page_start/page_end — a page range within the current session PDF
+      - no file + no range — the entire session PDF
+
+    Returns JSON: {"items": [...], "total": N}
+    Each item: {code, title, date, pages, decision, grounds}
+    """
+    if file is not None:
+        pdf_bytes = await file.read()
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+        tmp.write(pdf_bytes)
+        tmp.close()
+        pdf_path   = Path(tmp.name)
+        is_tmp     = True
+        page_range = None
+    elif _SESSION_PDF.exists():
+        pdf_path   = _SESSION_PDF
+        is_tmp     = False
+        page_range = (page_start, page_end) if page_start and page_end else None
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Geen PDF beschikbaar. Upload eerst een dossier of geef een apart bestand op.",
+        )
+
+    try:
+        from pipeline_inventarislijst import extract_inventarislijst
+        items = await asyncio.get_running_loop().run_in_executor(
+            None,
+            lambda: extract_inventarislijst(pdf_path, api_key, page_range=page_range),
+        )
+        return {"items": items, "total": len(items)}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    finally:
+        if is_tmp:
+            pdf_path.unlink(missing_ok=True)
 
 
 # ── Dev entry-point ───────────────────────────────────────────────────────────

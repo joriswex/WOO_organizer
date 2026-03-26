@@ -238,6 +238,7 @@ _CATEGORY_RULES: list[tuple[str, list[str]]] = [
         r"\baan:\s",
         r"\bonderwerp:\s",
         r"\bverzonden:\s",          # "Verzonden:" = Sent (Dutch Outlook)
+        r"\bdatum:\s",              # "Datum:" used in Dutch Outlook replies
         # English headers
         r"\bfrom:\s",
         r"\bto:\s",
@@ -245,6 +246,12 @@ _CATEGORY_RULES: list[tuple[str, list[str]]] = [
         r"\bsent:\s",               # "Sent:" — Outlook timestamp line
         r"\bcc:\s",
         r"\bbcc:\s",
+        # Meeting / calendar invites (Outlook meeting request format)
+        r"\brequired attendees:\s",
+        r"\boptional attendees:\s",
+        r"\bstart date/time:\s",
+        r"\bend date/time:\s",
+        r"\blocation:\s.*\b(?:webex|teams|skype|zoom|vergader|room)\b",
         # Forwarding / threading markers (both languages)
         r"\boriginal message\b",    # "-----Original Message-----"
         r"\bforwarded message\b",   # "---- Forwarded Message ----"
