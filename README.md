@@ -259,3 +259,90 @@ The GPT-4o cache preserves raw per-page extraction so the HTML can be regenerate
 ```bash
 python main_gpt4o.py --pdf dossier.pdf --from-cache dossier_gpt4o_cache.json --out timeline_gpt4o.html
 ```
+
+---
+
+## Evaluation with `annotate.py`
+
+`annotate.py` is a browser-based annotation and evaluation tool. You view the PDF, mark document boundaries as ground truth, and immediately see precision/recall/F1 metrics for both pipelines side by side.
+
+### Quick start — auto mode (recommended)
+
+```bash
+# First run: runs both pipelines, saves caches, opens browser
+export OPENAI_API_KEY=sk-...
+python annotate.py --pdf dossier.pdf --auto
+
+# Every run after: loads from caches instantly (no API cost, no OCR wait)
+python annotate.py --pdf dossier.pdf --auto
+```
+
+`--auto` loads **GPT-4o as Pipeline A** and **OCR as Pipeline B**. Both results are cached next to the PDF:
+
+| Cache file | Pipeline | Re-run trigger |
+|---|---|---|
+| `dossier_gpt4o_cache.json` | GPT-4o (A) | `rm dossier_gpt4o_cache.json` |
+| `dossier_ocr_segs.json` | OCR (B) | `rm dossier_ocr_segs.json` |
+
+### Manual mode — load specific caches
+
+```bash
+# GPT-4o as A, OCR as B (same as --auto but with explicit files)
+python annotate.py --pdf dossier.pdf \
+  --from-cache dossier_gpt4o_cache.json \
+  --compare-segments dossier_ocr_segs.json
+
+# OCR only (no GPT-4o)
+python annotate.py --pdf dossier.pdf --ocr
+
+# Two different GPT-4o cache versions side by side
+python annotate.py --pdf dossier.pdf \
+  --from-cache cache_v1.json \
+  --compare-cache cache_v2.json
+```
+
+### Annotation workflow
+
+1. Open `http://localhost:5050` in a browser
+2. Click any boundary zone between pages (or press **B**) to mark a document split
+3. Select a document in the **GT** list → fill in type, date, and (for emails) per-email details in the right pane
+4. Press **Tab** to jump to the next unannotated document
+5. Metrics update live in the bottom-right panel — **Pipe A vs Pipe B** side by side when both are loaded
+6. Click **Export JSON** to download the full annotation + metrics file
+
+Annotations are auto-saved to `annotations_dossier.json` next to the PDF.
+
+### Keyboard shortcuts
+
+| Key | Action |
+|---|---|
+| `B` | Toggle GT boundary at current page |
+| `Tab` | Jump to next unannotated document |
+| `1`–`9` | Set document type (E-mail, Chat, Nota, …) |
+| `↑` / `↓` | Scroll one page up/down |
+| `S` | Force save |
+
+### Email-level evaluation
+
+For email documents, expand **Email details** in the annotation form and add one entry per email (subject, sender, date). After annotating, the metrics panel shows:
+
+- **Email subj. F1** — fuzzy subject matching between GT and pipeline emails (requires `pip install rapidfuzz`)
+- **Email date acc.** — ISO date match for matched email pairs
+- **Email sender acc.** — fuzzy sender match for matched email pairs
+
+### All CLI flags
+
+```
+--pdf FILE               PDF to annotate (required)
+--auto                   Auto mode: GPT-4o (A) + OCR (B), cached
+--api-key KEY            OpenAI key for GPT-4o (falls back to OPENAI_API_KEY)
+--from-cache FILE        Pipeline A: GPT-4o cache JSON
+--from-segments FILE     Pipeline A: pre-saved segments JSON
+--ocr                    Pipeline A: run OCR (auto-saves segments JSON)
+--compare-cache FILE     Pipeline B: GPT-4o cache JSON
+--compare-segments FILE  Pipeline B: pre-saved segments JSON
+--compare-ocr            Pipeline B: run OCR (auto-saves segments JSON)
+--compare-api-key KEY    Pipeline B: OpenAI key
+--annotations FILE       Load existing annotations JSON
+--port PORT              HTTP port (default: 5050)
+```
