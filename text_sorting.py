@@ -33,8 +33,8 @@ def _parse_date(raw: str) -> datetime | None:
         return None
     s = raw.strip()
 
-    # "2025-03-25" (ISO YYYY-MM-DD — returned directly by GPT-4o)
-    m = re.fullmatch(r'(\d{4})-(\d{1,2})-(\d{1,2})', s)
+    # "2025-03-25" or "2025-03-25 14:32" (ISO date, optional time suffix)
+    m = re.match(r'(\d{4})-(\d{1,2})-(\d{1,2})', s)
     if m:
         try:
             return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))

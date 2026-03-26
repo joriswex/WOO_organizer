@@ -367,17 +367,52 @@ def _is_new_doc_boundary(p: dict) -> bool:
 
 def _is_fresh_email_start(text: str) -> bool:
     """
-    Return True if the first 20 lines of *text* contain at least three distinct
-    email header fields, indicating this page starts a fresh email thread.
+    Return True if this page starts a fresh email document.
+
+    Rules (applied in order):
+    1. First-line veto: if the first non-empty line is neither an email header
+       field nor a document stamp/code, it's a continuation page → False.
+    2. Count ≥ 2 distinct email header fields in the first 20 lines.
     """
-    count = sum(
-        1 for line in text.splitlines()[:20]
-        if re.match(
-            r"^[ \t]*(?:van|from|aan|to|onderwerp|subject|datum|date|sent|verzonden)\s*:",
-            line, re.IGNORECASE,
-        )
+    _FIELD_RE = re.compile(
+        r"^[ \t]*(?:van|from|aan|to|onderwerp|subject|datum|date|sent|verzonden|betreft|afzender|cc)\s*:",
+        re.IGNORECASE,
     )
-    return count >= 3
+    # OCR misreads D→O, r→comma, and digits 5/S or S/5.
+    # Pattern: D/O · ocn · (r|,)? · digits-or-S
+    _STAMP_RE = re.compile(r"^[ \t]*(?:\d{4}|[do]ocn[r,]?\s*[\ds]+)", re.IGNORECASE)
+    lines = text.splitlines()
+    first_line = next((ln for ln in lines if ln.strip()), None)
+    if first_line is not None and not _FIELD_RE.match(first_line) and not _STAMP_RE.match(first_line):
+        return False
+    count = sum(1 for line in lines[:20] if _FIELD_RE.match(line))
+    return count >= 2
+
+
+def _is_fresh_nota_start(text: str) -> bool:
+    """
+    Return True if this page starts a fresh Nota/Brief document.
+
+    Dutch government formal documents (nota's, brieven) typically open with a
+    metadata block containing fields like Contactpersoon, Datum, and
+    Onze referentie / Ons kenmerk.  Two or more of these in the first 15 lines
+    is a strong boundary signal — these fields are rare in email body text.
+
+    Same first-line veto as _is_fresh_email_start: if the first non-empty line
+    is not one of these fields, it's a continuation page.
+    """
+    _NOTA_FIELD_RE = re.compile(
+        r"^[ \t]*(?:contactpersoon|datum|onze\s+referentie|ons\s+kenmerk"
+        r"|uw\s+referentie|uw\s+kenmerk|behandeld\s+door|doorkiesnummer"
+        r"|telefoon|bijlage[n]?|onderwerp|betreft)\s*:",
+        re.IGNORECASE,
+    )
+    lines = text.splitlines()
+    first_ne = next((ln for ln in lines if ln.strip()), None)
+    if first_ne is not None and not _NOTA_FIELD_RE.match(first_ne):
+        return False
+    count = sum(1 for line in lines[:15] if _NOTA_FIELD_RE.match(line))
+    return count >= 2
 
 
 def _auto_split_boundaries(page_data: list[dict]) -> list[bool]:
@@ -389,23 +424,18 @@ def _auto_split_boundaries(page_data: list[dict]) -> list[bool]:
 
     Priority:
       1. within_doc_page == 1  OR  'Pagina 1 van' in text  (high confidence)
-      2. Fresh email header block after a non-email page    (medium confidence)
+      2. Fresh email header block                           (medium confidence)
+      3. Fresh nota/brief header block                      (medium confidence)
     """
     n = len(page_data)
     is_new = [False] * n
     is_new[0] = True   # first page always starts a document
 
-    prev_is_email = _is_fresh_email_start(page_data[0]["text"]) if n > 0 else False
-
     for i in range(1, n):
         p = page_data[i]
-        if _is_new_doc_boundary(p):
+        text = p["text"]
+        if _is_new_doc_boundary(p) or _is_fresh_email_start(text) or _is_fresh_nota_start(text):
             is_new[i] = True
-        else:
-            curr_is_email = _is_fresh_email_start(p["text"])
-            if curr_is_email and not prev_is_email:
-                is_new[i] = True
-            prev_is_email = curr_is_email
 
     return is_new
 
@@ -501,7 +531,7 @@ def _auto_split_boundaries_semantic(
     Signal priority (highest to lowest):
       1. HIGH   within_doc_page==1  OR  'Pagina 1 van' in text  →  always split
       2. MEDIUM cosine_sim < threshold (embedding available)      →  split
-      3. MEDIUM fresh email header after non-email page           →  split
+      3. MEDIUM fresh email header on this page                   →  split
       4. DEFAULT                                                   →  continue
     """
     scores = _semantic_boundaries(embeddings)
@@ -509,25 +539,19 @@ def _auto_split_boundaries_semantic(
     is_new = [False] * n
     is_new[0] = True
 
-    prev_is_email = _is_fresh_email_start(page_data[0]["text"]) if n > 0 else False
-
     for i in range(1, n):
         p = page_data[i]
         score = scores[i]
 
+        text = p["text"]
         if _is_new_doc_boundary(p):                        # signal 1
             is_new[i] = True
         elif score is not None and score < threshold:      # signal 2
             is_new[i] = True
-        else:
-            curr_is_email = _is_fresh_email_start(p["text"])     # signal 3
-            if curr_is_email and not prev_is_email:
-                is_new[i] = True
-            prev_is_email = curr_is_email
-            continue
-
-        # Reset email tracking at any boundary
-        prev_is_email = _is_fresh_email_start(p["text"])
+        elif _is_fresh_email_start(text):                  # signal 3
+            is_new[i] = True
+        elif _is_fresh_nota_start(text):                   # signal 4
+            is_new[i] = True
 
     return is_new
 
