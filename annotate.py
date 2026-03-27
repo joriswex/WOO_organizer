@@ -308,7 +308,11 @@ HTML = r"""<!DOCTYPE html>
           </div>
           <div class="form-row" id="row-num-emails" style="display:none">
             <div class="form-label"># emails</div>
-            <input type="number" id="gt-num-emails" min="1" placeholder="e.g. 3" style="width:80px">
+            <span id="gt-num-emails-display" style="font-size:12px;color:var(--text-dim);padding:2px 0;">0</span>
+          </div>
+          <div class="form-row" id="row-other-specify" style="display:none">
+            <div class="form-label">Specify</div>
+            <input type="text" id="gt-other-specify" placeholder="e.g. Bijlage, Factuur…">
           </div>
           <div class="form-row" id="row-email-details" style="display:none">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
@@ -780,14 +784,17 @@ function renderForm() {
   const pred = predictionForPage(S.selectedStart);
 
   // GT form
-  const isEmail = (doc.type_gt || '') === 'E-mail';
-  document.getElementById('gt-range').textContent = `p${doc.start + 1}–${doc.end + 1}`;
-  document.getElementById('gt-type').value  = doc.type_gt  || '';
-  document.getElementById('gt-num-emails').value = doc.num_emails_gt || '';
-  document.getElementById('gt-date').value  = doc.date_gt  || '';
-  document.getElementById('gt-notes').value = doc.notes    || '';
-  document.getElementById('row-num-emails').style.display = isEmail ? '' : 'none';
+  const type    = doc.type_gt || '';
+  const isEmail = type === 'E-mail';
+  const isOther = type === 'Other';
+  document.getElementById('gt-range').textContent          = `p${doc.start + 1}–${doc.end + 1}`;
+  document.getElementById('gt-type').value                 = type;
+  document.getElementById('gt-other-specify').value        = doc.other_type || '';
+  document.getElementById('gt-date').value                 = doc.date_gt  || '';
+  document.getElementById('gt-notes').value                = doc.notes    || '';
+  document.getElementById('row-num-emails').style.display    = isEmail ? '' : 'none';
   document.getElementById('row-email-details').style.display = isEmail ? '' : 'none';
+  document.getElementById('row-other-specify').style.display = isOther ? '' : 'none';
 
   // Rebuild email detail rows
   const container = document.getElementById('email-rows-container');
@@ -796,15 +803,13 @@ function renderForm() {
     _appendEmailEntry(container, em.subject || '', em.sender || '', em.date || '');
   }
 
-  // Show pipeline email count hint
-  const emailHint = document.getElementById('email-count-hint');
-  if (emailHint) emailHint.remove();
-  if (isEmail && pred && pred.num_emails_pipeline != null) {
-    const hint = document.createElement('div');
-    hint.id = 'email-count-hint';
-    hint.style.cssText = 'font-size:10px;color:var(--text-dim);margin-top:2px;padding-left:4px';
-    hint.textContent = `Pipeline found: ${pred.num_emails_pipeline} email(s)`;
-    document.getElementById('gt-num-emails').after(hint);
+  // Update email count display (with pipeline hint)
+  const emailCount = (doc.emails_gt || []).length;
+  const disp = document.getElementById('gt-num-emails-display');
+  if (disp) {
+    const hint = (isEmail && pred && pred.num_emails_pipeline != null)
+      ? ` — pipeline: ${pred.num_emails_pipeline}` : '';
+    disp.textContent = `${emailCount}${hint}`;
   }
 }
 
@@ -923,18 +928,17 @@ function scrollToPage(n) {
 
 function getAnnotation(start) {
   if (!S.annotations[String(start)]) {
-    S.annotations[String(start)] = { type_gt: '', date_gt: '', notes: '' };
+    S.annotations[String(start)] = { type_gt: '', date_gt: '', notes: '', other_type: '' };
   }
   return S.annotations[String(start)];
 }
 
 function saveFormToState() {
   const ann    = getAnnotation(S.selectedStart);
-  ann.type_gt  = document.getElementById('gt-type').value;
-  const ne = parseInt(document.getElementById('gt-num-emails').value, 10);
-  ann.num_emails_gt = isNaN(ne) ? null : ne;
-  ann.date_gt  = document.getElementById('gt-date').value.trim();
-  ann.notes    = document.getElementById('gt-notes').value;
+  ann.type_gt    = document.getElementById('gt-type').value;
+  ann.other_type = document.getElementById('gt-other-specify').value.trim();
+  ann.date_gt    = document.getElementById('gt-date').value.trim();
+  ann.notes      = document.getElementById('gt-notes').value;
 
   // Collect per-email detail rows
   const emails = [];
@@ -945,9 +949,11 @@ function saveFormToState() {
       date:    entry.querySelector('.email-edate')?.value?.trim() || '',
     });
   });
-  ann.emails_gt = emails;
-  // Sync count field if there are detail rows
-  if (emails.length > 0) ann.num_emails_gt = emails.length;
+  ann.emails_gt     = emails;
+  ann.num_emails_gt = emails.length > 0 ? emails.length : null;
+  // Update the live count display
+  const disp = document.getElementById('gt-num-emails-display');
+  if (disp) disp.textContent = emails.length;
 }
 
 function nextUnannotated() {
@@ -968,15 +974,19 @@ function nextUnannotated() {
 // ── Form event bindings ───────────────────────────────────────────────────────
 function bindFormEvents() {
   document.getElementById('gt-type').addEventListener('change', () => {
-    const isEmail = document.getElementById('gt-type').value === 'E-mail';
-    document.getElementById('row-num-emails').style.display = isEmail ? '' : 'none';
+    const type    = document.getElementById('gt-type').value;
+    const isEmail = type === 'E-mail';
+    const isOther = type === 'Other';
+    document.getElementById('row-num-emails').style.display    = isEmail ? '' : 'none';
     document.getElementById('row-email-details').style.display = isEmail ? '' : 'none';
+    document.getElementById('row-other-specify').style.display = isOther ? '' : 'none';
+    if (isOther) document.getElementById('gt-other-specify').focus();
     saveFormToState();
     renderDocList();
     scheduleSave(true);
   });
 
-  ['gt-num-emails', 'gt-date', 'gt-notes'].forEach(id => {
+  ['gt-date', 'gt-notes', 'gt-other-specify'].forEach(id => {
     document.getElementById(id).addEventListener('input', () => {
       saveFormToState();
       renderDocList();
@@ -1139,12 +1149,18 @@ function bindKeyboard() {
       doSave();
       return;
     }
-    const d = parseInt(e.key, 10);
-    if (d >= 1 && d <= 9 && d <= DOC_TYPES.length) {
-      const type = DOC_TYPES[d - 1];
-      const ann  = getAnnotation(S.selectedStart);
-      ann.type_gt = type;
-      document.getElementById('gt-type').value = type;
+    const TYPE_SHORTCUTS = { '1': 'E-mail', '2': 'Nota', '3': 'Report', '4': 'Other' };
+    if (TYPE_SHORTCUTS[e.key] && S.selectedStart != null) {
+      const type    = TYPE_SHORTCUTS[e.key];
+      const isEmail = type === 'E-mail';
+      const isOther = type === 'Other';
+      const ann     = getAnnotation(S.selectedStart);
+      ann.type_gt   = type;
+      document.getElementById('gt-type').value                 = type;
+      document.getElementById('row-num-emails').style.display    = isEmail ? '' : 'none';
+      document.getElementById('row-email-details').style.display = isEmail ? '' : 'none';
+      document.getElementById('row-other-specify').style.display = isOther ? '' : 'none';
+      if (isOther) setTimeout(() => document.getElementById('gt-other-specify').focus(), 0);
       renderDocList();
       scheduleSave(true);
     }
@@ -1836,6 +1852,7 @@ def api_export():
             "type_gt":          type_gt,
             "date_gt":          date_gt,
             "notes":                   ann.get("notes", ""),
+            "other_type":              ann.get("other_type", ""),
             "num_emails_gt":           ann.get("num_emails_gt"),
             "emails_gt":               ann.get("emails_gt") or [],
             "pipeline_doc_code":       pred["doc_code"]             if pred else None,
