@@ -4709,25 +4709,17 @@ function _buildThreadedEmailList(emails) {
       __threadSize: members.length,
     }));
 
+    const latestKey = ordered[ordered.length - 1].__sortKey;
     threads.push({
       startKey: parent.__sortKey,
+      latestKey,
       ordered,
     });
   }
 
-  threads.sort((a, b) => (a.startKey < b.startKey ? -1 : a.startKey > b.startKey ? 1 : 0));
+  // Sort threads by most-recent message descending (newest active thread first)
+  threads.sort((a, b) => (a.latestKey > b.latestKey ? -1 : a.latestKey < b.latestKey ? 1 : 0));
   return threads.flatMap(t => t.ordered);
-}
-
-function _sortEmailsChronological(emails) {
-  return (emails || []).map((email, idx) => ({
-    ...email,
-    __origIndex:     idx,
-    __sortKey:       getEmailSortKey(email),
-    __threadDepth:   0,
-    __threadParentId:'',
-    __threadSize:    1,
-  })).sort((a, b) => a.__sortKey < b.__sortKey ? -1 : a.__sortKey > b.__sortKey ? 1 : a.__origIndex - b.__origIndex);
 }
 
 function renderEmailView(container) {
@@ -4736,7 +4728,7 @@ function renderEmailView(container) {
     container.innerHTML = renderNoDataState('E-mails');
     return;
   }
-  _sortedEmails = _sortEmailsChronological(emails);
+  _sortedEmails = _buildThreadedEmailList(emails);
   iphoneState.openIdx = null;
   renderIphoneMailList(container, _sortedEmails);
 }
@@ -4815,7 +4807,7 @@ function renderIphoneRow(email, idx) {
 function openIphoneMailById(id) {
   // Ensure sorted list is populated
   if (!_sortedEmails.length && state.emails.length) {
-    _sortedEmails = _sortEmailsChronological(state.emails);
+    _sortedEmails = _buildThreadedEmailList(state.emails);
   }
   const emails = _sortedEmails.length ? _sortedEmails : state.emails;
   // Match exact id ('0003.1') OR doc-code prefix ('0003' → first email '0003.1')
