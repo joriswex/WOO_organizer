@@ -490,8 +490,7 @@ def _build_chat_conversation(doc: dict, code: str) -> Optional[dict]:
     category = (doc.get("category") or "").strip().lower()
     raw_messages = doc.get("chat_messages") or []
     chat_name = (doc.get("chat_name") or "").strip()
-    doc_date = doc.get("date")
-    doc_date_str = doc_date.strftime("%Y-%m-%d") if hasattr(doc_date, "strftime") else (doc.get("date") or "")
+    doc_date_str = (doc.get("date") or "")
 
     messages = []
     if isinstance(raw_messages, list) and raw_messages:

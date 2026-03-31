@@ -913,8 +913,7 @@ def _build_docs_from_boundaries(
         end      = (int(docs_sorted[i + 1].get("start_page", n + 1)) - 1
                     if i + 1 < len(docs_sorted) else n)
         raw_code = doc.get("doc_code")
-        code     = (_normalise_doc_code(raw_code) if raw_code
-                    else f"auto_{i + 1:03d}")
+        code     = (_normalise_doc_code(raw_code) if raw_code else None) or f"auto_{i + 1:03d}"
         for idx in range(start, end + 1):
             idx_to_code[idx] = code
         for ep in (doc.get("email_starts") or []):
