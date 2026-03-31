@@ -669,11 +669,27 @@
 
   /* ── HORIZONTAL TIMELINE ── */
   .timeline-h-outer { position: relative; padding-bottom: 0; overflow: hidden; }
-  .timeline-h-nodates { margin-bottom: 14px; border: 1px dashed var(--woo-border); border-radius: var(--woo-radius-md); padding: 10px 14px; background: var(--woo-bg); }
-  .timeline-h-nodates-header { font-family: var(--woo-mono); font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-dimmer); margin-bottom: 8px; }
-  .timeline-h-nodates-list { display: flex; flex-wrap: wrap; gap: 6px; }
-  .timeline-h-nodates-pill { font-family: var(--woo-mono); font-size: 10px; padding: 4px 8px; border: 1px solid var(--woo-border); border-radius: 4px; background: var(--woo-white); cursor: pointer; color: var(--woo-text); max-width: 220px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .timeline-h-nodates-pill:hover { border-color: var(--border-bright); }
+  /* Undated cards rendered inline in the scroll with a dashed border */
+  .timeline-h-card.undated { border-style: dashed; opacity: 0.8; }
+  .timeline-h-card.undated:hover { opacity: 1; }
+  /* Separator between undated and dated regions in the scroll */
+  .timeline-h-undated-sep {
+    display: flex; flex-direction: column; align-items: center; justify-content: flex-start;
+    width: 32px; flex-shrink: 0; padding-top: 8px; gap: 6px;
+  }
+  .timeline-h-undated-sep-line { width: 2px; flex: 1; background: var(--woo-border); border-radius: 1px; min-height: 60px; }
+  .timeline-h-undated-sep-label {
+    font-family: var(--woo-mono); font-size: 8px; color: var(--text-dimmer);
+    text-transform: uppercase; letter-spacing: 0.06em;
+    writing-mode: vertical-rl; text-orientation: mixed; transform: rotate(180deg);
+    white-space: nowrap;
+  }
+  /* Scroll arrow buttons on the timeline header */
+  .timeline-scroll-btn {
+    background: var(--woo-white); border: 1px solid var(--woo-border); border-radius: 6px;
+    padding: 4px 11px; cursor: pointer; font-size: 15px; color: var(--woo-text); line-height: 1;
+  }
+  .timeline-scroll-btn:hover { border-color: var(--border-bright); background: #f5f9fa; }
   .timeline-h-header { margin-bottom: 16px; }
   .timeline-h-summary-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
   .timeline-summarize-btn {
@@ -4368,13 +4384,15 @@ function openDocTextPreview(item) {
     <table style="border-collapse:collapse;width:100%;font-size:12px;color:#444;margin-top:10px">
       <tr><td style="padding:3px 10px 3px 0;font-weight:600;color:#888;white-space:nowrap">Type</td><td style="padding:3px 0;color:#1a1a1a">${escHtml(item.type || '—')}</td></tr>
       ${item.sender ? `<tr><td style="padding:3px 10px 3px 0;font-weight:600;color:#888;white-space:nowrap">Afzender</td><td style="padding:3px 0;color:#1a1a1a">${formatLabelRedactions(item.sender)}</td></tr>` : ''}
-      <tr><td style="padding:3px 10px 3px 0;font-weight:600;color:#888;white-space:nowrap">Datum</td><td style="padding:3px 0;color:#1a1a1a">${escHtml(dateDisp)}</td></tr>
+      <tr><td style="padding:3px 10px 3px 0;font-weight:600;color:#888;white-space:nowrap">Datum</td><td style="padding:3px 0;color:#1a1a1a">${escHtml(dateDisp)} <button onclick="_editDocDate('${escHtml(item.id)}')" title="Datum aanpassen" style="background:none;border:none;cursor:pointer;padding:0 0 0 3px;font-size:11px;color:var(--text-dimmer);vertical-align:middle;line-height:1">✎</button></td></tr>
       <tr><td style="padding:3px 10px 3px 0;font-weight:600;color:#888;white-space:nowrap">Ref</td><td style="padding:3px 0;font-family:var(--woo-mono);font-size:10px;color:#888">${escHtml(item.id || '—')}</td></tr>
     </table>`;
 
   const sourceLink = sourceUrl
     ? `<a href="${escHtml(sourceUrl)}" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:6px;margin-top:10px;padding:7px 10px;background:var(--blue);color:#fff;text-decoration:none;border-radius:6px;font-family:var(--woo-mono);font-size:10px;font-weight:600">↗ Open origineel</a>`
     : '';
+  const overigActStyle = 'display:inline-flex;align-items:center;gap:4px;margin-top:10px;padding:6px 12px;border-radius:6px;border:1px solid var(--woo-border);background:var(--woo-white);font-size:11px;cursor:pointer;font-family:var(--woo-sans)';
+  const deleteBtn = `<button style="${overigActStyle};color:#c0392b;border-color:#e8c2c2;margin-left:${sourceUrl ? '8px' : '0'}" onclick="_deleteDoc('${escHtml(item.id)}')" title="Verwijder document uit analyse">✕ Verwijder</button>`;
 
   // Body content
   let bodyContent;
@@ -4412,7 +4430,7 @@ function openDocTextPreview(item) {
         </div>
         ${descHtml}
         ${metaTable}
-        ${sourceLink}
+        <div style="display:flex;flex-wrap:wrap;align-items:center">${sourceLink}${deleteBtn}</div>
       </div>
       ${bodyContent}
     </div>
@@ -4772,9 +4790,23 @@ function renderIphoneMailList(container, emails) {
     <div style="font-size:12px;color:var(--text-dimmer);margin-bottom:10px;padding-left:2px">
       ${emails.length} e-mail${emails.length !== 1 ? 's' : ''} — tik op een e-mail om te openen
     </div>
-    <div class="iphone-email-list" style="border:1px solid var(--woo-border);border-radius:12px;overflow:hidden;box-shadow:var(--woo-shadow-sm)">
-      ${emails.map((email, i) => renderIphoneRow(email, i)).join('')}
-    </div>
+    ${(() => {
+      // Group into thread boxes: root + its consecutive replies
+      const threadBoxes = [];
+      let gIdx = 0;
+      while (gIdx < emails.length) {
+        const root = emails[gIdx];
+        const rows = [renderIphoneRow(root, gIdx)];
+        const rootId = root.id;
+        gIdx++;
+        while (gIdx < emails.length && emails[gIdx].__threadParentId === rootId) {
+          rows.push(renderIphoneRow(emails[gIdx], gIdx));
+          gIdx++;
+        }
+        threadBoxes.push(`<div style="border:1px solid var(--woo-border);border-radius:12px;overflow:hidden;box-shadow:var(--woo-shadow-sm)">${rows.join('')}</div>`);
+      }
+      return `<div style="display:flex;flex-direction:column;gap:10px">${threadBoxes.join('')}</div>`;
+    })()}
   `;
 }
 
@@ -4879,13 +4911,12 @@ function openIphoneMail(idx) {
           <tr><td style="padding:2px 10px 2px 0;font-weight:600;color:#888;white-space:nowrap;vertical-align:top">Van</td><td style="padding:2px 0;color:#1a1a1a">${senderHtml}</td></tr>
           <tr><td style="padding:2px 10px 2px 0;font-weight:600;color:#888;white-space:nowrap;vertical-align:top">Aan</td><td style="padding:2px 0;color:#1a1a1a">${toHtml}</td></tr>
           ${email.cc ? `<tr><td style="padding:2px 10px 2px 0;font-weight:600;color:#888;white-space:nowrap;vertical-align:top">CC</td><td style="padding:2px 0;color:#1a1a1a">${ccHtml}</td></tr>` : ''}
-          <tr><td style="padding:2px 10px 2px 0;font-weight:600;color:#888;white-space:nowrap">Datum</td><td style="padding:2px 0;color:#1a1a1a">${escHtml(formattedDate)}${formattedTime ? ` ${escHtml(formattedTime)}` : ''}</td></tr>
+          <tr><td style="padding:2px 10px 2px 0;font-weight:600;color:#888;white-space:nowrap">Datum</td><td style="padding:2px 0;color:#1a1a1a">${escHtml(formattedDate)}${formattedTime ? ` ${escHtml(formattedTime)}` : ''} <button onclick="_editDocDate('${escHtml(docCode)}')" title="Datum aanpassen" style="background:none;border:none;cursor:pointer;padding:0 0 0 3px;font-size:11px;color:var(--text-dimmer);vertical-align:middle;line-height:1">✎</button></td></tr>
           <tr><td style="padding:2px 10px 2px 0;font-weight:600;color:#888;white-space:nowrap">Ref</td><td style="padding:2px 0;font-family:var(--woo-mono);font-size:10px;color:#888">${escHtml(email.id || '—')}</td></tr>
           ${renderAttachmentTags(email.text || '', email.attachments)}
         </table>
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:12px;padding-top:10px;border-top:1px solid var(--woo-border)">
           ${hasPdf ? `<button style="${actionBtnStyle}" onclick="_showInWooDossier('${escHtml(docCode)}')" title="Ga naar de originele pagina in het PDF-dossier">📄 Toon in WOO-dossier</button>` : ''}
-          <button style="${actionBtnStyle}" onclick="_editDocDate('${escHtml(docCode)}')" title="Pas de datum van dit document aan">✎ Datum aanpassen</button>
           <button style="${actionBtnStyle};color:#c0392b;border-color:#e8c2c2" onclick="_deleteDoc('${escHtml(docCode)}')" title="Verwijder dit document uit de analyse">✕ Verwijder</button>
         </div>
       </div>
@@ -5469,8 +5500,20 @@ function renderTimelineView(container) {
   const datedCards   = allCards.filter(c =>  c.iso);
   datedCards.sort((a, b) => a.sortKey < b.sortKey ? -1 : a.sortKey > b.sortKey ? 1 : 0);
 
-  const cardHtml  = datedCards.map((c, i) => _renderHCard(c, i)).join('');
-  const spacers   = datedCards.map(() => `<div class="timeline-h-axis-spacer"></div>`).join('');
+  // Undated cards appear first (left) in the scroll, dated ones follow
+  const undatedHtml = undatedCards.map((c, i) => _renderHCard(c, i, true)).join('');
+  const sepHtml = undatedCards.length && datedCards.length
+    ? `<div class="timeline-h-undated-sep"><div class="timeline-h-undated-sep-line"></div><div class="timeline-h-undated-sep-label">geen datum</div><div class="timeline-h-undated-sep-line"></div></div>`
+    : '';
+  const datedHtml = datedCards.map((c, i) => _renderHCard(c, undatedCards.length + i)).join('');
+  const cardHtml  = undatedHtml + sepHtml + datedHtml;
+
+  // Spacers: one per actual card (not the separator element)
+  const allOrdered = [...undatedCards, ...datedCards];
+  const spacerSep  = undatedCards.length && datedCards.length ? `<div style="width:32px;flex-shrink:0;height:18px"></div>` : '';
+  const spacers    = undatedCards.map(() => `<div class="timeline-h-axis-spacer"></div>`).join('') + spacerSep
+                   + datedCards.map(() => `<div class="timeline-h-axis-spacer"></div>`).join('');
+
   const dossier   = state.activeResult;
   const summaryDays = Array.isArray(state.timelineSummary) ? state.timelineSummary : [];
   const summaryHtml = renderTimelineChronologySummary(summaryDays);
@@ -5478,51 +5521,42 @@ function renderTimelineView(container) {
     ? 'Analyseren…'
     : (summaryDays.length ? '↺ Vat tijdlijn opnieuw samen' : '✦ Vat tijdlijn samen');
 
-  const undatedHtml = undatedCards.length ? `
-    <div class="timeline-h-nodates">
-      <div class="timeline-h-nodates-header">Geen datum gevonden &middot; ${undatedCards.length} document${undatedCards.length !== 1 ? 'en' : ''}</div>
-      <div class="timeline-h-nodates-list">
-        ${undatedCards.map(c => {
-          const it = c.kind === 'doc' ? c.data : (c.data[0] || {});
-          const label = c.kind === 'doc' ? (it.title || it.id || '—') : (it.subject || it.id || '—');
-          const type  = c.kind === 'doc' ? (it.type || 'Doc') : 'E-mail';
-          const short = label.length > 40 ? label.slice(0, 40) + '…' : label;
-          return `<div class="timeline-h-nodates-pill" onclick="openItemPreview('${escHtml(c.id)}')" title="${escHtml(label)}"><span style="opacity:0.5;margin-right:5px">${escHtml(type)}</span>${escHtml(short)}</div>`;
-        }).join('')}
-      </div>
-    </div>` : '';
-
   container.innerHTML = `
     <div class="timeline-h-outer">
       <div class="doc-meta-header timeline-h-header">
         <div class="timeline-h-summary-head">
           <div class="doc-meta-type">Chronologische tijdlijn</div>
-          <button class="timeline-summarize-btn" onclick="summarizeTimelineChronology()" ${state.timelineSummaryLoading ? 'disabled' : ''}>${sumBtnLabel}</button>
+          <div style="display:flex;align-items:center;gap:8px">
+            <div style="display:flex;gap:2px">
+              <button class="timeline-scroll-btn" onclick="_scrollTimeline(-1)" title="Scroll naar links">‹</button>
+              <button class="timeline-scroll-btn" onclick="_scrollTimeline(1)"  title="Scroll naar rechts">›</button>
+            </div>
+            <button class="timeline-summarize-btn" onclick="summarizeTimelineChronology()" ${state.timelineSummaryLoading ? 'disabled' : ''}>${sumBtnLabel}</button>
+          </div>
         </div>
         <div class="doc-meta-title" style="font-size:15px">${escHtml(dossier?.title || 'Dossier')}</div>
-        <div style="font-family:var(--woo-mono);font-size:10px;color:var(--text-dimmer);margin-top:4px">${datedCards.length} document${datedCards.length !== 1 ? 'en' : ''} gedateerd${undatedCards.length ? `, ${undatedCards.length} zonder datum` : ''} — scroll horizontaal</div>
+        <div style="font-family:var(--woo-mono);font-size:10px;color:var(--text-dimmer);margin-top:4px">${datedCards.length} document${datedCards.length !== 1 ? 'en' : ''} gedateerd${undatedCards.length ? `, ${undatedCards.length} zonder datum (links)` : ''} — scroll horizontaal</div>
       </div>
       ${summaryHtml}
-      ${undatedHtml}
       <div class="timeline-h-scroll">${cardHtml}</div>
       <div class="timeline-h-axis-row">${spacers}</div>
     </div>
   `;
 }
 
-function _renderHCard(c, idx) {
+function _renderHCard(c, idx, undated) {
   const delay = Math.min(idx * 30, 400);
-  if (c.kind === 'email-thread') return _renderEmailHThreadCard(c, idx, delay);
-  return _renderDocHCard(c, idx, delay);
+  if (c.kind === 'email-thread') return _renderEmailHThreadCard(c, idx, delay, undated);
+  return _renderDocHCard(c, idx, delay, undated);
 }
 
-function _renderTimelineEmailCard(em, delay) {
+function _renderTimelineEmailCard(em, delay, undated) {
   const preview = replaceRedactionsForPreview(em.text || '').replace(/\n+/g, ' ').trim().slice(0, 120);
   const iso = normalizeDateStr(em.date || '');
   const time = getEmailTimeStr(em);
   const dateDisp = iso ? formatDisplayDate(iso) : '—';
   const stamp = time ? `${dateDisp} · ${time}` : dateDisp;
-  const cardCls = `timeline-h-card email-card${em.__threadDepth > 0 ? ' reply-child' : ''}`;
+  const cardCls = `timeline-h-card email-card${em.__threadDepth > 0 ? ' reply-child' : ''}${undated ? ' undated' : ''}`;
   const threadHint = em.__threadDepth > 0
     ? '<div class="timeline-h-thread-hint">↳ reply</div>'
     : (em.__threadSize > 1 ? `<div class="timeline-h-thread-hint">${em.__threadSize} berichten in thread</div>` : '');
@@ -5539,13 +5573,12 @@ function _renderTimelineEmailCard(em, delay) {
     </div>`;
 }
 
-function _renderEmailHThreadCard(c, idx, delay) {
+function _renderEmailHThreadCard(c, idx, delay, undated) {
   const threadEmails = Array.isArray(c.data) ? c.data : [c.data];
-  const first = threadEmails[0];
   const dateDisp = c.iso ? formatDisplayDate(c.iso) : '—';
   const stamp = c.time ? `${dateDisp} · ${c.time}` : dateDisp;
   const cardsHtml = threadEmails
-    .map((em, threadIdx) => _renderTimelineEmailCard(em, Math.min(delay + (threadIdx * 30), 500)))
+    .map((em, threadIdx) => _renderTimelineEmailCard(em, Math.min(delay + (threadIdx * 30), 500), undated))
     .join('');
 
   return `
@@ -5560,7 +5593,7 @@ function _renderEmailHThreadCard(c, idx, delay) {
   `;
 }
 
-function _renderDocHCard(c, idx, delay) {
+function _renderDocHCard(c, idx, delay, undated) {
   const it      = c.data;
   const dateDisp = c.iso ? formatDisplayDate(c.iso) : '—';
   const isChatType = /chat|whatsapp|teams|sms/i.test(it.type || '');
@@ -5578,7 +5611,7 @@ function _renderDocHCard(c, idx, delay) {
     ? ''
     : replaceRedactionsForPreview(it.preview || '').replace(/\n+/g, ' ').trim().slice(0, 150);
   const showDocMinimal = !isChatType;
-  const cardClass = `timeline-h-card doc-card${isChatType ? ' chat-card' : ''}`;
+  const cardClass = `timeline-h-card doc-card${isChatType ? ' chat-card' : ''}${undated ? ' undated' : ''}`;
   return `
     <div class="timeline-h-wrapper">
       <div class="${cardClass}" style="animation-delay:${delay}ms" onclick="openItemPreview('${escHtml(it.id)}')">
@@ -8074,6 +8107,11 @@ function _applyPipelineResult(data, pid, file) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+function _scrollTimeline(dir) {
+  const el = document.querySelector('.timeline-h-scroll');
+  if (el) el.scrollBy({ left: dir * 290, behavior: 'smooth' });
+}
+
 // Manual date editing
 // ─────────────────────────────────────────────────────────────────────────────
 
