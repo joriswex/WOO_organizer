@@ -53,10 +53,10 @@ _SYSTEM_PROMPT = (
     "- Some dossiers add a 4-digit inventory code (0001–0999) stamped in a corner or at the "
     "bottom-centre of each page. Others use a 7-digit barcode stamp (format 760XXXD where XXX is "
     "the 3-digit document number). Many dossiers have no stamps at all.\n"
-    "- Sensitive content is redacted with solid black rectangles. The applicable WOO legal ground "
-    "is printed in small text next to each black box, in the format 5.1.X or 5.2.X "
+    "- Sensitive content is redacted with redaction bars (some are black bars, other times white boxes or otherwise). The applicable WOO legal ground "
+    "is printed in small text inside or next to each black box, in the format 5.1.X or 5.2.X "
     "(e.g. '5.1.2e', '5.1.1', '5.2.1'). These are articles of the Wet Open Overheid.\n"
-    "- The dossier typically starts with an Inventarislijst: a table listing all documents with "
+    "- The dossier sometimes starts with an Inventarislijst: a table listing all documents with "
     "their codes, titles, page counts, and the WOO decision (openbaar/deels openbaar/niet openbaar).\n"
     "- Document types in order of frequency: internal emails, forwarded email threads, memos "
     "(nota's), formal letters (brieven), reports, meeting minutes, chat exports, and legal decisions.\n"
@@ -721,7 +721,7 @@ _BOUNDARY_SYSTEM = (
 
 _BOUNDARY_PROMPT = """\
 Below is a {n}-page WOO dossier summary. Each line:
-  p<num>: stamp=<4-digit code|null> wpn=<within-doc page|null> new=<Y|N> cont=<Y|N> cat=<category> eml=<Y|N> | "<first 300 chars of text>"
+  p<num>: stamp=<4-digit code|null> wpn=<within-doc page|null> new=<Y|N> cont=<Y|N> cat=<category> eml=<Y|N> | "<first 500 chars of text>"
   (new=Y means pass-1 suggested a new doc starts here; cont=Y means the page text begins mid-sentence — a near-certain continuation; eml=Y means email header fields were detected)
 
 {summary}
