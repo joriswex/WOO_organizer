@@ -486,11 +486,13 @@ def _chat_thread_id(code: str, participants: list[str], fallback_name: str = "")
     safe = re.sub(r"[^a-z0-9]+", "-", key.lower()).strip("-")[:60] or "chat"
     return f"{code}-chat-{safe}"
 
-def _build_chat_conversation(doc: dict, code: str) -> Optional[dict]:
+def _build_chat_conversation(doc: dict, code: str, doc_date_str: str = "") -> Optional[dict]:
     category = (doc.get("category") or "").strip().lower()
     raw_messages = doc.get("chat_messages") or []
     chat_name = (doc.get("chat_name") or "").strip()
-    doc_date_str = (doc.get("date") or "")
+    if not doc_date_str:
+        raw = doc.get("date")
+        doc_date_str = raw if isinstance(raw, str) else (raw.strftime("%Y-%m-%d") if raw else "")
 
     messages = []
     if isinstance(raw_messages, list) and raw_messages:
@@ -681,7 +683,7 @@ def _pipeline_to_json(docs: dict, api_key: Optional[str] = None) -> dict:
             except Exception as exc:
                 print(f"[server] Warning: email processing failed for {code}: {exc}")
 
-        chat_conv = _build_chat_conversation(doc, code)
+        chat_conv = _build_chat_conversation(doc, code, date_str)
         if chat_conv:
             if is_chat_doc:
                 chat_conv["chatDate"] = date_str
