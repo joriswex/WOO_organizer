@@ -2359,7 +2359,6 @@
       </div>
       <div class="toolbar-actions">
         <button class="icon-btn" onclick="openSource()">↗ Bron</button>
-        <button class="icon-btn" onclick="downloadJSON()">⬇ JSON</button>
       </div>
     </div>
     <div class="notice-strip" id="noticeStrip" style="display:none">
@@ -4720,13 +4719,24 @@ function _buildThreadedEmailList(emails) {
   return threads.flatMap(t => t.ordered);
 }
 
+function _sortEmailsChronological(emails) {
+  return (emails || []).map((email, idx) => ({
+    ...email,
+    __origIndex:     idx,
+    __sortKey:       getEmailSortKey(email),
+    __threadDepth:   0,
+    __threadParentId:'',
+    __threadSize:    1,
+  })).sort((a, b) => a.__sortKey < b.__sortKey ? -1 : a.__sortKey > b.__sortKey ? 1 : a.__origIndex - b.__origIndex);
+}
+
 function renderEmailView(container) {
   const emails = state.emails;
   if (!emails || !emails.length) {
     container.innerHTML = renderNoDataState('E-mails');
     return;
   }
-  _sortedEmails = _buildThreadedEmailList(emails);
+  _sortedEmails = _sortEmailsChronological(emails);
   iphoneState.openIdx = null;
   renderIphoneMailList(container, _sortedEmails);
 }
@@ -4805,7 +4815,7 @@ function renderIphoneRow(email, idx) {
 function openIphoneMailById(id) {
   // Ensure sorted list is populated
   if (!_sortedEmails.length && state.emails.length) {
-    _sortedEmails = _buildThreadedEmailList(state.emails);
+    _sortedEmails = _sortEmailsChronological(state.emails);
   }
   const emails = _sortedEmails.length ? _sortedEmails : state.emails;
   // Match exact id ('0003.1') OR doc-code prefix ('0003' → first email '0003.1')
@@ -4861,11 +4871,6 @@ function openIphoneMail(idx) {
           <tr><td style="padding:2px 10px 2px 0;font-weight:600;color:#888;white-space:nowrap">Ref</td><td style="padding:2px 0;font-family:var(--woo-mono);font-size:10px;color:#888">${escHtml(email.id || '—')}</td></tr>
           ${renderAttachmentTags(email.text || '', email.attachments)}
         </table>
-        ${hasApiKey ? `<button class="email-cleanup-btn" id="cleanupBtn-${bodyId}"
-            onclick="toggleEmailCleanup('${bodyId}', ${JSON.stringify(email.text || '').replace(/'/g, "\\'")})"
-            title="Verwijder geciteerde tekst en opmaakruis, behoudt alle inhoud">
-          <span>✦</span> Opschonen
-        </button>` : ''}
       </div>
       <div class="iphone-detail-body" id="${bodyId}">${bodyHtml}</div>
     </div>
