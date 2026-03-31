@@ -44,16 +44,20 @@ _REDACTION_RE = re.compile(r"5\.[12]\.[1-9][a-z]{0,2}", re.IGNORECASE)
 
 _SYSTEM_PROMPT = (
     "You are analyzing pages from Dutch government WOO (Wet Open Overheid) disclosure dossiers. "
-    "These documents were released under Dutch freedom-of-information law. "
+    "These documents were released under Dutch freedom-of-information law and may contain any type "
+    "of internal government communication.\n"
     "Key context you must apply:\n"
-    "- Every document in the dossier has a 4-digit inventory code stamped in a corner or at the bottom-centre of the page (0001–0999).\n"
-    "- Sensitive content is redacted with black rectangles. The applicable WOO legal ground is "
-    "printed in small text next to each black box, in the format 5.1.X or 5.2.X (e.g. '5.1.2e', "
-    "'5.1.1', '5.2.1'). These are articles of the Wet Open Overheid.\n"
-    "- The dossier often starts with an Inventarislijst: a table listing all documents with their "
-    "codes, titles, page counts, and the WOO decision for each.\n"
-    "- Documents are typically internal government emails, memos (nota's), formal letters (brieven), "
-    "reports, or meeting minutes.\n"
+    "- Every document in the dossier has a 4-digit inventory code (0001–0999) stamped in a corner "
+    "or at the bottom-centre of the page. Some dossiers use a 7-digit barcode stamp instead "
+    "(format 760XXXD where XXX is the 3-digit document number and D is the page number within "
+    "the document).\n"
+    "- Sensitive content is redacted with solid black rectangles. The applicable WOO legal ground "
+    "is printed in small text next to each black box, in the format 5.1.X or 5.2.X "
+    "(e.g. '5.1.2e', '5.1.1', '5.2.1'). These are articles of the Wet Open Overheid.\n"
+    "- The dossier typically starts with an Inventarislijst: a table listing all documents with "
+    "their codes, titles, page counts, and the WOO decision (openbaar/deels openbaar/niet openbaar).\n"
+    "- Document types in order of frequency: internal emails, forwarded email threads, memos "
+    "(nota's), formal letters (brieven), reports, meeting minutes, chat exports, and legal decisions.\n"
     "Respond ONLY with a valid JSON object matching the schema in the user message. "
     "Do not include markdown code fences or any text outside the JSON object."
 )
@@ -66,119 +70,146 @@ Analyze this Dutch government document page and return a JSON object with exactl
   "doc_code": "<4-digit stamp code like 0143, or null if not visible>",
   "within_doc_page": <integer — page number within this document, e.g. 1, 2, 3 — or null>,
   "category": "<Email | Chat | Nota | Report | Brief | Timeline | Vergadernotulen | Inventarislijst | Other>",
-    "doc_subtype": "<email | chat_sms | nota | brief | factuur | besluit | kamerbrief | vergaderverslag | persbericht | rapport | other>",
+  "doc_subtype": "<email | chat_sms | nota | brief | factuur | besluit | kamerbrief | vergaderverslag | persbericht | rapport | other>",
   "has_redactions": <true if black boxes or censored areas are visible>,
-  "doc_date": "<the primary date of this document as YYYY-MM-DDTHH:MM if a time is visible, else YYYY-MM-DD, or null — see DOCUMENT METADATA RULES>",
-  "doc_sender": "<author or sender of this document as a plain name string, or null>",
+  "doc_date": "<primary date as YYYY-MM-DDTHH:MM if a time is visible, else YYYY-MM-DD, or null — see METADATA RULES>",
+  "doc_sender": "<author or sender as a plain name string, or null>",
   "email_start": <true if a new email header block starts on this page, else false>,
-  "email_from": "<sender from Van:/From: field of that email, or null>",
+  "email_from": "<sender from Van:/From: field, or null>",
   "email_to": "<recipient(s) from Aan:/To: field, or null>",
   "email_cc": "<CC field, or null>",
   "email_subject": "<subject from Onderwerp:/Subject: field, or null>",
-  "email_date": "<sent/datum date as YYYY-MM-DDTHH:MM if a time is visible (e.g. Verzonden: 23-10-2023 14:32), else YYYY-MM-DD, or null>",
+  "email_date": "<sent date as YYYY-MM-DDTHH:MM if a time is visible, else YYYY-MM-DD, or null>",
   "chat_name": "<name of the chat group or contact if this is a Chat page, else null>",
   "chat_messages": <array of message objects if this is a Chat page, else []>,
-  "text": "<all text from the page, preserving structure — see TEXT EXTRACTION RULES below>"
+  "text": "<all readable text from the page — see TEXT EXTRACTION RULES>"
 }
 
 TEXT EXTRACTION RULES:
-- Extract ALL text in reading order, preserving paragraph structure.
-- For email documents, preserve header fields exactly on their own lines:
-    Van: ...
-    Aan: ...
-    CC: ...
-    Onderwerp: ...
-    Datum: ...
-    Verzonden: ...
-- For redacted email addresses where only the domain is visible (e.g. a black box before @minbuza.nl):
-    write: <[REDACTED]@minbuza.nl>
-- For redacted sections (black rectangles / censored areas), look for a WOO article code
-  printed in small text next to the black box (e.g. "5.1.2e", "5.1.1", "5.2.1"):
-    If article code is visible:  write [REDACTED: 5.1.2e]  (substitute the actual code)
-    If no article code visible:  write [REDACTED]
-- Include any visible stamps, codes, or page markers.
+- Extract ALL text in reading order, preserving paragraph and section structure.
+- For email documents, preserve header fields each on their own line:
+    Van: ...   Aan: ...   CC: ...   Onderwerp: ...   Datum: ...   Verzonden: ...
+- For tables (e.g. Inventarislijst), reproduce rows as tab- or pipe-separated text so the
+  structure is recoverable. Include all column values including codes and page counts.
+- For page headers/footers (logo text, document reference numbers, "VERTROUWELIJK" stamps):
+  include them at the top or bottom of the text field respectively.
+- For redacted email addresses where only the domain remains (black box before @domain.nl):
+    write: [REDACTED]@domain.nl
+- For redacted sections (solid black rectangles / censored areas):
+    If a WOO article code (e.g. "5.1.2e") is printed next to the box:  write [REDACTED: 5.1.2e]
+    If no article code is visible:                                       write [REDACTED]
+- For media in chat exports ([Foto], [Video], [Bestand], [Sticker], [Audio]):
+    include the placeholder exactly as printed, e.g. "[Foto]" or "[Video weggelaten]".
+- If the page is blank or contains only a stamp/page number with no readable content:
+    set text to "" (empty string).
 - Use blank lines to separate paragraphs and sections.
 
 DOCUMENT BOUNDARY RULES:
-- is_new_document = true ONLY when: stamp says "Pagina 1 van N", OR the very top of the page shows a complete new document header — meaning a full Van:/Aan:/Onderwerp: email block, or a new memo/letter heading with a fresh date and reference number, starting at line 1 or 2 of the page.
+- is_new_document = true ONLY when ONE OR MORE of these conditions hold at the very top of the page:
+    * Footer or stamp reads "Pagina 1 van N" or "1/N"
+    * A complete new email header block (Van: + Aan: + Onderwerp:) appears at line 1–3
+    * A new memo/letter heading with a fresh date and reference number appears at line 1–3
+    * The page shows a new Inventarislijst table header
+    * A forwarded-message block ("-----Doorgestuurd bericht-----" / "-----Forwarded Message-----")
+      appears at the very top, clearly starting a new forwarded document
 - is_new_document = false in ALL of the following cases:
-    - within_doc_page is 2 or higher
-    - the page starts with a salutation like "Geachte" or "Beste" but has NO Van:/Aan:/Onderwerp: header above it (this is the body of an email, not a new document)
-    - the page starts mid-sentence or mid-paragraph (clear continuation)
-    - the page contains only quoted/forwarded email headers deep in the body (not at the top)
-    - there is no stamp and the preceding page has a stamp (continuation is the safe default)
-- doc_code: look for a 4-digit stamp in any corner OR at the bottom-centre of the page (format 0001–0999).
-  If you see a 7-digit barcode stamp (e.g. 7601430), extract digits 4–6 and prefix with 0 → "0143".
-- within_doc_page: if a stamp or footer says "Pagina X van N", return X.
+    * within_doc_page is 2 or higher
+    * The page starts with a salutation like "Geachte" or "Beste" but has NO header block above it
+      (this is the continuation of a letter or email body, not a new document)
+    * The page starts mid-sentence, mid-paragraph, or mid-list (clear continuation)
+    * Quoted/forwarded email headers appear only deep in the body, not at the very top
+    * No stamp is visible and the preceding page had a stamp (continuation is the default)
+    * The page is blank or contains only a page separator / cover sheet
+- doc_code: check ALL four corners AND the bottom-centre for a stamp (format 0001–0999).
+    * 4-digit code:  use as-is → "0143"
+    * 7-digit barcode (e.g. 7601430): digits 4–6 with leading zero → "0143"
+    * Year-like numbers (1900–2099) are NOT document codes — ignore them
+- within_doc_page: return X if a stamp or footer explicitly reads "Pagina X van N" or "pag. X".
+  Return null if no explicit page-within-document counter is visible.
 
-CATEGORY RULES:
-- Email: contains Van/Aan/Onderwerp header block OR From/To/Subject block OR meeting invite fields (Required Attendees, Start Date/Time, Location) OR a reply body followed by quoted email headers
-- Chat: screenshot of a messaging app (WhatsApp, Signal, Telegram, SMS, etc.) showing chat bubbles
-- Nota: internal memo or briefing note ("Nota", "Memorandum", "Briefing")
-- Brief: formal letter with salutation ("Geachte", "Beste", "Dear")
-- Report: rapport, onderzoek, analyse
-- Timeline: chronological list of events or dates
-- Vergadernotulen: meeting minutes or agenda
-- Inventarislijst: a table inventorying all documents in this WOO dossier — shows doc codes, titles, page counts, and the WOO decision for each
-- Other: anything that does not fit the above
+CATEGORY RULES (pick the best match; when ambiguous prefer the more specific type):
+- Email:          Van/Aan/Onderwerp header block; From/To/Subject block; Outlook meeting invite
+                  (Required Attendees, Start Date/Time); reply body with quoted headers below
+- Chat:           Screenshot or print of a messaging app (WhatsApp, Signal, Teams, SMS, iMessage)
+                  showing speech bubbles or a forensic chat export (sms.db, Native Messages)
+- Nota:           Internal memo with "NOTA", "Memorandum", or "Briefing" heading; "Aan:", "Van:", "Betreft:"
+- Brief:          Formal letter with address block, date, and salutation ("Geachte", "Beste", "Dear")
+                  NOTE: a Brief addressed to a minister or parliament member that also has email-like
+                  header fields should still be classified as Brief, not Email.
+- Report:         Multi-page document with chapter headings, "Rapport", "Onderzoek", "Analyse"
+- Timeline:       Chronological list of events or dates, "Tijdlijn", "Chronologisch overzicht"
+- Vergadernotulen: Meeting minutes or agenda; "Verslag", "Notulen", "Agenda", "Aanwezig:"
+- Inventarislijst: Table inventorying WOO dossier documents — columns: code, title, pages, decision
+- Other:          Does not fit any of the above
 
-DOC_SUBTYPE RULES:
-- Return exactly one of: email | chat_sms | nota | brief | factuur | besluit | kamerbrief | vergaderverslag | persbericht | rapport | other
-- chat_sms: forensic metadata such as "FG ProMax", "sms.db", "Native Messages", sender/receiver chat bubbles, or "Status: Sent/Read"
-- email: headers such as "Van:", "Aan:", "Onderwerp:", "From:", "To:", "Subject:"
-- nota: internal memo blocks such as "NOTA", "Aan:", "Van:", "Betreft:"
-- brief: formal letter layout with address block and salutation like "Geachte" or "Dear"
-- factuur: "Factuur", "BTW", "Bedrag", invoice numbers and payment totals
-- besluit: legal decision structure with terms like "Besluit", "ingevolge", "artikel"
-- kamerbrief: phrase like "Aan de Voorzitter van de Tweede Kamer"
-- vergaderverslag: meeting notes with markers like "Verslag", "Aanwezig:", "Agenda"
-- persbericht: press-release style headings and public statement format
-- rapport: multi-page report structure with chapter headings/sections
-- other: use only when none of the subtype signals above apply
+DOC_SUBTYPE RULES — return exactly one of:
+  email | chat_sms | nota | brief | factuur | besluit | kamerbrief | vergaderverslag | persbericht | rapport | other
+- email:          Van:/Aan:/Onderwerp: or From:/To:/Subject: header fields
+- chat_sms:       Chat bubbles, forensic metadata ("FG ProMax", "sms.db", "Status: Sent/Read")
+- nota:           "NOTA" heading with Aan:/Van:/Betreft: block
+- brief:          Address block + "Geachte"/"Beste"/"Dear" salutation
+- factuur:        "Factuur", "BTW", "Bedrag", invoice/order numbers, payment totals
+- besluit:        "Besluit", "ingevolge artikel", legal operative clauses, "overwegende dat"
+- kamerbrief:     "Aan de Voorzitter van de Tweede Kamer" or "Aan de Voorzitter van de Eerste Kamer"
+- vergaderverslag: "Verslag", "Notulen", "Aanwezig:", "Agenda", action-item lists
+- persbericht:    Press-release heading, embargo line, "Persbericht", public statement format
+- rapport:        Chapter headings/numbered sections spanning multiple pages, "Rapport", "Onderzoek"
+- other:          Use only when none of the signals above apply
 
 CHAT PAGE RULES (only when category = "Chat"):
-- Set chat_name to the group or contact name shown at the top of the screen (e.g. "Bezoek praktische zaken").
-- Extract every visible message into chat_messages as an array of objects:
+- chat_name: the group or contact name shown at the top of the screen (e.g. "Bezoek praktische zaken").
+  If the name is redacted, write "[REDACTED]".
+- Extract every visible message into chat_messages (array, top-to-bottom order):
   {
-    "sender_position": "left" | "right",  // left = incoming, right = outgoing (device owner)
-    "sender_label": "<name or redaction code visible above the bubble, e.g. '5.1.2.e' or '[REDACTED]'>",
-    "timestamp": "<time string visible on the message, e.g. '13:27', or null>",
-    "content": "<full message text; write [REDACTED] for blacked-out words>"
+    "sender_position": "left" | "right",   // left = incoming, right = outgoing (device owner)
+    "sender_label": "<name or redaction code above the bubble; '[REDACTED]' if blacked out>",
+    "timestamp": "<HH:MM visible on the message, or null>",
+    "is_system_message": <true for date separators, join/leave events, missed-call notices>,
+    "content": "<full message text; use [REDACTED] for blacked-out words; media as [Foto]/[Video]/[Audio]/[Bestand]>"
   }
-- Preserve message order top to bottom.
-- If a sender name is redacted but the same redaction code appears consistently (e.g. always '5.1.2.e'),
-  use that code as the sender_label so we can track the same person across messages.
-- For the text field, write a plain concatenation of all message contents (for search/sorting).
+- System messages (date separators like "Vandaag", "Gisteren", "15 oktober 2024"; join/leave
+  notifications; "Berichten en oproepen zijn end-to-end versleuteld") should be included with
+  is_system_message = true, sender_position = "left", sender_label = null.
+- If a sender name is consistently replaced by the same redaction code (e.g. "5.1.2e"), use
+  that code as sender_label across all that person's messages so they can be tracked.
+- text field: plain concatenation of all non-system message contents (for search/sorting).
 
-DOCUMENT METADATA RULES (apply to ALL document types, including emails):
-- doc_date: the primary date of THIS document — the date it was written, sent, or issued.
-  Look for: letterhead date, "Datum:", "Date:", "Verzonden:", "Sent:", "Start Date/Time:", meeting date.
-  Parse ANY visible date format (Dutch or English).
-  If a time is also visible (e.g. "14:32" or "14:32:05"), include it: return "YYYY-MM-DDTHH:MM".
-  If no time is visible, return "YYYY-MM-DD".
-  For email threads: use the date of the most recent / topmost email on this page.
-  Return null only if no date is visible anywhere on the page.
-- doc_sender: the author, sender, or issuing party of this document.
-  For emails: the From/Van field name (without email address).
-  For Nota/Brief: the name or team in the signature block or "Van:" header line.
-  For reports: the organisation or author listed on the title page.
-  Return null if not determinable. Do NOT include email addresses.
+METADATA RULES (apply to ALL document types, including emails):
+- doc_date: the primary date this document was written, sent, or issued.
+    * Sources: letterhead date, "Datum:", "Date:", "Verzonden:", "Sent:", "Start Date/Time:"
+    * Dutch date formats to parse:
+        "3 januari 2024"          → "2024-01-03"
+        "15 okt. 2024"            → "2024-10-15"   (jan feb mrt/maa apr mei jun jul aug sep okt nov dec)
+        "ma 06-03-2024 14:32"     → "2024-03-06T14:32"  (strip day abbreviation)
+        "Verzonden: di 14:32"     combined with a visible date → use the date + "T14:32"
+        "06/03/2024 14:32:05"     → "2024-03-06T14:32"  (strip seconds)
+    * If a time is visible: return "YYYY-MM-DDTHH:MM" (strip seconds if present).
+    * For email threads: use the date/time of the most recent (topmost) email on this page.
+    * Return null ONLY if no date is visible anywhere on the page.
+- doc_sender: name only — no email addresses, no angle brackets.
+    * Email: Van:/From: name
+    * "Verzonden namens [Name]" or "On behalf of [Name]": use the delegated name
+    * Nota/Brief: name or team from signature or "Van:" header line
+    * Report: organisation or author from title page
+    * Return null if not determinable.
 
 EMAIL HEADER RULES (only when category = "Email"):
-- email_start: true if this page begins a new email. This includes:
-  * A fresh Van:/From: + Aan:/To: + Onderwerp: block at the top
-  * An Outlook meeting invite (From: + Required Attendees: + Subject: + Start Date/Time:)
-  * A reply email that starts with body text but has NO preceding email header on the same page
-    (e.g. page starts with "Hoi," or "Beste," and then shows quoted headers further down)
-  In the reply case: set email_start = true, but leave email_from/email_to/email_subject/email_date
-  as the headers of the REPLY (which are often absent), not the quoted original below.
-- email_from, email_to, email_cc, email_subject: extract from the Van/Aan/CC/Onderwerp fields
-  of the NEW email starting on this page. For meeting invites use From/Required Attendees/Subject.
-  Null if the reply has no explicit header fields.
-- email_date: parse the Datum:/Verzonden:/Sent:/Date:/Start Date/Time: field and return as YYYY-MM-DD.
-  Null if not visible or not parseable.
-- If multiple emails start on the same page, report the FIRST one's headers.
-- For non-email pages: email_start = false, all email_* fields = null.
+- email_start = true when this page begins a NEW email. Signals:
+    * Fresh Van:/From: + Aan:/To: + Onderwerp: block at lines 1–5
+    * Outlook meeting invite: From: + Required Attendees: + Subject: + Start Date/Time:
+    * Reply body starting with salutation/text before any quoted headers on this page
+      (e.g. page begins with "Hoi," then shows "-----Oorspronkelijk bericht-----" below)
+    * First page of a forwarded email marked "FW:" or "Fwd:" in the subject
+- email_start = false if the page is a continuation of an email body or quoted thread.
+- email_from: name only; strip email addresses.
+    * "Verzonden namens [Name]" → use the delegated name
+    * Partially redacted (e.g. "[REDACTED]@minbuza.nl"): write "[REDACTED]"
+- email_to, email_cc: names only, comma-separated for multiple recipients. Null if absent.
+- email_subject: include FW:/Re:/Fwd: prefixes as-is. "[REDACTED]" if fully redacted.
+- email_date: parse Datum:/Verzonden:/Sent:/Date:/Start Date/Time: → YYYY-MM-DD or YYYY-MM-DDTHH:MM.
+    Strip day abbreviations and seconds. Null if not visible or not parseable.
+- If multiple emails start on the same page: report only the FIRST one's header fields.
+- Non-email pages: email_start = false, all email_* fields = null.
 """
 
 
