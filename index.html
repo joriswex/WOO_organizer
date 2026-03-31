@@ -669,6 +669,11 @@
 
   /* ── HORIZONTAL TIMELINE ── */
   .timeline-h-outer { position: relative; padding-bottom: 0; overflow: hidden; }
+  .timeline-h-nodates { margin-bottom: 14px; border: 1px dashed var(--woo-border); border-radius: var(--woo-radius-md); padding: 10px 14px; background: var(--woo-bg); }
+  .timeline-h-nodates-header { font-family: var(--woo-mono); font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-dimmer); margin-bottom: 8px; }
+  .timeline-h-nodates-list { display: flex; flex-wrap: wrap; gap: 6px; }
+  .timeline-h-nodates-pill { font-family: var(--woo-mono); font-size: 10px; padding: 4px 8px; border: 1px solid var(--woo-border); border-radius: 4px; background: var(--woo-white); cursor: pointer; color: var(--woo-text); max-width: 220px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .timeline-h-nodates-pill:hover { border-color: var(--border-bright); }
   .timeline-h-header { margin-bottom: 16px; }
   .timeline-h-summary-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
   .timeline-summarize-btn {
@@ -3068,6 +3073,8 @@ function showWelcome() {
   document.getElementById('noticeStrip').style.display = 'none';
   const panel = document.getElementById('docNavPanel');
   if (panel) panel.style.display = 'none';
+  const pr = document.querySelector('.panel-results');
+  if (pr) pr.style.display = '';
   const toolbarPid = document.getElementById('toolbarPid');
   if (toolbarPid) toolbarPid.textContent = '';
 
@@ -4202,6 +4209,8 @@ function renderDocNavPanel() {
   const panel = document.getElementById('docNavPanel');
   if (!panel) return;
   panel.style.display = 'flex';
+  const pr = document.querySelector('.panel-results');
+  if (pr) pr.style.display = 'none';
   
   const items = state.timelineItems;
   document.getElementById('docNavCount').textContent = items.length;
@@ -5441,16 +5450,32 @@ function renderTimelineView(container) {
     if (it.type === 'E-mail' && emailDocSet.has(it.id)) continue; // already via emails
     allCards.push({ kind: 'doc', id: it.id, sortKey: (it.date || '') + '00:00', iso: it.date || '', time: null, data: it });
   }
-  allCards.sort((a, b) => a.sortKey < b.sortKey ? -1 : a.sortKey > b.sortKey ? 1 : 0);
+  const undatedCards = allCards.filter(c => !c.iso);
+  const datedCards   = allCards.filter(c =>  c.iso);
+  datedCards.sort((a, b) => a.sortKey < b.sortKey ? -1 : a.sortKey > b.sortKey ? 1 : 0);
 
-  const cardHtml  = allCards.map((c, i) => _renderHCard(c, i)).join('');
-  const spacers   = allCards.map(() => `<div class="timeline-h-axis-spacer"></div>`).join('');
+  const cardHtml  = datedCards.map((c, i) => _renderHCard(c, i)).join('');
+  const spacers   = datedCards.map(() => `<div class="timeline-h-axis-spacer"></div>`).join('');
   const dossier   = state.activeResult;
   const summaryDays = Array.isArray(state.timelineSummary) ? state.timelineSummary : [];
   const summaryHtml = renderTimelineChronologySummary(summaryDays);
   const sumBtnLabel = state.timelineSummaryLoading
     ? 'Analyseren…'
     : (summaryDays.length ? '↺ Vat tijdlijn opnieuw samen' : '✦ Vat tijdlijn samen');
+
+  const undatedHtml = undatedCards.length ? `
+    <div class="timeline-h-nodates">
+      <div class="timeline-h-nodates-header">Geen datum gevonden &middot; ${undatedCards.length} document${undatedCards.length !== 1 ? 'en' : ''}</div>
+      <div class="timeline-h-nodates-list">
+        ${undatedCards.map(c => {
+          const it = c.kind === 'doc' ? c.data : (c.data[0] || {});
+          const label = c.kind === 'doc' ? (it.title || it.id || '—') : (it.subject || it.id || '—');
+          const type  = c.kind === 'doc' ? (it.type || 'Doc') : 'E-mail';
+          const short = label.length > 40 ? label.slice(0, 40) + '…' : label;
+          return `<div class="timeline-h-nodates-pill" onclick="openItemPreview('${escHtml(c.id)}')" title="${escHtml(label)}"><span style="opacity:0.5;margin-right:5px">${escHtml(type)}</span>${escHtml(short)}</div>`;
+        }).join('')}
+      </div>
+    </div>` : '';
 
   container.innerHTML = `
     <div class="timeline-h-outer">
@@ -5460,9 +5485,10 @@ function renderTimelineView(container) {
           <button class="timeline-summarize-btn" onclick="summarizeTimelineChronology()" ${state.timelineSummaryLoading ? 'disabled' : ''}>${sumBtnLabel}</button>
         </div>
         <div class="doc-meta-title" style="font-size:15px">${escHtml(dossier?.title || 'Dossier')}</div>
-        <div style="font-family:var(--woo-mono);font-size:10px;color:var(--text-dimmer);margin-top:4px">${allCards.length} document${allCards.length !== 1 ? 'en' : ''} — scroll horizontaal</div>
+        <div style="font-family:var(--woo-mono);font-size:10px;color:var(--text-dimmer);margin-top:4px">${datedCards.length} document${datedCards.length !== 1 ? 'en' : ''} gedateerd${undatedCards.length ? `, ${undatedCards.length} zonder datum` : ''} — scroll horizontaal</div>
       </div>
       ${summaryHtml}
+      ${undatedHtml}
       <div class="timeline-h-scroll">${cardHtml}</div>
       <div class="timeline-h-axis-row">${spacers}</div>
     </div>
