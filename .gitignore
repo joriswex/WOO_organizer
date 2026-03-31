@@ -19,4 +19,8 @@ __pycache__/
 
 # Input PDFs and dossier folders
 *.pdf
-palestina dossier/
+OpenPSS dossier/
+
+# OpenPSS evaluation data (large binary dataset — not tracked)
+OpenPSS Evaluation/
+annotation_trial/
