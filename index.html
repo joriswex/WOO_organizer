@@ -5494,7 +5494,7 @@ function renderTimelineView(container) {
   }
   for (const it of items) {
     if (it.type === 'E-mail' && emailDocSet.has(it.id)) continue; // already via emails
-    allCards.push({ kind: 'doc', id: it.id, sortKey: (it.date || '') + '00:00', iso: it.date || '', time: null, data: it });
+    allCards.push({ kind: 'doc', id: it.id, sortKey: (it.date || '') + (it.time || '00:00'), iso: it.date || '', time: it.time || null, data: it });
   }
   const undatedCards = allCards.filter(c => !c.iso);
   const datedCards   = allCards.filter(c =>  c.iso);
@@ -8119,22 +8119,30 @@ let _dateEditId = null;
 
 function _editDocDate(id) {
   _dateEditId = id;
-  const item  = (state.timelineItems || []).find(t => t.id === id);
-  const input = document.getElementById('dateEditInput');
-  if (input) input.value = item?.date || '';
+  const item = (state.timelineItems || []).find(t => t.id === id);
+  const dateInput = document.getElementById('dateEditInput');
+  const timeInput = document.getElementById('dateEditTimeInput');
+  if (dateInput) dateInput.value = item?.date || '';
+  if (timeInput) timeInput.value = item?.time || '';
   const overlay = document.getElementById('dateEditOverlay');
   if (overlay) overlay.style.display = 'flex';
 }
 
 function _saveDateEdit() {
-  const input = document.getElementById('dateEditInput');
-  const val   = input?.value?.trim();
-  if (!val || !_dateEditId) {
+  const dateInput = document.getElementById('dateEditInput');
+  const timeInput = document.getElementById('dateEditTimeInput');
+  const dateVal   = dateInput?.value?.trim();
+  const timeVal   = timeInput?.value?.trim() || '';
+  if (!dateVal || !_dateEditId) {
     document.getElementById('dateEditOverlay').style.display = 'none';
     return;
   }
   const idx = (state.timelineItems || []).findIndex(t => t.id === _dateEditId);
-  if (idx >= 0) state.timelineItems[idx].date = val;
+  if (idx >= 0) {
+    state.timelineItems[idx].date = dateVal;
+    if (timeVal) state.timelineItems[idx].time = timeVal;
+    else delete state.timelineItems[idx].time;
+  }
   document.getElementById('dateEditOverlay').style.display = 'none';
   // Re-render the active view so the timeline re-sorts
   const content = document.getElementById('viewerContent');
@@ -8235,11 +8243,21 @@ function _importAnalysis(input) {
 <div id="dateEditOverlay"
      style="display:none;position:fixed;inset:0;z-index:9100;background:rgba(0,0,0,0.25);align-items:center;justify-content:center"
      onclick="if(event.target===this)this.style.display='none'">
-  <div style="background:var(--woo-white);border:1px solid var(--woo-border);border-radius:10px;padding:22px 24px;box-shadow:0 8px 32px rgba(0,0,0,0.18);min-width:260px">
+  <div style="background:var(--woo-white);border:1px solid var(--woo-border);border-radius:10px;padding:22px 24px;box-shadow:0 8px 32px rgba(0,0,0,0.18);min-width:280px">
     <div style="font-family:var(--woo-font);font-weight:600;font-size:13px;margin-bottom:14px">Datum aanpassen</div>
-    <input type="date" id="dateEditInput"
-           style="width:100%;padding:7px 10px;border:1px solid var(--woo-border);border-radius:5px;font-family:var(--woo-mono);font-size:13px;box-sizing:border-box;background:var(--woo-bg)">
-    <div style="font-size:10px;font-family:var(--woo-mono);color:var(--text-dimmer);margin-top:6px">Formaat: JJJJ-MM-DD</div>
+    <div style="display:flex;gap:8px;align-items:flex-start">
+      <div style="flex:1">
+        <div style="font-size:10px;font-family:var(--woo-mono);color:var(--text-dimmer);margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em">Datum</div>
+        <input type="date" id="dateEditInput"
+               style="width:100%;padding:7px 10px;border:1px solid var(--woo-border);border-radius:5px;font-family:var(--woo-mono);font-size:12px;box-sizing:border-box;background:var(--woo-bg)">
+      </div>
+      <div style="width:100px">
+        <div style="font-size:10px;font-family:var(--woo-mono);color:var(--text-dimmer);margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em">Tijd <span style="opacity:0.6">(optioneel)</span></div>
+        <input type="time" id="dateEditTimeInput"
+               style="width:100%;padding:7px 10px;border:1px solid var(--woo-border);border-radius:5px;font-family:var(--woo-mono);font-size:12px;box-sizing:border-box;background:var(--woo-bg)">
+      </div>
+    </div>
+    <div style="font-size:10px;font-family:var(--woo-mono);color:var(--text-dimmer);margin-top:6px">Tijd wordt gebruikt voor sortering op dezelfde dag.</div>
     <div style="display:flex;gap:8px;margin-top:14px">
       <button onclick="_saveDateEdit()"
               style="flex:1;padding:8px;background:var(--woo-dark);color:#fff;border:none;border-radius:5px;cursor:pointer;font-family:var(--woo-mono);font-size:11px;font-weight:600">Opslaan</button>
