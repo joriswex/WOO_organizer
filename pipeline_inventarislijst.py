@@ -4,6 +4,7 @@ pipeline_inventarislijst.py — Extract WOO document inventory from an Inventari
 Uses GPT-4o-mini vision to parse the inventory table rows.
 Can be given a separate PDF or a page range from the main dossier PDF.
 """
+from __future__ import annotations
 
 import base64
 import io

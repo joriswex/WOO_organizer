@@ -1,6 +1,8 @@
 """
 text_sorting.py — date extraction and chronological sorting of WOO documents.
 """
+from __future__ import annotations
+
 import re
 from datetime import datetime
 
@@ -9,7 +11,7 @@ from email_splitter import split_emails
 # ---------------------------------------------------------------------------
 # Month name tables (Dutch + English)
 # ---------------------------------------------------------------------------
-_MONTHS: dict[str, int] = {
+_MONTHS = {
     # Dutch
     'januari': 1, 'februari': 2, 'maart': 3, 'april': 4,
     'mei': 5, 'juni': 6, 'juli': 7, 'augustus': 8,
@@ -33,11 +35,13 @@ def _parse_date(raw: str) -> datetime | None:
         return None
     s = raw.strip()
 
-    # "2025-03-25" or "2025-03-25 14:32" (ISO date, optional time suffix)
-    m = re.match(r'(\d{4})-(\d{1,2})-(\d{1,2})', s)
+    # "2025-03-25" or "2025-03-25T14:32" / "2025-03-25 14:32"
+    m = re.fullmatch(r'(\d{4})-(\d{1,2})-(\d{1,2})(?:[T ](\d{1,2}):(\d{2}))?', s)
     if m:
         try:
-            return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+            hour = int(m.group(4)) if m.group(4) else 0
+            minute = int(m.group(5)) if m.group(5) else 0
+            return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)), hour, minute)
         except ValueError:
             pass
 
@@ -69,11 +73,13 @@ def _parse_date(raw: str) -> datetime | None:
             except ValueError:
                 pass
 
-    # "18-09-2025"  (DD-MM-YYYY, exact match)
-    m = re.fullmatch(r'(\d{1,2})-(\d{1,2})-(\d{4})', s)
+    # "18-09-2025" or "18-09-2025 14:32"
+    m = re.fullmatch(r'(\d{1,2})-(\d{1,2})-(\d{4})(?:\s+(\d{1,2}):(\d{2}))?', s)
     if m:
         try:
-            return datetime(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+            hour = int(m.group(4)) if m.group(4) else 0
+            minute = int(m.group(5)) if m.group(5) else 0
+            return datetime(int(m.group(3)), int(m.group(2)), int(m.group(1)), hour, minute)
         except ValueError:
             pass
 

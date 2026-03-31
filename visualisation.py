@@ -173,7 +173,7 @@ def make_thumbnail(doc_code: str, doc: dict,
 # ---------------------------------------------------------------------------
 # Ministry domain → full name lookup
 # ---------------------------------------------------------------------------
-_MINISTRY_DOMAINS: dict[str, str] = {
+_MINISTRY_DOMAINS = {
     # Core ministries (short form — no "Ministerie van" prefix to keep tags compact)
     "minbuza.nl":       "Buitenlandse Zaken",
     "minjenv.nl":       "Justitie en Veiligheid",
@@ -464,11 +464,13 @@ def _email_card_inner_html(email: dict) -> str:
     redact_html = _email_redact_summary_html(email.get("text") or "")
     subject    = _e(email.get("subject") or "(geen onderwerp)")
     date       = _e(email.get("date") or "")
+    time       = _e(email.get("time") or "")
     eid        = _e(email.get("id") or "")
+    date_time  = f"{date} {time}".strip() if date or time else ""
 
     return (
         f'<div class="ec-header">'
-        f'<div class="ec-toprow"><span class="ec-id">{eid}</span><span class="ec-date">{date}</span></div>'
+        f'<div class="ec-toprow"><span class="ec-id">{eid}</span><span class="ec-date">{date_time}</span></div>'
         f'{van_row}{aan_row}{cc_row}'
         f'<div class="ec-subject">{subject}</div>'
         f'</div>'
@@ -476,6 +478,24 @@ def _email_card_inner_html(email: dict) -> str:
         f'{attach_html}'
         f'<div class="ec-body">{body_html}</div>'
     )
+
+
+def _email_sort_datetime(email: dict, fallback: object = None):
+    """Build a sortable datetime from separate email date and time fields."""
+    raw_date = (email.get("date") or "").strip()
+    raw_time = (email.get("time") or "").strip()
+    if raw_date:
+        try:
+            base_dt = _parse_date_str(raw_date)
+        except Exception:
+            base_dt = None
+        if base_dt and raw_time:
+            m = re.fullmatch(r"(\d{1,2}):(\d{2})", raw_time)
+            if m:
+                return base_dt.replace(hour=int(m.group(1)), minute=int(m.group(2)))
+        if base_dt:
+            return base_dt
+    return fallback
 
 
 def _redaction_summary_html(code_counts: dict[str, int]) -> str:
@@ -679,6 +699,8 @@ def _email_thread_html(emails: list[dict]) -> str:
         cc_val  = _e(_resolve_sender(email.get("cc") or "")) if email.get("cc") else ""
         subject = _e(email.get("subject") or "(geen onderwerp)")
         date    = _e(email.get("date") or "")
+        time    = _e(email.get("time") or "")
+        date_time = f"{date} {time}".strip() if date or time else ""
 
         body_raw    = _email_body(email.get("text") or "")
         body_raw    = _strip_email_boilerplate(body_raw)
@@ -705,7 +727,7 @@ def _email_thread_html(emails: list[dict]) -> str:
             f'{aan_row}'
             f'{cc_row}'
             f'<div class="em-field"><span class="em-label">Onderwerp</span><span class="em-val em-subj">{subject}</span></div>'
-            f'<div class="em-field"><span class="em-label">Datum</span><span class="em-val em-date">{date}</span></div>'
+            f'<div class="em-field"><span class="em-label">Datum</span><span class="em-val em-date">{date_time}</span></div>'
             f'</div>'
             f'{redact_html}'
             f'{attach_html}'
@@ -786,13 +808,9 @@ def build_html(docs: dict, out_path: Path | str = OUT_PATH,
         if doc["category"] == "E-mail":
             emails = split_emails(doc["text"], doc_code)
             for email in emails:
-                raw_date = (email.get("date") or "").strip()
-                try:
-                    email_dt = _parse_date_str(raw_date) if raw_date else None
-                except Exception:
-                    email_dt = None
+                email_dt = _email_sort_datetime(email)
                 sort_dt    = email_dt or doc_date
-                date_str   = sort_dt.strftime("%-d %b %Y") if sort_dt else "(geen datum)"
+                date_str   = sort_dt.strftime("%-d %b %Y %H:%M") if email_dt and email.get("time") else (sort_dt.strftime("%-d %b %Y") if sort_dt else "(geen datum)")
                 card_inner = _email_card_inner_html(email)
                 items.append({
                     "type":      "email",

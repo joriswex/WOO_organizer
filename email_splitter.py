@@ -24,13 +24,15 @@ are also treated as split points.
 Output IDs follow the pattern <doc_code>.<n>, e.g. "0003.1", "0003.2".
 """
 
+from __future__ import annotations
+
 import re
 
 # ---------------------------------------------------------------------------
 # Dutch month names for date normalisation
 # ---------------------------------------------------------------------------
 
-_DUTCH_MONTHS: dict[str, int] = {
+_DUTCH_MONTHS = {
     "januari": 1, "februari": 2, "maart": 3, "april": 4,
     "mei": 5, "juni": 6, "juli": 7, "augustus": 8,
     "september": 9, "oktober": 10, "november": 11, "december": 12,
@@ -41,14 +43,14 @@ _DUTCH_MONTHS: dict[str, int] = {
 
 
 def _normalize_date(raw: str | None) -> str | None:
-    """Convert common Dutch/European date strings to YYYY-MM-DD HH:MM.
+    """Convert common Dutch/European date strings to YYYY-MM-DD or YYYY-MM-DDTHH:MM.
 
     Handles:
-      - Already ISO: 2024-01-03  or  2024-01-03 14:32
-      - European:    DD-MM-YYYY  or  DD/MM/YYYY  (with optional HH:MM)
-      - Dutch long:  3 januari 2024  or  maandag 6 mei 2024 14:32
+      - Already ISO: 2024-01-03
+      - European:    DD-MM-YYYY  or  DD/MM/YYYY
+      - Dutch long:  3 januari 2024  (optionally preceded by weekday name)
+    - With time:   maandag 6 mei 2024 14:32  →  2024-05-06T14:32
 
-    Always preserves HH:MM time when present in the source string.
     Returns the original string unchanged when parsing is not possible
     (the frontend's normalizeDateStr() will attempt a second parse).
     """
@@ -56,30 +58,28 @@ def _normalize_date(raw: str | None) -> str | None:
         return None
     s = raw.strip()
 
-    def _time(src: str) -> str:
-        """Extract ' HH:MM' suffix from src, or empty string."""
-        tm = re.search(r'\b(\d{1,2}):(\d{2})\b', src)
-        return f" {int(tm.group(1)):02d}:{tm.group(2)}" if tm else ""
-
-    # Already ISO (with optional time already attached)
-    m = re.match(r"(\d{4})-(\d{2})-(\d{2})", s)
+    # Already ISO (optionally with time: 2024-01-03T14:32 or 2024-01-03 14:32)
+    m = re.match(r"(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{1,2}:\d{2}))?", s)
     if m:
-        return f"{m.group(1)}-{m.group(2)}-{m.group(3)}{_time(s[m.end():])}"
+        base = f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+        return f"{base}T{m.group(4)}" if m.group(4) else base
 
-    # European: DD-MM-YYYY or DD/MM/YYYY
-    m = re.search(r"(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})", s)
+    # European: DD-MM-YYYY or DD/MM/YYYY, optionally with time
+    m = re.search(r"(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})(?:\s+(\d{1,2}:\d{2}))?", s)
     if m:
-        d, mo, y = m.group(1), m.group(2), m.group(3)
+        d, mo, y, t = m.group(1), m.group(2), m.group(3), m.group(4)
         if 1 <= int(d) <= 31 and 1 <= int(mo) <= 12:
-            return f"{y}-{mo.zfill(2)}-{d.zfill(2)}{_time(s[m.end():])}"
+            base = f"{y}-{mo.zfill(2)}-{d.zfill(2)}"
+            return f"{base}T{t}" if t else base
 
     # Dutch long: "3 januari 2024" or "maandag 3 januari 2024 14:32"
-    m = re.search(r"(\d{1,2})\s+([a-zA-Z]+)\s+(\d{4})", s)
+    m = re.search(r"(\d{1,2})\s+([a-zA-Z]+)\s+(\d{4})(?:\s+(\d{1,2}:\d{2}))?", s)
     if m:
-        d, mon_str, y = m.group(1), m.group(2).lower(), m.group(3)
+        d, mon_str, y, t = m.group(1), m.group(2).lower(), m.group(3), m.group(4)
         mon = _DUTCH_MONTHS.get(mon_str) or _DUTCH_MONTHS.get(mon_str[:3])
         if mon:
-            return f"{y}-{str(mon).zfill(2)}-{d.zfill(2)}{_time(s[m.end():])}"
+            base = f"{y}-{str(mon).zfill(2)}-{d.zfill(2)}"
+            return f"{base}T{t}" if t else base
 
     return raw  # Return raw — frontend will try again
 
@@ -88,6 +88,23 @@ def _normalize_date(raw: str | None) -> str | None:
 # Regexes
 # ---------------------------------------------------------------------------
 
+def _extract_time(normalized_date: str | None) -> str | None:
+    """Extract time from a normalized date string.
+    
+    If the date is in format YYYY-MM-DDTHH:MM, returns HH:MM.
+    Otherwise returns None.
+    """
+    if not normalized_date or "T" not in normalized_date:
+        return None
+    try:
+        parts = normalized_date.split("T")
+        if len(parts) == 2:
+            return parts[1]
+    except Exception:
+        pass
+    return None
+
+
 # Matches a header field line and captures the field name.
 _FIELD_TYPE_RE = re.compile(
     r"^[ \t]*(?P<field>from|van|afzender|to|aan|subject|onderwerp|betreft|sent|verzonden|datum|date|received|cc|bcc)\s*:",
@@ -95,7 +112,7 @@ _FIELD_TYPE_RE = re.compile(
 )
 
 # Map Dutch field names → English so "Van:" and "From:" are treated as the same.
-_FIELD_NORMALIZE: dict[str, str] = {
+_FIELD_NORMALIZE = {
     "van":      "from",
     "afzender": "from",
     "aan":      "to",
@@ -282,71 +299,76 @@ def split_emails(text: str, doc_code: str) -> list[dict]:
             "to":          str | None,
             "cc":          str | None,
             "date":        str | None,   # normalised to YYYY-MM-DD where possible
+            "time":        str | None,   # HH:MM if a time is visible, else None
             "attachments": list[str],    # filenames / attachment names
             "text":        str,
             "warning":     str | None,   # non-None when splitting was ambiguous
         }
     """
-    text  = _normalize_redacted_addrs(text)
+    text = _normalize_redacted_addrs(text)
     lines = text.splitlines()
     split_points = _find_split_points(lines)
 
     if not split_points:
         return [{
-            "id":          f"{doc_code}.1",
-            "subject":     None,
-            "sender":      None,
-            "to":          None,
-            "cc":          None,
-            "date":        None,
+            "id": f"{doc_code}.1",
+            "subject": None,
+            "sender": None,
+            "to": None,
+            "cc": None,
+            "date": None,
+            "time": None,
             "attachments": [],
-            "text":        text.strip(),
-            "warning":     "No header-field cluster found — kept as single block",
+            "text": text.strip(),
+            "warning": "No header-field cluster found — kept as single block",
         }]
 
     emails = []
     email_idx = 0
 
-    # Lines before the first detected header belong to the leading reply body.
-    # (Outlook reply format: body text first, then quoted original headers below.)
     if split_points[0] > 0:
         preamble = lines[:split_points[0]]
         preamble_text = "\n".join(preamble).strip()
         if preamble_text:
             email_idx += 1
             emails.append({
-                "id":          f"{doc_code}.{email_idx}",
-                "subject":     None,
-                "sender":      None,
-                "to":          None,
-                "cc":          None,
-                "date":        None,
+                "id": f"{doc_code}.{email_idx}",
+                "subject": None,
+                "sender": None,
+                "to": None,
+                "cc": None,
+                "date": None,
+                "time": None,
                 "attachments": [],
-                "text":        preamble_text,
-                "warning":     "Reply body before quoted headers — no header fields found",
+                "text": preamble_text,
+                "warning": "Reply body before quoted headers — no header fields found",
             })
 
     for j, start in enumerate(split_points):
-        end         = split_points[j + 1] if j + 1 < len(split_points) else len(lines)
+        end = split_points[j + 1] if j + 1 < len(split_points) else len(lines)
         block_lines = lines[start:end]
-        block_text  = "\n".join(block_lines).strip()
+        block_text = "\n".join(block_lines).strip()
 
         if not block_text:
             continue
 
         raw_date = _extract_field(block_lines, _DATE_RE)
+        normalized_date = _normalize_date(raw_date)
+        date_only = normalized_date.split("T", 1)[0] if normalized_date else None
+        time_val = _extract_time(normalized_date)
 
         email_idx += 1
         emails.append({
-            "id":          f"{doc_code}.{email_idx}",
-            "subject":     _extract_field(block_lines, _SUBJECT_RE),
-            "sender":      _extract_field(block_lines, _FROM_RE),
-            "to":          _extract_field(block_lines, _TO_RE),
-            "cc":          _extract_field(block_lines, _CC_RE),
-            "date":        _normalize_date(raw_date),
+            "id": f"{doc_code}.{email_idx}",
+            "subject": _extract_field(block_lines, _SUBJECT_RE),
+            "sender": _extract_field(block_lines, _FROM_RE),
+            "to": _extract_field(block_lines, _TO_RE),
+            "cc": _extract_field(block_lines, _CC_RE),
+            "date": date_only,
+            "time": time_val,
             "attachments": _extract_attachments(block_lines),
-            "text":        block_text,
-            "warning":     None,
+            "text": block_text,
+            "warning": None,
         })
 
     return emails

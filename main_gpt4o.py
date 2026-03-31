@@ -21,6 +21,7 @@ from pathlib import Path
 from pipeline_gpt4o import load_pdf_vlm, docs_from_cache
 from text_sorting import sort_documents
 from visualisation import build_html
+from event_enrichment import enrich_events, save_events, load_events
 
 _DEFAULT_PDF = Path("test.pdf")
 _DEFAULT_OUT = Path("woo_timeline_vlm.html")
@@ -28,6 +29,9 @@ _DEFAULT_OUT = Path("woo_timeline_vlm.html")
 
 def _default_cache_path(pdf_path: Path) -> Path:
     return pdf_path.with_name(pdf_path.stem + "_gpt4o_cache.json")
+
+def _events_path(pdf_path: Path) -> Path:
+    return pdf_path.with_name(pdf_path.stem + "_gpt4o_events.json")
 
 
 def main() -> None:
@@ -72,13 +76,32 @@ def main() -> None:
         print(f"Rebuilding from cache: {from_cache}")
         docs = docs_from_cache(from_cache, pdf_path)
 
-        print("\nStep 2/3 — Extracting dates and sorting chronologically...")
+        print("\nStep 2/4 — Extracting dates and sorting chronologically...")
         docs = sort_documents(docs)
 
-        print("\nStep 3/3 — Building interactive HTML timeline...")
+        # Re-use existing events file if present, otherwise skip enrichment
+        # (no API key available in --from-cache mode unless passed explicitly)
+        ev_path = _events_path(pdf_path)
+        api_key_cache = args.api_key or os.environ.get("OPENAI_API_KEY")
+        if ev_path.exists() and not api_key_cache:
+            print(f"\nStep 3/4 — Loading existing events from {ev_path}")
+            events = load_events(ev_path)
+            print(f"  {len(events)} events loaded.")
+        elif api_key_cache:
+            print("\nStep 3/4 — Enriching events with GPT-4o (threads, summaries, tags)...")
+            events = enrich_events(docs, api_key=api_key_cache)
+            if events:
+                save_events(events, ev_path)
+        else:
+            print("\nStep 3/4 — Skipping event enrichment (no API key; pass --api-key to enable).")
+            events = []
+
+        print("\nStep 4/4 — Building interactive HTML timeline...")
         build_html(docs, out_path, pdf_path=pdf_path)
 
         print(f"\nDone. Output: {out_path}")
+        if events:
+            print(f"Enriched events: {ev_path}")
         return
 
     # ── Full API run ───────────────────────────────────────────────────────────
@@ -106,17 +129,25 @@ def main() -> None:
     print(f"Cache will be saved to: {cache_path}")
     print(f"Output will go to:      {out_path}\n")
 
-    print("Step 1/3 — GPT-4o full-page VLM analysis (text extraction + classification)...")
+    print("Step 1/4 — GPT-4o full-page VLM analysis (text extraction + classification)...")
     docs = load_pdf_vlm(pdf_path, api_key=api_key, max_pages=max_pages, cache_path=cache_path)
 
-    print("\nStep 2/3 — Extracting dates and sorting chronologically...")
+    print("\nStep 2/4 — Extracting dates and sorting chronologically...")
     docs = sort_documents(docs)
 
-    print("\nStep 3/3 — Building interactive HTML timeline...")
+    print("\nStep 3/4 — Enriching events with GPT-4o (threads, summaries, tags)...")
+    ev_path = _events_path(pdf_path)
+    events  = enrich_events(docs, api_key=api_key)
+    if events:
+        save_events(events, ev_path)
+
+    print("\nStep 4/4 — Building interactive HTML timeline...")
     build_html(docs, out_path, pdf_path=pdf_path)
 
-    print(f"\nDone. Output: {out_path}")
-    print(f"To regenerate HTML without re-running the API:")
+    print(f"\nDone. Output:          {out_path}")
+    if events:
+        print(f"Enriched events JSON:  {ev_path}")
+    print(f"\nTo regenerate HTML without re-running the API:")
     print(f"  python main_gpt4o.py --pdf {pdf_path} --from-cache {cache_path}")
 
 

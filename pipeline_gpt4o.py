@@ -14,6 +14,7 @@ Usage:
     from pipeline_gpt4o import load_pdf_vlm
     docs = load_pdf_vlm(pdf_path, api_key="sk-...", max_pages=10)
 """
+from __future__ import annotations
 
 import base64
 import io
@@ -65,15 +66,16 @@ Analyze this Dutch government document page and return a JSON object with exactl
   "doc_code": "<4-digit stamp code like 0143, or null if not visible>",
   "within_doc_page": <integer — page number within this document, e.g. 1, 2, 3 — or null>,
   "category": "<Email | Chat | Nota | Report | Brief | Timeline | Vergadernotulen | Inventarislijst | Other>",
+    "doc_subtype": "<email | chat_sms | nota | brief | factuur | besluit | kamerbrief | vergaderverslag | persbericht | rapport | other>",
   "has_redactions": <true if black boxes or censored areas are visible>,
-  "doc_date": "<the primary date of this document as YYYY-MM-DD, or null — see DOCUMENT METADATA RULES>",
+  "doc_date": "<the primary date of this document as YYYY-MM-DDTHH:MM if a time is visible, else YYYY-MM-DD, or null — see DOCUMENT METADATA RULES>",
   "doc_sender": "<author or sender of this document as a plain name string, or null>",
   "email_start": <true if a new email header block starts on this page, else false>,
   "email_from": "<sender from Van:/From: field of that email, or null>",
   "email_to": "<recipient(s) from Aan:/To: field, or null>",
   "email_cc": "<CC field, or null>",
   "email_subject": "<subject from Onderwerp:/Subject: field, or null>",
-  "email_date": "<sent/datum date as YYYY-MM-DD HH:MM (24h), or null — always include time when visible>",
+  "email_date": "<sent/datum date as YYYY-MM-DDTHH:MM if a time is visible (e.g. Verzonden: 23-10-2023 14:32), else YYYY-MM-DD, or null>",
   "chat_name": "<name of the chat group or contact if this is a Chat page, else null>",
   "chat_messages": <array of message objects if this is a Chat page, else []>,
   "text": "<all text from the page, preserving structure — see TEXT EXTRACTION RULES below>"
@@ -120,6 +122,20 @@ CATEGORY RULES:
 - Inventarislijst: a table inventorying all documents in this WOO dossier — shows doc codes, titles, page counts, and the WOO decision for each
 - Other: anything that does not fit the above
 
+DOC_SUBTYPE RULES:
+- Return exactly one of: email | chat_sms | nota | brief | factuur | besluit | kamerbrief | vergaderverslag | persbericht | rapport | other
+- chat_sms: forensic metadata such as "FG ProMax", "sms.db", "Native Messages", sender/receiver chat bubbles, or "Status: Sent/Read"
+- email: headers such as "Van:", "Aan:", "Onderwerp:", "From:", "To:", "Subject:"
+- nota: internal memo blocks such as "NOTA", "Aan:", "Van:", "Betreft:"
+- brief: formal letter layout with address block and salutation like "Geachte" or "Dear"
+- factuur: "Factuur", "BTW", "Bedrag", invoice numbers and payment totals
+- besluit: legal decision structure with terms like "Besluit", "ingevolge", "artikel"
+- kamerbrief: phrase like "Aan de Voorzitter van de Tweede Kamer"
+- vergaderverslag: meeting notes with markers like "Verslag", "Aanwezig:", "Agenda"
+- persbericht: press-release style headings and public statement format
+- rapport: multi-page report structure with chapter headings/sections
+- other: use only when none of the subtype signals above apply
+
 CHAT PAGE RULES (only when category = "Chat"):
 - Set chat_name to the group or contact name shown at the top of the screen (e.g. "Bezoek praktische zaken").
 - Extract every visible message into chat_messages as an array of objects:
@@ -137,7 +153,9 @@ CHAT PAGE RULES (only when category = "Chat"):
 DOCUMENT METADATA RULES (apply to ALL document types, including emails):
 - doc_date: the primary date of THIS document — the date it was written, sent, or issued.
   Look for: letterhead date, "Datum:", "Date:", "Verzonden:", "Sent:", "Start Date/Time:", meeting date.
-  Parse ANY visible date format (Dutch or English) and return as YYYY-MM-DD.
+  Parse ANY visible date format (Dutch or English).
+  If a time is also visible (e.g. "14:32" or "14:32:05"), include it: return "YYYY-MM-DDTHH:MM".
+  If no time is visible, return "YYYY-MM-DD".
   For email threads: use the date of the most recent / topmost email on this page.
   Return null only if no date is visible anywhere on the page.
 - doc_sender: the author, sender, or issuing party of this document.
@@ -147,18 +165,19 @@ DOCUMENT METADATA RULES (apply to ALL document types, including emails):
   Return null if not determinable. Do NOT include email addresses.
 
 EMAIL HEADER RULES (only when category = "Email"):
-- email_start: true if a new individual email's header block appears ANYWHERE on this page.
-  An email start is signalled by ANY TWO OR MORE of these fields (Dutch or English):
-    Van:/From:/Afzender:   Aan:/To:   CC:/BCC:   Onderwerp:/Subject:/Betreft:   Datum:/Verzonden:/Sent:/Date:
-  Headers may appear at the TOP or HALFWAY DOWN the page (e.g. quoted originals in a reply chain).
-  Also set email_start = true for:
-    * Outlook meeting invites (Required Attendees, Start Date/Time, Location)
-    * A page whose body text begins before any header block (reply-first format: salutation at top,
-      then quoted Van:/Aan:/Onderwerp: headers appear further down) — in this case the TOP is the newest email
-    * Redacted addresses like <[REDACTED]@domain.nl> or < @domain.nl> are valid Van/Aan field values
-- If multiple emails start on this page, report the FIRST (topmost) one's headers.
-- email_from, email_to, email_cc, email_subject: from the first new email's header. Null if absent or redacted.
-- email_date: YYYY-MM-DD HH:MM (24h). Include time when visible. Null if not found.
+- email_start: true if this page begins a new email. This includes:
+  * A fresh Van:/From: + Aan:/To: + Onderwerp: block at the top
+  * An Outlook meeting invite (From: + Required Attendees: + Subject: + Start Date/Time:)
+  * A reply email that starts with body text but has NO preceding email header on the same page
+    (e.g. page starts with "Hoi," or "Beste," and then shows quoted headers further down)
+  In the reply case: set email_start = true, but leave email_from/email_to/email_subject/email_date
+  as the headers of the REPLY (which are often absent), not the quoted original below.
+- email_from, email_to, email_cc, email_subject: extract from the Van/Aan/CC/Onderwerp fields
+  of the NEW email starting on this page. For meeting invites use From/Required Attendees/Subject.
+  Null if the reply has no explicit header fields.
+- email_date: parse the Datum:/Verzonden:/Sent:/Date:/Start Date/Time: field and return as YYYY-MM-DD.
+  Null if not visible or not parseable.
+- If multiple emails start on the same page, report the FIRST one's headers.
 - For non-email pages: email_start = false, all email_* fields = null.
 """
 
@@ -189,9 +208,42 @@ _GPT4O_TO_CATEGORY: dict[str, str] = {
     "Other":            "Other",
 }
 
+_VALID_DOC_SUBTYPES: set[str] = {
+    "email",
+    "chat_sms",
+    "nota",
+    "brief",
+    "factuur",
+    "besluit",
+    "kamerbrief",
+    "vergaderverslag",
+    "persbericht",
+    "rapport",
+    "other",
+}
+
+_CATEGORY_TO_SUBTYPE: dict[str, str] = {
+    "E-mail": "email",
+    "Chat": "chat_sms",
+    "Nota": "nota",
+    "Brief": "brief",
+    "Report": "rapport",
+    "Vergadernotulen": "vergaderverslag",
+    "Timeline": "other",
+    "Inventarislijst": "other",
+    "Other": "other",
+}
+
 
 def _normalise_category(raw: str) -> str:
     return _GPT4O_TO_CATEGORY.get(raw.strip(), "Other")
+
+
+def _normalise_doc_subtype(raw: str | None, category: str) -> str:
+    value = (raw or "").strip().lower().replace("-", "_")
+    if value in _VALID_DOC_SUBTYPES:
+        return value
+    return _CATEGORY_TO_SUBTYPE.get(category, "other")
 
 
 # ── Image helpers ─────────────────────────────────────────────────────────────
@@ -357,6 +409,7 @@ def save_cache(page_data: list[dict], cache_path: Path) -> None:
             "is_new_document": p["is_new_document"],
             "within_doc_page": p["within_doc_page"],
             "category":        p["category"],
+            "doc_subtype":     p.get("doc_subtype") or "other",
             "chat_name":       p.get("chat_name"),
             "chat_messages":   p.get("chat_messages") or [],
             "email_start":     p.get("email_start", False),
@@ -385,6 +438,7 @@ def _load_cache_pages(cache_path: Path) -> tuple[list[dict], int, list[dict]]:
     # Re-normalise category in case cache was written before the fix
     for p in pages:
         p["category"] = _normalise_category(str(p.get("category") or "Other"))
+        p["doc_subtype"] = _normalise_doc_subtype(p.get("doc_subtype"), p["category"])
     return pages, dpi, boundary
 
 
@@ -529,6 +583,7 @@ def load_pdf_vlm(
         doc_code        = _normalise_doc_code(result.get("doc_code"))
         within_doc_page = result.get("within_doc_page")
         category        = _normalise_category(str(result.get("category") or "Other"))
+        doc_subtype     = _normalise_doc_subtype(result.get("doc_subtype"), category)
 
         if within_doc_page is not None:
             try:
@@ -558,6 +613,7 @@ def load_pdf_vlm(
             "is_new_document": is_new_doc,
             "within_doc_page": within_doc_page,
             "category":        category,
+            "doc_subtype":     doc_subtype,
             "doc_date":        doc_date,
             "doc_sender":      doc_sender,
             "chat_name":       chat_name,
@@ -583,18 +639,31 @@ def _build_emails_from_pages(doc_code: str, email_pages: list[dict]) -> list[dic
     current: dict | None = None
     email_idx = 0
 
+    def _split_email_datetime(value: str | None) -> tuple[str | None, str | None]:
+        if not value:
+            return None, None
+        if "T" in value:
+            date_part, time_part = value.split("T", 1)
+            return date_part, time_part[:5]
+        m = re.search(r"(\d{4}-\d{2}-\d{2})[ T](\d{1,2}:\d{2})", value)
+        if m:
+            return m.group(1), m.group(2)
+        return value, None
+
     for p in email_pages:
         if p.get("email_start") or current is None:
             if current is not None:
                 emails.append(current)
             email_idx += 1
+            date_part, time_part = _split_email_datetime(p.get("email_date"))
             current = {
                 "id":      f"{doc_code}.{email_idx}",
                 "subject": p.get("email_subject"),
                 "sender":  p.get("email_from"),
                 "to":      p.get("email_to"),
                 "cc":      p.get("email_cc"),
-                "date":    p.get("email_date"),
+                "date":    date_part,
+                "time":    time_part,
                 "text":    p["text"],
             }
         else:
@@ -643,18 +712,11 @@ Document boundary rules:
 - cont=Y is a near-certain signal that a sentence carried over from the previous page — this page CANNOT be a new document start regardless of other signals.
 
 Email boundary rules:
-- email_starts: list page numbers where a NEW individual email begins. Signals (ANY TWO OR MORE of):
-    Van:/From:/Afzender:,  Aan:/To:,  Onderwerp:/Subject:/Betreft:,  Datum:/Verzonden:/Sent:,  CC:/BCC:
-  Also counts: Outlook separators (-----Original Message----- / -----Oorspronkelijk bericht-----),
-  or a salutation (Hoi/Beste/Geachte/Dear) at the top of the page with quoted headers appearing below.
-  Headers may appear ANYWHERE on the page, not just within the first 300 characters.
-  Redacted addresses (< @domain> or [REDACTED]@domain) still count as valid Van/Aan fields.
-- eml=Y means pass-1 detected email header fields — useful but may miss headers outside the text preview.
-  Do NOT treat eml=Y alone as a new email start (it also fires on quoted/forwarded headers in a body).
-- A continuation page (page 2+, quoted reply text, long email body) is NOT a new email start.
-- One email can span multiple pages; do not add email_starts for its continuation pages.
-- CRITICAL: For every document classified as E-mail — include its first page in email_starts even if
-  no header fields were detected. Every email document contains at least one email.
+- email_starts: list the page numbers where a genuinely NEW email begins — one with a fresh Van:/From: + Aan:/To: + Onderwerp:/Subject: header block.
+- eml=Y means pass-1 detected email header fields on that page, but it also fires on QUOTED or FORWARDED headers inside an email body. Do NOT treat eml=Y alone as evidence of a new document or new email start.
+- A page that continues an email body (quoted reply chain, long body text, page 2 of a multi-page email) is NOT a new email start even if eml=Y.
+- One email can span multiple pages; a multi-page email body does not create multiple email_starts entries.
+- Always include the first page of the document in email_starts for email-type documents.
 - Leave email_starts empty ([]) for non-email documents.
 """
 
@@ -678,7 +740,8 @@ Extract every individual email and return:
       "sender":      "<From/Van/Afzender — name only, no email address; '[REDACTED]' if redacted>",
       "to":          "<To/Aan field, or null>",
       "cc":          "<CC field, or null>",
-      "date":        "<date as YYYY-MM-DD HH:MM (24h) — parse any format; always include time when visible; null if not found>",
+            "date":        "<date as YYYY-MM-DD — parse any format; null if not found>",
+            "time":        "<time as HH:MM if visible in the source, else null>",
       "attachments": ["<filename or description>"],
       "body":        "<email body text only — no header lines>"
     }}
@@ -690,13 +753,13 @@ Extraction rules:
 - A new email starts at a Van:/From:/Afzender: + Aan:/To: + Onderwerp:/Subject:/Betreft: header block,
   OR at a separator line like "-----Oorspronkelijk bericht-----" / "-----Original Message-----".
 - A reply body appearing BEFORE the first quoted header is the newest email — list it LAST.
-- date: parse ALL Dutch and European formats to YYYY-MM-DD HH:MM (24h):
-    "3 januari 2024 14:32"         → "2024-01-03 14:32"
-    "maandag 6 mei 2024 09:07"     → "2024-05-06 09:07"
-    "06-03-2024 14:32"             → "2024-03-06 14:32"
-    "DD/MM/YYYY HH:MM"             → "YYYY-MM-DD HH:MM"
-  Always include time when the Verzonden/Sent/Datum field contains it.
+- date: parse ALL Dutch and European formats to YYYY-MM-DD:
+    "3 januari 2024"       → "2024-01-03"
+    "maandag 6 mei 2024"   → "2024-05-06"
+    "06-03-2024"           → "2024-03-06"
+    "DD/MM/YYYY"           → "YYYY-MM-DD"
   Return null only if truly no date is present.
+- time: if a visible sent time exists, return it as HH:MM. Otherwise return null.
 - attachments: look for "Bijlage:", "Bijlagen:", "Attachment:", or filenames (.pdf, .docx, .xlsx, etc.).
   Return [] if none found.
 - body: message body only — strip all Van/Aan/CC/Onderwerp/Datum header lines from the top.
@@ -749,6 +812,7 @@ def _extract_emails_full_doc(code: str, text: str, client) -> list[dict]:
                     "to":          em.get("to")          or None,
                     "cc":          em.get("cc")          or None,
                     "date":        em.get("date")        or None,
+                    "time":        em.get("time")        or None,
                     "attachments": em.get("attachments") or [],
                     "text":        em.get("body")        or "",
                 })
@@ -913,6 +977,9 @@ def _finalise_pipeline(
         # First non-"Other" page category wins: email headers only appear on the
         # first page, so majority vote would wrongly demote multi-page emails.
         category = next((c for c in d["categories"] if c != "Other"), "Other")
+        doc_subtype = next((s for s in d.get("doc_subtypes", []) if s and s != "other"), None)
+        if not doc_subtype:
+            doc_subtype = _CATEGORY_TO_SUBTYPE.get(category, "other")
 
         # Chat: use most common chat name across pages
         chat_names    = d.get("chat_names") or []
@@ -946,6 +1013,7 @@ def _finalise_pipeline(
             "annotated_text":   annotated,
             "redaction_codes":  redaction_codes,
             "category":         category,
+            "doc_subtype":      doc_subtype,
             "method":           method,
             "doc_date":         doc_date,
             "doc_sender":       doc_sender,
@@ -954,7 +1022,6 @@ def _finalise_pipeline(
             "emails":           structured_emails,
         }
 
-    # Save pass-3 email results to cache so annotate.py can use them without API calls
     if cache_path:
         emails_by_doc = {
             code: doc["emails"]
@@ -1027,6 +1094,7 @@ def _append_page(docs_raw: dict, code: str, p: dict) -> None:
             "page_nums_in_doc": [],
             "texts":            [],
             "categories":       [],
+            "doc_subtypes":     [],
             "doc_dates":        [],   # per-page doc_date values; first non-null wins
             "doc_senders":      [],   # per-page doc_sender values; first non-null wins
             "chat_names":       [],
@@ -1038,6 +1106,7 @@ def _append_page(docs_raw: dict, code: str, p: dict) -> None:
     docs_raw[code]["page_nums_in_doc"].append(p["within_doc_page"])
     docs_raw[code]["texts"].append(p["text"])
     docs_raw[code]["categories"].append(p["category"])
+    docs_raw[code]["doc_subtypes"].append(_normalise_doc_subtype(p.get("doc_subtype"), p.get("category", "Other")))
     if p.get("doc_date"):
         docs_raw[code]["doc_dates"].append(p["doc_date"])
     if p.get("doc_sender"):
