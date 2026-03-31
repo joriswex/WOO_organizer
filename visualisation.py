@@ -480,7 +480,7 @@ def _email_card_inner_html(email: dict) -> str:
     )
 
 
-def _email_sort_datetime(email: dict, fallback: object = None):
+def _email_sort_datetime(email: dict, fallback=None):
     """Build a sortable datetime from separate email date and time fields."""
     raw_date = (email.get("date") or "").strip()
     raw_time = (email.get("time") or "").strip()
