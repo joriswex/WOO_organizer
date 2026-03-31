@@ -7144,7 +7144,7 @@ function _renderPipelineSelector({ mode, title }) {
             <div class="pipeline-api-key-wrap" id="pipelineApiKeyWrap">
               <input type="password" id="pipelineApiKeyInput" class="pipeline-api-key-input"
                      placeholder="sk-…  OpenAI API-sleutel"
-                     oninput="_pipelineApiKey = this.value" />
+                     oninput="_pipelineApiKey = this.value; OPENAI_API_KEY = this.value || null; const _sk = document.getElementById('summaryApiKeyInput'); if (_sk) _sk.value = this.value;" />
             </div>
           </div>
         </div>
@@ -7744,7 +7744,7 @@ function _renderDocumentBrowser() {
             </div>
             <input type="password" id="browserApiKeyInput" class="doc-browser-api-key"
                    placeholder="sk-… OpenAI API-sleutel"
-                   style="display:none" oninput="_pipelineApiKey=this.value" />
+                   style="display:none" oninput="_pipelineApiKey=this.value; OPENAI_API_KEY = this.value || null; const _sk2 = document.getElementById('summaryApiKeyInput'); if (_sk2) _sk2.value = this.value;" />
             <div style="margin-bottom:9px">
               <div class="doc-browser-pipeline-label" style="margin-bottom:5px">Paginabereik (optioneel)</div>
               <div style="display:flex;align-items:center;gap:6px">
