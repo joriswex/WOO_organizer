@@ -47,10 +47,12 @@ _SYSTEM_PROMPT = (
     "These documents were released under Dutch freedom-of-information law and may contain any type "
     "of internal government communication.\n"
     "Key context you must apply:\n"
-    "- Every document in the dossier has a 4-digit inventory code (0001–0999) stamped in a corner "
-    "or at the bottom-centre of the page. Some dossiers use a 7-digit barcode stamp instead "
-    "(format 760XXXD where XXX is the 3-digit document number and D is the page number within "
-    "the document).\n"
+    "- IMPORTANT: not all WOO dossiers use inventory stamps. Your primary task is always to "
+    "identify document boundaries from the content itself (headers, page counters, document type "
+    "changes). Stamps, when present, are a useful label — not the primary split signal.\n"
+    "- Some dossiers add a 4-digit inventory code (0001–0999) stamped in a corner or at the "
+    "bottom-centre of each page. Others use a 7-digit barcode stamp (format 760XXXD where XXX is "
+    "the 3-digit document number). Many dossiers have no stamps at all.\n"
     "- Sensitive content is redacted with solid black rectangles. The applicable WOO legal ground "
     "is printed in small text next to each black box, in the format 5.1.X or 5.2.X "
     "(e.g. '5.1.2e', '5.1.1', '5.2.1'). These are articles of the Wet Open Overheid.\n"
@@ -712,13 +714,15 @@ _BOUNDARY_SYSTEM = (
     "You are analyzing a Dutch government WOO (Wet Open Overheid) disclosure dossier. "
     "You receive a compact per-page summary and must draw document boundaries and, for "
     "email documents, individual email boundaries. "
+    "Not all dossiers use inventory stamps — rely on document content and structure first; "
+    "use stamp codes only to confirm or label boundaries you have already identified. "
     "Respond ONLY with a valid JSON object — no markdown fences, no extra text."
 )
 
 _BOUNDARY_PROMPT = """\
 Below is a {n}-page WOO dossier summary. Each line:
   p<num>: stamp=<4-digit code|null> wpn=<within-doc page|null> new=<Y|N> cont=<Y|N> cat=<category> eml=<Y|N> | "<first 300 chars of text>"
-  (new=Y means pass-1 suggested a new doc starts here; cont=Y means the page text begins mid-sentence — a near-certain continuation of the previous page; eml=Y means email header fields were detected on this page)
+  (new=Y means pass-1 suggested a new doc starts here; cont=Y means the page text begins mid-sentence — a near-certain continuation; eml=Y means email header fields were detected)
 
 {summary}
 
@@ -726,28 +730,50 @@ Return ONLY this JSON (all page numbers are the p<num> indices above, 1-based):
 {{
   "documents": [
     {{
-      "doc_code": "<4-digit stamp code, or null if absent>",
+      "doc_code": "<stamp code if consistently present for this document, else null>",
       "start_page": <integer>,
       "email_starts": [<page numbers where individual emails start — include the first page of email docs>]
     }}
   ]
 }}
 
-Document boundary rules:
-- Every page belongs to exactly one document. Documents listed in ascending page order with no gaps.
-- New document signals (use in combination): stamp code changes, wpn=1, new=Y, content clearly shifts to a new letterhead/header/thread.
-- Stamps are the strongest signal. Two consecutive pages with the SAME stamp code ALWAYS belong to the same document.
-- Stamps may be absent from continuation pages — use wpn and text as support.
-- When in doubt, keep pages together rather than creating a spurious split.
-- A page with stamp=null that follows a stamped page and shows no sign of a fresh document start (new letterhead, "Pagina 1 van", fresh salutation) is a continuation page of the same document.
-- cont=Y is a near-certain signal that a sentence carried over from the previous page — this page CANNOT be a new document start regardless of other signals.
+DOCUMENT BOUNDARY RULES — apply signals in priority order:
 
-Email boundary rules:
-- email_starts: list the page numbers where a genuinely NEW email begins — one with a fresh Van:/From: + Aan:/To: + Onderwerp:/Subject: header block.
-- eml=Y means pass-1 detected email header fields on that page, but it also fires on QUOTED or FORWARDED headers inside an email body. Do NOT treat eml=Y alone as evidence of a new document or new email start.
-- A page that continues an email body (quoted reply chain, long body text, page 2 of a multi-page email) is NOT a new email start even if eml=Y.
-- One email can span multiple pages; a multi-page email body does not create multiple email_starts entries.
-- Always include the first page of the document in email_starts for email-type documents.
+1. DEFINITIVE (never override):
+   - cont=Y means a sentence continued from the previous page. This page CANNOT start a new document.
+   - Every page must belong to exactly one document; list documents in ascending start_page order with no gaps.
+
+2. STRONGEST content signals (each alone is sufficient to start a new document):
+   - wpn=1 AND new=Y together confirm a new document start.
+   - The text preview begins with "Pagina 1 van" or "1/" in a footer/stamp context.
+   - The text preview shows a complete, fresh document header at the very top: a full
+     Van/Aan/Onderwerp email block, a new memo heading with date + reference, or a new
+     letter/rapport title page.
+
+3. MODERATE content signals (combine two or more to split):
+   - new=Y alone (pass-1 detected a new header, but could be a quoted/forwarded header in a body)
+   - wpn=1 alone (within-doc page resets to 1)
+   - Category changes significantly between consecutive pages (e.g. Email → Nota)
+   - Text preview clearly shows a new letterhead, new ministry logo, or new document reference
+
+4. STAMP CODES — use only to confirm or label, never as the sole split signal:
+   - Same stamp on consecutive pages: confirms they are the same document (do NOT split).
+   - Stamp changes between pages: supports a split already suggested by content signals;
+     do NOT split on a stamp change alone if content signals show continuation.
+   - No stamps at all: rely entirely on signals 1–3. This is normal for many dossiers.
+   - A stamp=null page following a stamped page with no content split signals = continuation.
+
+5. DEFAULT — when in doubt, keep pages together. Spurious splits create empty documents;
+   missed splits only merge two documents. Merging is the safer error.
+
+EMAIL BOUNDARY RULES:
+- email_starts: list page numbers where a genuinely NEW email begins — a fresh
+  Van:/From: + Aan:/To: + Onderwerp:/Subject: header block at the top of the page.
+- eml=Y fires on QUOTED and FORWARDED headers too — do NOT treat eml=Y alone as a new email start.
+- A continuation page (quoted reply chain, body text, page 2+ of a long email) is NOT a new email
+  start even if eml=Y.
+- One email can span multiple pages; do not create multiple email_starts for the same email.
+- Always include the first page of an email-type document in email_starts.
 - Leave email_starts empty ([]) for non-email documents.
 """
 
