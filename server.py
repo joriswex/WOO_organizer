@@ -475,6 +475,20 @@ _CHAT_LINE_PATTERNS = [
 ]
 _CHAT_REDACT_RE = re.compile(r"\[(?:GELAKT|REDACTED)(?::[^\]]*)?\]|\b5\.[12]\.\d[a-z]{0,2}\b", re.IGNORECASE)
 _CHAT_SYSTEM_RE = re.compile(r"\b(dit\s+bericht\s+is\s+verwijderd|this\s+message\s+was\s+deleted)\b", re.IGNORECASE)
+# Matches a body that is entirely redaction markers, WOO codes, and whitespace —
+# no actual readable text remains.
+_CHAT_ALL_REDACTED_RE = re.compile(
+    r"^[\s,;.|]*(?:\[(?:GELAKT|REDACTED)(?::[^\]]*)?\]|\b5\.[12]\.\d[a-z]{0,2}\b)[\s,;.|]*(?:(?:\[(?:GELAKT|REDACTED)(?::[^\]]*)?\]|\b5\.[12]\.\d[a-z]{0,2}\b)[\s,;.|]*)*$",
+    re.IGNORECASE,
+)
+
+def _normalise_chat_body(body: str) -> str:
+    """Collapse bodies that are nothing but redaction codes into a single placeholder."""
+    text = (body or "").strip()
+    if text and _CHAT_ALL_REDACTED_RE.match(text):
+        return "[Bericht weggelakt]"
+    return text
+
 
 def _chat_message_flags(body: str) -> tuple[bool, bool]:
     text = (body or "").strip()
@@ -497,7 +511,7 @@ def _build_chat_conversation(doc: dict, code: str, doc_date_str: str = "") -> Op
     messages = []
     if isinstance(raw_messages, list) and raw_messages:
         for msg in raw_messages:
-            body = (msg.get("content") or "").strip()
+            body = _normalise_chat_body(msg.get("content") or "")
             if not body:
                 continue
             sender = (msg.get("sender_label") or ("Eigenaar" if msg.get("sender_position") == "right" else "Onbekend")).strip() or "Onbekend"
@@ -527,7 +541,7 @@ def _build_chat_conversation(doc: dict, code: str, doc_date_str: str = "") -> Op
                 continue
             sender = matched.group("sender").strip()
             stamp = matched.group("stamp").strip()
-            body = matched.group("body").strip()
+            body = _normalise_chat_body(matched.group("body"))
             if not sender or not body:
                 continue
             is_redacted, is_system = _chat_message_flags(body)
