@@ -5772,6 +5772,13 @@ function renderSummaryContent(content) {
 async function generateSummary() {
   if (summaryState.loading) return;
 
+  if (!OPENAI_API_KEY) {
+    setViewTab('summary');
+    const output = document.getElementById('summaryOutput');
+    if (output) output.innerHTML = `<div class="summary-block"><div class="summary-block-body" style="color:var(--woo-accent)">Voer eerst een OpenAI API-sleutel in het veld hierboven in (sk-…).</div></div>`;
+    return;
+  }
+
   // If we're not already on the summary tab, switch to it first
   if (state.viewTab !== 'summary') {
     setViewTab('summary');
