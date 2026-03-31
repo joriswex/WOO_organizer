@@ -4223,7 +4223,13 @@ function renderDocNavPanel() {
       <div class="doc-nav-info">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:3px">
           <div class="doc-nav-type">${escHtml(item.type || 'Document')}</div>
-          ${item.date ? `<div style="font-family:var(--woo-mono);font-size:9px;color:var(--text-dimmer);flex-shrink:0">${escHtml(item.date.slice(0,10))}</div>` : ''}
+          <div style="display:flex;align-items:center;gap:4px;flex-shrink:0">
+            ${item.date ? `<div style="font-family:var(--woo-mono);font-size:9px;color:var(--text-dimmer)">${escHtml(item.date.slice(0,10))}</div>` : ''}
+            <button onclick="event.stopPropagation();_deleteDoc('${escHtml(item.id)}')" title="Verwijder document"
+                    style="background:none;border:none;cursor:pointer;padding:0 1px;font-size:12px;color:var(--text-dimmer);line-height:1;opacity:0.5"
+                    onmouseover="this.style.opacity='1';this.style.color='#c0392b'"
+                    onmouseout="this.style.opacity='0.5';this.style.color='var(--text-dimmer)'">×</button>
+          </div>
         </div>
         <div class="doc-nav-title">${formatLabelRedactions(item.title || 'Ongetiteld')}</div>
         ${isChatDocType(item.type) && item.description ? `<div class="doc-nav-chat-summary">${escHtml(item.description)}</div>` : ''}
@@ -4851,11 +4857,16 @@ function openIphoneMail(idx) {
   const ccHtml = formatMetadataValueHtml(email.cc, '');
   const bodyId = 'email-body-' + (email.id || 'x').replace(/\./g, '-');
   const hasApiKey = !!(OPENAI_API_KEY || '').trim();
+  const docCode = (email.id || '').split('.')[0];
+  const tlItem  = (state.timelineItems || []).find(t => t.id === docCode);
+  const hasPdf  = !!(state.pdfSource && tlItem?.pdf_page_start);
 
   const backLabel = sourceTab === 'timeline' ? '‹ Tijdlijn' : '‹ Alle e-mails';
   const backFn    = sourceTab === 'timeline'
     ? '_backToTimeline()'
     : 'renderEmailView(document.getElementById(\'viewerContent\'))';
+
+  const actionBtnStyle = 'display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:6px;border:1px solid var(--woo-border);background:var(--woo-white);color:var(--woo-text);font-size:11px;cursor:pointer;white-space:nowrap;font-family:var(--woo-sans)';
 
   container.innerHTML = `
     <div class="iphone-detail-back" onclick="${backFn}">
@@ -4872,16 +4883,20 @@ function openIphoneMail(idx) {
           <tr><td style="padding:2px 10px 2px 0;font-weight:600;color:#888;white-space:nowrap">Ref</td><td style="padding:2px 0;font-family:var(--woo-mono);font-size:10px;color:#888">${escHtml(email.id || '—')}</td></tr>
           ${renderAttachmentTags(email.text || '', email.attachments)}
         </table>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:12px;padding-top:10px;border-top:1px solid var(--woo-border)">
+          ${hasPdf ? `<button style="${actionBtnStyle}" onclick="_showInWooDossier('${escHtml(docCode)}')" title="Ga naar de originele pagina in het PDF-dossier">📄 Toon in WOO-dossier</button>` : ''}
+          <button style="${actionBtnStyle}" onclick="_editDocDate('${escHtml(docCode)}')" title="Pas de datum van dit document aan">✎ Datum aanpassen</button>
+          <button style="${actionBtnStyle};color:#c0392b;border-color:#e8c2c2" onclick="_deleteDoc('${escHtml(docCode)}')" title="Verwijder dit document uit de analyse">✕ Verwijder</button>
+        </div>
       </div>
       <div class="iphone-detail-body" id="${bodyId}">${bodyHtml}</div>
     </div>
   `;
-  
+
   // Scroll to top
   container.scrollTop = 0;
-  
+
   // Highlight this email in doc nav (email.id is '0003.1', timeline item id is '0003')
-  const docCode = (email.id || '').split('.')[0];
   const tIdx = state.timelineItems.findIndex(t => t.id === docCode || t.id === email.id);
   if (tIdx >= 0) {
     document.querySelectorAll('.doc-nav-item').forEach((el,i) => {
@@ -5582,6 +5597,11 @@ function _renderDocHCard(c, idx, delay) {
         <button onclick="event.stopPropagation();_editDocDate('${escHtml(it.id)}')"
                 title="Datum aanpassen"
                 style="background:none;border:none;cursor:pointer;padding:0 0 0 4px;font-size:10px;color:var(--text-dimmer);vertical-align:middle;line-height:1">✎</button>
+        <button onclick="event.stopPropagation();_deleteDoc('${escHtml(it.id)}')"
+                title="Verwijder document"
+                style="background:none;border:none;cursor:pointer;padding:0 0 0 2px;font-size:11px;color:var(--text-dimmer);vertical-align:middle;line-height:1;opacity:0.6"
+                onmouseover="this.style.opacity='1';this.style.color='#c0392b'"
+                onmouseout="this.style.opacity='0.6';this.style.color='var(--text-dimmer)'">×</button>
       </div>
     </div>
   `;
@@ -6848,15 +6868,24 @@ function renderChatsView(container) {
         </div>`;
     }).join('');
 
+    const chatHasPdf = !!(state.pdfSource && linkedTimelineItem?.pdf_page_start);
+    const chatActBtnStyle = 'display:inline-flex;align-items:center;gap:3px;padding:3px 8px;border-radius:5px;border:1px solid var(--woo-border);background:var(--woo-white);color:var(--woo-text);font-size:10px;cursor:pointer;white-space:nowrap;font-family:var(--woo-sans)';
     return `
       <div class="chat-thread-card${isFocused ? ' focused' : ''}" id="${escHtml(cardId)}" data-source-doc="${escHtml(sourceId)}" data-chat-date="${escHtml(chatDateIso || '')}">
         <div class="chat-thread-header">
-          <div>
+          <div style="flex:1;min-width:0">
             <div class="chat-thread-title">${formatLabelRedactions(chat.chatName || 'Chat')}</div>
             <div class="chat-thread-subtitle">${participants.length ? participants.map(p => formatLabelRedactions(p)).join(' · ') : 'Onbekende deelnemers'}</div>
             ${aiSummary ? `<div class="chat-thread-ai-summary">AI samenvatting van deze chat: ${escHtml(aiSummary)}</div>` : ''}
           </div>
-          <div class="chat-thread-last">${escHtml(dateLabel)}</div>
+          <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;flex-shrink:0">
+            <div class="chat-thread-last">${escHtml(dateLabel)}</div>
+            <div style="display:flex;gap:4px">
+              ${chatHasPdf ? `<button style="${chatActBtnStyle}" onclick="event.stopPropagation();_showInWooDossier('${escHtml(sourceId)}')" title="Toon originele pagina in PDF">📄</button>` : ''}
+              <button style="${chatActBtnStyle}" onclick="event.stopPropagation();_editDocDate('${escHtml(sourceId)}')" title="Datum aanpassen">✎</button>
+              <button style="${chatActBtnStyle};color:#c0392b;border-color:#e8c2c2" onclick="event.stopPropagation();_deleteDoc('${escHtml(sourceId)}')" title="Verwijder document">✕</button>
+            </div>
+          </div>
         </div>
         <div class="chat-thread-body">${bodyHtml || '<div class="chat-msg-row system"><div class="chat-msg-bubble">Geen berichten gevonden</div></div>'}</div>
       </div>`;
@@ -8076,6 +8105,32 @@ function _saveDateEdit() {
     else if (state.viewTab === 'docs') renderDocsView(content);
     else if (state.viewTab === 'overig') renderOverigView(content);
   }
+}
+
+function _showInWooDossier(docCode) {
+  const item = (state.timelineItems || []).find(t => t.id === docCode);
+  if (!item) return;
+  state.overigSelectedId = item.id;
+  if (state.viewTab !== 'overig') setViewTab('overig');
+  openDocTextPreview(item);
+}
+
+function _deleteDoc(id) {
+  const item  = (state.timelineItems || []).find(t => t.id === id);
+  const label = item ? (item.title || item.id) : id;
+  if (!confirm(`Document "${label}" verwijderen uit de analyse?\n\nDit kan ongedaan worden gemaakt via 'Exporteer analyse' (bewaar eerst een kopie) en daarna 're-importeer'.`)) return;
+  state.timelineItems = (state.timelineItems || []).filter(t => t.id !== id);
+  const prefix = id + '.';
+  state.emails = (state.emails || []).filter(e => e.id !== id && !e.id.startsWith(prefix));
+  state.chats  = (state.chats  || []).filter(c => (c.sourceDocId || '').toString() !== id);
+  renderDocNavPanel();
+  const content = document.getElementById('viewerContent');
+  if (!content) return;
+  if      (state.viewTab === 'timeline') renderTimelineView(content);
+  else if (state.viewTab === 'emails')   renderEmailView(content);
+  else if (state.viewTab === 'chats')    renderChatsView(content);
+  else if (state.viewTab === 'overig')   renderOverigView(content);
+  else if (state.viewTab === 'docs')     renderDocsView(content);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
