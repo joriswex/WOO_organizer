@@ -26,15 +26,19 @@ _TOP_FRAC  = 0.12   # top-strip height
 _SIDE_FRAC = 0.30   # side-strip width
 _BTM_FRAC  = 0.10   # bottom-strip height for doc-code search (wider than page-num strip)
 
-# Text-layer doc-code search: top strip only.
-# Body text (email dates, reference numbers) can appear anywhere on the page, so
-# searching the bottom via the text layer produces false positives.  Top-strip
-# search is safe because document codes always appear in a page header.
-_DOC_CODE_TEXT_REGIONS: list[tuple[str, tuple[float, float, float, float]]] = [
-    # (name, (x0_frac, y0_frac, x1_frac, y1_frac))
-    ("top-right",  (1 - _SIDE_FRAC, 0.00, 1.00,       _TOP_FRAC)),  # primary WOO
-    ("top-left",   (0.00,           0.00, _SIDE_FRAC, _TOP_FRAC)),
-    ("top-full",   (0.00,           0.00, 1.00,       _TOP_FRAC)),   # widened fallback
+# Text-layer doc-code search regions.
+# Top regions use a broad \d{4} match (safe — no body text appears in the header strip).
+# Bottom regions require a leading zero (0\d{3}) to avoid false positives from
+# 4-digit numbers in email body text; all WOO catalogue codes are 0001-0999.
+# Each entry: (name, bbox_fracs, leading_zero_required)
+_DOC_CODE_TEXT_REGIONS: list[tuple[str, tuple[float, float, float, float], bool]] = [
+    # (name, (x0_frac, y0_frac, x1_frac, y1_frac), leading_zero_required)
+    ("top-right",  (1 - _SIDE_FRAC, 0.00,          1.00,       _TOP_FRAC), False),
+    ("top-left",   (0.00,           0.00,           _SIDE_FRAC, _TOP_FRAC), False),
+    ("top-full",   (0.00,           0.00,           1.00,       _TOP_FRAC), False),
+    ("btm-right",  (1 - _SIDE_FRAC, 1 - _BTM_FRAC, 1.00,       1.00     ), True),
+    ("btm-left",   (0.00,           1 - _BTM_FRAC,  _SIDE_FRAC, 1.00     ), True),
+    ("btm-middle", (0.30,           1 - _BTM_FRAC,  0.70,       1.00     ), True),
 ]
 
 # Raster-OCR doc-code search: all corners and edges.
@@ -114,23 +118,25 @@ def _is_year(code: str) -> bool:
 
 def _find_doc_code_words(page) -> str | None:
     """
-    Search top-strip text-layer regions for a 4-digit document code.
+    Search text-layer regions for a 4-digit document code.
 
-    Only top regions are searched (see _DOC_CODE_TEXT_REGIONS) to avoid false
-    positives from 4-digit numbers in email body text lower on the page.
+    Top regions use a broad \\d{4} match (safe — no body text in the header strip).
+    Bottom regions require a leading zero (0\\d{3}) to avoid false positives from
+    4-digit numbers in email body text.  All WOO codes are 0001–0999.
     Regions are tried in priority order; within each region the rightmost
-    4-digit word is returned.  Year-range numbers (1900–2099) are excluded.
+    matching word is returned.  Year-range numbers (1900–2099) are excluded.
     """
     w, h = page.width, page.height
     words = page.extract_words()
-    for _name, (x0f, y0f, x1f, y1f) in _DOC_CODE_TEXT_REGIONS:
+    for _name, (x0f, y0f, x1f, y1f), leading_zero in _DOC_CODE_TEXT_REGIONS:
         x0, y0, x1, y1 = w * x0f, h * y0f, w * x1f, h * y1f
+        pattern = r"0\d{3}" if leading_zero else r"\d{4}"
         candidates = [
             (wd["x0"], wd["text"].strip())
             for wd in words
             if (x0 <= wd["x0"] and wd["x1"] <= x1
                 and y0 <= wd["top"] and wd["bottom"] <= y1
-                and re.fullmatch(r"\d{4}", wd["text"].strip())
+                and re.fullmatch(pattern, wd["text"].strip())
                 and not _is_year(wd["text"].strip()))
         ]
         if candidates:
