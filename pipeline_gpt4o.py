@@ -47,12 +47,15 @@ _SYSTEM_PROMPT = (
     "These documents were released under Dutch freedom-of-information law and may contain any type "
     "of internal government communication.\n"
     "Key context you must apply:\n"
-    "- IMPORTANT: not all WOO dossiers use inventory stamps. Your primary task is always to "
-    "identify document boundaries from the content itself (headers, page counters, document type "
-    "changes). Stamps, when present, are a useful label — not the primary split signal.\n"
-    "- Some dossiers add a 4-digit inventory code (0001–0999) stamped in a corner or at the "
-    "bottom-centre of each page. Others use a 7-digit barcode stamp (format 760XXXD where XXX is "
-    "the 3-digit document number). Many dossiers have no stamps at all.\n"
+    "- IMPORTANT: not all WOO dossiers use inventory stamps. When stamps ARE consistently present, "
+    "they are the PRIMARY signal for document boundaries — a stamp code change between pages means "
+    "a new document starts. Only fall back to content signals (headers, page counters, document "
+    "type changes) when no stamps are visible.\n"
+    "- Stamp codes are typically stamped in a corner or at the bottom-centre/top-centre of each "
+    "page. Common formats: 4-digit (e.g. 0143), 6-digit, or 7-digit barcode (760XXXD where XXX is "
+    "the 3-digit document number). All pages of the same document share the same code.\n"
+    "- Some pages also show an incrementing per-page sequence counter (e.g. 00001, 00002, 00003 "
+    "— unique per page, increases by 1 each page). These are NOT document codes; ignore them.\n"
     "- Sensitive content is redacted with redaction bars (some are black bars, other times white boxes or otherwise). The applicable WOO legal ground "
     "is printed in small text inside or next to each black box, in the format 5.1.X or 5.2.X "
     "(e.g. '5.1.2e', '5.1.1', '5.2.1'). These are articles of the Wet Open Overheid.\n"
@@ -69,7 +72,7 @@ Analyze this Dutch government document page and return a JSON object with exactl
 
 {
   "is_new_document": <true if this is clearly the first page of a new document>,
-  "doc_code": "<4-digit stamp code like 0143, or null if not visible>",
+  "doc_code": "<stamp code from a corner or edge, reported exactly as printed (e.g. '0143', '760143') — or null if not visible>",
   "within_doc_page": <integer — page number within this document, e.g. 1, 2, 3 — or null>,
   "category": "<Email | Chat | Nota | Report | Brief | Timeline | Vergadernotulen | Inventarislijst | Other>",
   "doc_subtype": "<email | chat_sms | nota | brief | factuur | besluit | kamerbrief | vergaderverslag | persbericht | rapport | other>",
@@ -122,10 +125,12 @@ DOCUMENT BOUNDARY RULES:
     * Quoted/forwarded email headers appear only deep in the body, not at the very top
     * No stamp is visible and the preceding page had a stamp (continuation is the default)
     * The page is blank or contains only a page separator / cover sheet
-- doc_code: check ALL four corners AND the bottom-centre for a stamp (format 0001–0999).
-    * 4-digit code:  use as-is → "0143"
-    * 7-digit barcode (e.g. 7601430): digits 4–6 with leading zero → "0143"
-    * Year-like numbers (1900–2099) are NOT document codes — ignore them
+- doc_code: check ALL four corners AND the bottom-centre/top-centre for a stamp code.
+    * Report the code exactly as printed — common formats: 4-digit (e.g. "0143"), 6-digit, 7-digit barcode.
+    * Year-like numbers (1900–2099) are NOT document codes — ignore them.
+    * Incrementing per-page sequence counters (e.g. 00001, 00002, 00003 — every page gets a
+      different, incrementing number) are NOT document codes — ignore them.
+    * Document codes repeat: all pages of the same document share the same stamp code.
 - within_doc_page: return X if a stamp or footer explicitly reads "Pagina X van N" or "pag. X".
   Return null if no explicit page-within-document counter is visible.
 
@@ -413,19 +418,30 @@ def _annotate_text(text: str) -> str:
 
 
 def _normalise_doc_code(raw) -> str | None:
-    """Validate and zero-pad a doc code string. Returns '0143' style or None."""
+    """Validate and normalise a doc code string. Returns '0143' style or None."""
     if not raw:
         return None
     s = re.sub(r"\D", "", str(raw))   # digits only
+    original_len = len(s)
     if len(s) == 7:
         # 7-digit barcode: extract digits 4-6 and prefix with 0
         s = "0" + s[3:6]
+    elif len(s) > 4:
+        # Multi-digit stamp (5, 6, 8-digit…): look for an embedded 0NNN code first
+        m = re.search(r"0\d{3}", s)
+        s = m.group() if m else s[-4:].zfill(4)
     elif len(s) >= 4:
         s = s[-4:].zfill(4)
     else:
         return None
-    # Must be WOO-style 0NNN (leading zero, not a year)
-    if re.fullmatch(r"0\d{3}", s):
+    # Reject year-like numbers (1900–2099)
+    if re.fullmatch(r"(19|20)\d{2}", s):
+        return None
+    # For 4-digit input: require WOO-style 0NNN (leading zero) to reject bare page counters
+    if original_len == 4 and not re.fullmatch(r"0\d{3}", s):
+        return None
+    # For multi-digit input: accept any non-year 4-digit extraction
+    if re.fullmatch(r"\d{4}", s):
         return s
     return None
 
@@ -714,8 +730,9 @@ _BOUNDARY_SYSTEM = (
     "You are analyzing a Dutch government WOO (Wet Open Overheid) disclosure dossier. "
     "You receive a compact per-page summary and must draw document boundaries and, for "
     "email documents, individual email boundaries. "
-    "Not all dossiers use inventory stamps — rely on document content and structure first; "
-    "use stamp codes only to confirm or label boundaries you have already identified. "
+    "Not all dossiers use inventory stamps. When stamps are consistently present, a stamp code "
+    "change between pages is a primary boundary signal on its own — it alone is sufficient to "
+    "start a new document. When no stamps are present, rely on content signals instead. "
     "Respond ONLY with a valid JSON object — no markdown fences, no extra text."
 )
 
@@ -743,25 +760,28 @@ DOCUMENT BOUNDARY RULES — apply signals in priority order:
    - cont=Y means a sentence continued from the previous page. This page CANNOT start a new document.
    - Every page must belong to exactly one document; list documents in ascending start_page order with no gaps.
 
-2. STRONGEST content signals (each alone is sufficient to start a new document):
+2. STAMP CODES — when stamps are present they are the PRIMARY split signal:
+   - Stamp code CHANGES between consecutive pages: this alone is sufficient to start a new document.
+     Exception: cont=Y (rule 1) overrides even a stamp change.
+   - Same stamp on consecutive pages: these pages belong to the same document (do NOT split),
+     even if content signals suggest otherwise.
+   - Incrementing sequential numbers that change by 1 on every page (e.g. 00001→00002→00003)
+     are per-page sequence counters, NOT document codes — ignore them for boundary decisions.
+   - stamp=null throughout (no stamps in this dossier): skip to rules 3–5 entirely.
+   - A stamp=null page following stamped pages with no content split signals: treat as continuation.
+
+3. STRONGEST content signals (each alone is sufficient when no stamps are present):
    - wpn=1 AND new=Y together confirm a new document start.
    - The text preview begins with "Pagina 1 van" or "1/" in a footer/stamp context.
    - The text preview shows a complete, fresh document header at the very top: a full
      Van/Aan/Onderwerp email block, a new memo heading with date + reference, or a new
      letter/rapport title page.
 
-3. MODERATE content signals (combine two or more to split):
+4. MODERATE content signals (combine two or more to split when no stamps are present):
    - new=Y alone (pass-1 detected a new header, but could be a quoted/forwarded header in a body)
    - wpn=1 alone (within-doc page resets to 1)
    - Category changes significantly between consecutive pages (e.g. Email → Nota)
    - Text preview clearly shows a new letterhead, new ministry logo, or new document reference
-
-4. STAMP CODES — use only to confirm or label, never as the sole split signal:
-   - Same stamp on consecutive pages: confirms they are the same document (do NOT split).
-   - Stamp changes between pages: supports a split already suggested by content signals;
-     do NOT split on a stamp change alone if content signals show continuation.
-   - No stamps at all: rely entirely on signals 1–3. This is normal for many dossiers.
-   - A stamp=null page following a stamped page with no content split signals = continuation.
 
 5. DEFAULT — when in doubt, keep pages together. Spurious splits create empty documents;
    missed splits only merge two documents. Merging is the safer error.
