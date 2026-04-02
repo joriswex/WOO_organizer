@@ -37,6 +37,7 @@ _MAX_IMG_PX     = 1568      # GPT-4o "high" detail works best ≤ 2048px; 1568 i
 _MAX_RETRIES    = 3
 _MAX_WORKERS    = 10        # concurrent GPT-4o API calls
 _STAMP_THRESHOLD = 0.30     # min fraction of pages with a detected stamp to use forward-fill
+_NOTA_LIKE       = frozenset({"Nota", "Brief", "Report", "Vergadernotulen"})  # categories where same-code sub-splitting is safe
 
 # WOO redaction code pattern — same as pipeline_ocr.py
 _REDACTION_RE = re.compile(r"5\.[12]\.[1-9][a-z]{0,2}", re.IGNORECASE)
@@ -114,8 +115,12 @@ TEXT EXTRACTION RULES:
 DOCUMENT BOUNDARY RULES:
 - is_new_document = true ONLY when ONE OR MORE of these conditions hold at the very top of the page:
     * Footer or stamp reads "Pagina 1 van N" or "1/N"
-    * A complete new email header block (Van: + Aan: + Onderwerp:) appears at line 1–3
-    * A new memo/letter heading with a fresh date and reference number appears at line 1–3
+    * A nota or letter heading: document title + date + reference number (kenmerk/zaaknummer) at
+      lines 1–3, in a clear Nota / Brief / Memorandum / Rapport layout — this is the strongest
+      signal; a new heading block with fresh metadata always means a new document
+    * A fresh original email header (Van: + Aan: + Onderwerp:) at lines 1–3, but ONLY when it is
+      clearly a new standalone email — NOT when it is a RE: or FW: reply/forward continuing an
+      existing thread visible earlier in the document
     * The page shows a new Inventarislijst table header
     * A forwarded-message block ("-----Doorgestuurd bericht-----" / "-----Forwarded Message-----")
       appears at the very top, clearly starting a new forwarded document
@@ -1182,24 +1187,47 @@ def _finalise_pipeline(
 # ── Assignment helpers ────────────────────────────────────────────────────────
 
 def _build_docs_forward_fill(page_data: list[dict]) -> dict[str, dict]:
-    """Stamp-based assignment with forward-fill. Same logic as pipeline_ocr."""
+    """Stamp-based assignment with forward-fill. Same logic as pipeline_ocr.
+
+    Extra rule: when multiple nota/letter-like documents share the same stamp code,
+    split them on is_new_document boundaries (category must be in _NOTA_LIKE to
+    avoid false splits in email threads or chat exports).
+    """
     docs_raw: dict[str, dict] = {}
-    last_code     = None
+    last_detected = None   # raw stamp from previous page (for change detection)
+    last_code     = None   # effective key in use (may carry a _N suffix for sub-splits)
     unknown_count = 0
+    sub_counts: dict[str, int] = {}  # base_code → number of sub-splits created so far
 
     for p in page_data:
         detected = p["doc_code"]
         wpn      = p["within_doc_page"]
+        category = p.get("category", "Other")
         # Never start a new doc if VLM explicitly says this is page 2+
         is_new   = (p["is_new_document"] or wpn == 1) and (wpn is None or wpn == 1)
 
-        if detected:
-            current_code = detected
-            last_code    = detected
+        if detected and detected != last_detected:
+            # Stamp changed — unambiguous new document
+            current_code  = detected
+            last_detected = detected
+            last_code     = detected
+        elif detected and is_new and category in _NOTA_LIKE:
+            # Same stamp but VLM sees a new nota/letter heading — create a sub-split.
+            # Only done for nota-like categories; email/chat threads share a code by design.
+            n = sub_counts.get(detected, 1) + 1
+            sub_counts[detected] = n
+            current_code  = f"{detected}_{n}"
+            last_detected = detected   # still tracking same base stamp
+            last_code     = current_code
+        elif detected:
+            # Same stamp, continuation — keep using the current effective key
+            current_code  = last_code or detected
+            last_detected = detected
         elif is_new and last_code is not None:
-            # Boundary but no new code — create unknown slot
+            # Boundary but no stamp — create unknown slot
             unknown_count += 1
             current_code  = f"unknown_{unknown_count}"
+            last_detected = None
             last_code     = current_code
         else:
             current_code = last_code or "unknown_1"
