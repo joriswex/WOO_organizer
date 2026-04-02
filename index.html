@@ -3257,7 +3257,7 @@ Retourneer ALLEEN geldig JSON (geen markdown):
   "summary": "1 zin samenvatting van dit document"
 }
 
-Regels: emails[] alleen invullen als het document e-mails bevat. Preserveer [REDACTED] markers.`;
+Regels: emails[] alleen invullen als het document e-mails bevat. Preserveer [GELAKT] markers.`;
 
     try {
       const r = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -3694,11 +3694,11 @@ WOO_ARTICLES['default'] = {
 
 // ── REDACTION PATTERNS with article mapping ──
 const REDACT_PATTERNS = [
-  { re: /\[REDACTED:?\s*(5\.1\.2e)[^\]]*\]/gi, article: '5.1.2e' },
-  { re: /\[REDACTED:?\s*(5\.1\.2g)[^\]]*\]/gi, article: '5.1.2g' },
-  { re: /\[REDACTED:?\s*(5\.1\.2i)[^\]]*\]/gi, article: '5.1.2i' },
-  { re: /\[REDACTED:?\s*(5\.1\.1)[^\]]*\]/gi, article: '5.1.1' },
-  { re: /\[REDACTED[^\]]*\]/gi, article: '5.1.2i' }, // default: personal opinion
+  { re: /\[(?:GELAKT|REDACTED):?\s*(5\.1\.2e)[^\]]*\]/gi, article: '5.1.2e' },
+  { re: /\[(?:GELAKT|REDACTED):?\s*(5\.1\.2g)[^\]]*\]/gi, article: '5.1.2g' },
+  { re: /\[(?:GELAKT|REDACTED):?\s*(5\.1\.2i)[^\]]*\]/gi, article: '5.1.2i' },
+  { re: /\[(?:GELAKT|REDACTED):?\s*(5\.1\.1)[^\]]*\]/gi, article: '5.1.1' },
+  { re: /\[(?:GELAKT|REDACTED)[^\]]*\]/gi, article: '5.1.2i' }, // default: personal opinion
   { re: /X{5,}/g, article: '5.1.2g' },
 ];
 
@@ -3711,21 +3711,21 @@ function _normalizeRedactionArticle(value) {
 
 function _redactionLabel(value) {
   const article = _normalizeRedactionArticle(value);
-  return article ? `Redacted (${article})` : 'Redacted';
+  return article ? `Gelakt (${article})` : 'Gelakt';
 }
 
 function replaceRedactionsForPreview(text) {
   if (!text) return '';
   return (text || '')
-    .replace(/\[REDACTED(?::([^\]]*))?\]/gi, (_, code) => _redactionLabel(code))
-    .replace(/X{5,}/g, 'Redacted');
+    .replace(/\[(?:GELAKT|REDACTED)(?::([^\]]*))?\]/gi, (_, code) => _redactionLabel(code))
+    .replace(/X{5,}/g, 'Gelakt');
 }
 
 function firstRedactionLabel(text) {
   const raw = text || '';
-  const m = raw.match(/\[REDACTED(?::([^\]]*))?\]/i);
+  const m = raw.match(/\[(?:GELAKT|REDACTED)(?::([^\]]*))?\]/i);
   if (m) return _redactionLabel(m[1]);
-  if (/X{5,}/.test(raw)) return 'Redacted';
+  if (/X{5,}/.test(raw)) return 'Gelakt';
   return '';
 }
 
@@ -3878,7 +3878,7 @@ WAT JE VERWIJDERT (alleen opmaakruis, nooit inhoud):
 WAT JE BEHOUDT (alles inhoudelijks):
 - Alle namen, functies, besluiten, verzoeken, data, bedragen, locaties
 - Alle beleidsinhoud, adviezen, standpunten en argumenten
-- Alle [REDACTED: X] en [REDACTED] markeringen — exact zo laten staan
+- Alle [GELAKT: X] en [GELAKT] markeringen — exact zo laten staan
 - De toon en formulering van de schrijver
 - Bijlagen-verwijzingen
 
@@ -4815,13 +4815,13 @@ function renderIphoneRow(email, idx) {
   const redactionArticle = firstRedactionArticle(previewTextRaw);
   const previewText = replaceRedactionsForPreview(previewTextRaw);
   const rawSender = (email.sender || '').trim();
-  const senderBase = (rawSender.includes('[REDACTED') || /X{5,}/.test(rawSender))
+  const senderBase = (rawSender.includes('[GELAKT') || rawSender.includes('[REDACTED') || /X{5,}/.test(rawSender))
     ? rawSender
     : (rawSender.split('(')[0].trim() || 'Onbekend');
   const senderHtml = formatInlineRedactions(senderBase || 'Onbekend');
   const subjectHtml = formatInlineRedactions(email.subject || '(geen onderwerp)');
   const shortPreview = previewText
-    .replace(/Redacted(?:\s*\(5\.[12]\.\d[a-z]{0,2}\))?/gi, '')
+    .replace(/Gelakt(?:\s*\(5\.[12]\.\d[a-z]{0,2}\))?/gi, '')
     .trim()
     .slice(0, 60);
   const dateStr = formatDisplayDate(email.date);
@@ -5122,7 +5122,7 @@ function _cleanTimelineText(value) {
   return (value || '')
     .toString()
     .replace(/\[(?:REDACTED|GELAKT)(?::[^\]]*)?\]/gi, ' ')
-    .replace(/Redacted\s*\(\s*5\.[12]\.\d[a-z]{0,2}\s*\)/gi, ' ')
+    .replace(/Gelakt\s*\(\s*5\.[12]\.\d[a-z]{0,2}\s*\)/gi, ' ')
     .replace(/\b(?:redacted|gelakt|weggelakt)\b/gi, ' ')
     .replace(/\b5\.[12]\.\d[a-z]{0,2}\b/gi, ' ')
     .replace(/^\[[^\]]+\]\s*/g, '')
@@ -5319,7 +5319,7 @@ function _buildTimelineSummaryAIPayload() {
 
 function _sanitizeTimelineParagraph(text) {
   return (text || '')
-    .replace(/\b(redacted|geredacteerd|5\.1\.2e|5\.1\.2i|5\.1\.2a|buiten\s+reikwijdte|openbaar|woo|wob|bijlage)\b/gi, '')
+    .replace(/\b(gelakt|redacted|geredacteerd|5\.1\.2e|5\.1\.2i|5\.1\.2a|buiten\s+reikwijdte|openbaar|woo|wob|bijlage)\b/gi, '')
     .replace(/\s+/g, ' ')
     .replace(/\s+([,.;:!?])/g, '$1')
     .replace(/\s{2,}/g, ' ')
@@ -5339,7 +5339,7 @@ een snel overzicht geeft van wanneer wat er is gebeurd.
 ALGEMENE REGELS — gelden voor alle documenttypen:
 - Schrijf in gewone journalistieke taal, geen juridisch jargon
 - Citeer NOOIT letterlijk uit het document
-- Gebruik NOOIT de woorden: redacted, geredacteerd, 5.1.2e, 5.1.2i, 5.1.2a,
+- Gebruik NOOIT de woorden: gelakt, redacted, geredacteerd, 5.1.2e, 5.1.2i, 5.1.2a,
   buiten reikwijdte, openbaar, woo, wob, bijlage
 - Noem geen geredacteerde namen — gebruik Persoon A, Persoon B etc.
   consistent door het hele document
@@ -5940,7 +5940,7 @@ Analyseer het aangeleverde dossier en retourneer ALLEEN een JSON-object (geen ma
   "transparencyScore": 6,
   "redactionPercent": 35
 }
-Regels: redactionPercent is een getal 0-100 (schatting van het % geredigeerde tekst op basis van [REDACTED]-markeringen en zwarte balken). Wees feitelijk, neutraal en journalistiek precies.`
+Regels: redactionPercent is een getal 0-100 (schatting van het % geredigeerde tekst op basis van [GELAKT]-markeringen en zwarte balken). Wees feitelijk, neutraal en journalistiek precies.`
     : `You are a specialized analyst for Dutch FOIA (Woo) dossiers.
 Analyze the provided dossier and return ONLY a JSON object (no markdown, no explanation) with this structure:
 {
@@ -5951,7 +5951,7 @@ Analyze the provided dossier and return ONLY a JSON object (no markdown, no expl
   "transparencyScore": 6,
   "redactionPercent": 35
 }
-Rules: redactionPercent is 0-100 (estimated % of text redacted based on [REDACTED] markers). Be factual, neutral, journalistically precise.`;
+Rules: redactionPercent is 0-100 (estimated % of text redacted based on [GELAKT] markers). Be factual, neutral, journalistically precise.`;
 
   const summaryUserPrompt = `DOSSIERTITEL: ${dossierTitle}
 Aanbieder: ${dossierPublisher} | Besluitdatum: ${dossierDate} | PID: ${dossierPid}
@@ -6182,12 +6182,12 @@ function getDemoEmails() {
 
 Naar aanleiding van de bespreking van gisteren over de aanstaande AVVN-noodsessie wil ik het volgende meegeven.
 
-Het kabinet heeft in de Rijksministerraad van 20 oktober de [REDACTED] besproken. De inzet is dat Nederland zich onthoudt van stemming, tenzij de tekst van de resolutie op cruciale punten wordt aangepast om ook de veroordeling van de Hamas-aanslag van 7 oktober expliciet te bevatten.
+Het kabinet heeft in de Rijksministerraad van 20 oktober de [GELAKT] besproken. De inzet is dat Nederland zich onthoudt van stemming, tenzij de tekst van de resolutie op cruciale punten wordt aangepast om ook de veroordeling van de Hamas-aanslag van 7 oktober expliciet te bevatten.
 
 De volgende overwegingen gelden:
 1. Bondgenootschappelijke verplichtingen jegens Israël en de VS
 2. Humanitaire verplichtingen inzake burgerslachtoffers in Gaza
-3. Interne coalitiedynamiek — [REDACTED] heeft aangegeven dat een tegenstem politiek onhoudbaar is
+3. Interne coalitiedynamiek — [GELAKT] heeft aangegeven dat een tegenstem politiek onhoudbaar is
 
 Graag uiterlijk dinsdag 24 oktober bevestiging van uw definitieve inzet.
 
@@ -6204,16 +6204,16 @@ Minister-President`,
       date: 'dinsdag 24 oktober 2023 16:22',
       text: `Mark,
 
-Dank voor je bericht. Na intern beraad en consultatie met [REDACTED] en de Permanente Vertegenwoordiging in New York adviseer ik als volgt:
+Dank voor je bericht. Na intern beraad en consultatie met [GELAKT] en de Permanente Vertegenwoordiging in New York adviseer ik als volgt:
 
 Onthouden van stemming is de meest houdbare positie, mits wij in de Algemene Vergadering een verklaring afleggen waarin:
 a) de Hamas-aanval van 7 oktober expliciet wordt veroordeeld
 b) het recht op zelfverdediging van Israël wordt erkend
 c) een onmiddellijk humanitair staakt-het-vuren wordt bepleit voor burgerbescherming
 
-De EU-lidstaten zijn sterk verdeeld. Duitsland en Oostenrijk neigen naar tegenstem; [REDACTED] neigen naar steun voor de resolutie.
+De EU-lidstaten zijn sterk verdeeld. Duitsland en Oostenrijk neigen naar tegenstem; [GELAKT] neigen naar steun voor de resolutie.
 
-Ik zal morgenochtend 9:00 telefonisch overleg hebben met [REDACTED] voordat de resolutietekst definitief is.
+Ik zal morgenochtend 9:00 telefonisch overleg hebben met [GELAKT] voordat de resolutietekst definitief is.
 
 Wopke`,
     },
@@ -6231,11 +6231,11 @@ UITSLAG: Aangenomen met 153 voor, 10 tegen, 23 onthoudingen.
 NEDERLAND: Onthouding (conform besluit van 24 november 2023)
 
 Bijzonderheden:
-- [REDACTED] heeft na afloop van de stemming te kennen gegeven dat de Nederlandse onthouding als "teleurstellend" wordt beschouwd door de Arabische groep in de VN
-- De VS, Israël, en [REDACTED] stemden tegen
-- [REDACTED] stemden vóór — dit leidde intern bij Buitenlandse Zaken tot de vraag of de Nederlandse positie opnieuw tegen het licht gehouden moet worden
+- [GELAKT] heeft na afloop van de stemming te kennen gegeven dat de Nederlandse onthouding als "teleurstellend" wordt beschouwd door de Arabische groep in de VN
+- De VS, Israël, en [GELAKT] stemden tegen
+- [GELAKT] stemden vóór — dit leidde intern bij Buitenlandse Zaken tot de vraag of de Nederlandse positie opnieuw tegen het licht gehouden moet worden
 
-De Tweede Kamer zal naar verwachting vrijdag vragen stellen. [REDACTED] heeft concept-antwoorden voorbereid.
+De Tweede Kamer zal naar verwachting vrijdag vragen stellen. [GELAKT] heeft concept-antwoorden voorbereid.
 
 Met vriendelijke groet,
 A. van den Berg
@@ -6246,7 +6246,7 @@ Beleidsmedewerker VN-zaken`,
       subject: 'Intern — Analyse juridische implicaties onthoudingsstem NL bij AVVN',
       sender: 'Legaldienst BZ (Directie JZ)',
       to: 'Hoekstra, Wopke (BZ/Min)',
-      cc: '[REDACTED]',
+      cc: '[GELAKT]',
       date: 'donderdag 14 december 2023 11:55',
       text: `Aan: Minister Hoekstra
 Van: Juridische Dienst BZ
@@ -6259,15 +6259,15 @@ Op verzoek van de minister een korte analyse van de juridische implicaties van d
 Een onthouding heeft geen rechtskracht in de zin van instemming of verwerping. Nederland is niet gebonden aan de resolutie, die overigens aanbevelend van aard is (Hoofdstuk VI VN-handvest).
 
 2. RELATIE MET EERDERE STANDPUNTEN
-[REDACTED]
+[GELAKT]
 
 3. RISICO'S
-[REDACTED]
-[REDACTED]
-[REDACTED]
+[GELAKT]
+[GELAKT]
+[GELAKT]
 
 4. AANBEVELING
-De Juridische Dienst adviseert om bij de beantwoording van Kamervragen [REDACTED].
+De Juridische Dienst adviseert om bij de beantwoording van Kamervragen [GELAKT].
 
 Juridische Dienst BZ`,
     },
@@ -6638,7 +6638,7 @@ async function analysePageWithOpenAI(img, pageNum, total) {
 
 Retourneer ALLEEN geldig JSON (geen markdown):
 {
-  "text": "volledige tekst in lezesvolgorde; e-mailheaders op eigen regels; zwartgelakte delen als [REDACTED: ArtikelCode] of [REDACTED]",
+  "text": "volledige tekst in lezesvolgorde; e-mailheaders op eigen regels; zwartgelakte delen als [GELAKT: ArtikelCode] of [GELAKT]",
   "isNewDocument": true/false,
   "docCode": "4-cijferige stempel/code of null",
   "withinDocPage": geheel getal of null,
@@ -6894,7 +6894,7 @@ function renderChatsView(container) {
             ${!outgoing && !msg.isSystemMessage ? `<div class="chat-msg-sender">${formatLabelRedactions(sender || 'Onbekend')}</div>` : ''}
             <div class="chat-msg-text">${formatChatMessageBody(msg.body || '')}</div>
             <div class="chat-msg-meta">
-              ${msg.isRedacted ? '<span class="chat-msg-flag">redacted</span>' : ''}
+              ${msg.isRedacted ? '<span class="chat-msg-flag">gelakt</span>' : ''}
               ${msg.timestamp ? `<span>${escHtml(msg.timestamp)}</span>` : ''}
             </div>
           </div>
@@ -7041,7 +7041,7 @@ function selectUploadedDoc(idx) {
 
 function formatUploadedDocBody(text) {
   let html = escHtml(text);
-  html = html.replace(/\[REDACTED(?::([^\]]*))?\]/gi, (_, code) => makeRedactHtml(code || ''));
+  html = html.replace(/\[(?:GELAKT|REDACTED)(?::([^\]]*))?\]/gi, (_, code) => makeRedactHtml(code || ''));
   html = html.replace(/X{5,}/g, () => makeRedactHtml(''));
   return html;
 }

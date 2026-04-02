@@ -4,7 +4,6 @@ import re
 from collections import Counter, defaultdict
 from pathlib import Path
 
-import numpy as np
 import pdfplumber
 import pytesseract
 from pdf2image import convert_from_path
@@ -225,9 +224,9 @@ def _normalize_code(code: str) -> str:
 
 
 def _annotate_redactions(text: str) -> str:
-    """Replace bare WOO redaction codes with [REDACTED: …] markers."""
+    """Replace bare WOO redaction codes with [GELAKT: …] markers."""
     return REDACTION_CODE_RE.sub(
-        lambda m: f"[REDACTED: {_normalize_code(m.group(1))}]", text
+        lambda m: f"[GELAKT: {_normalize_code(m.group(1))}]", text
     )
 
 
@@ -452,118 +451,6 @@ def _auto_split_boundaries(page_data: list[dict]) -> list[bool]:
 # Semantic boundary detection (sentence-transformer similarity)
 # ---------------------------------------------------------------------------
 
-# Module-level cache so the model loads once per process, not once per call.
-_SENTENCE_MODEL = None
-
-
-def _get_sentence_model():
-    """Lazy-load and cache the multilingual sentence-transformer model."""
-    global _SENTENCE_MODEL
-    if _SENTENCE_MODEL is None:
-        try:
-            from sentence_transformers import SentenceTransformer
-        except ImportError as exc:
-            raise ImportError(
-                "semantic_split requires the sentence-transformers package. "
-                "Install it with: pip install sentence-transformers"
-            ) from exc
-        print("[data_import] Loading sentence-transformer model (first run downloads ~120 MB)…")
-        _SENTENCE_MODEL = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
-        print("[data_import] Model ready.")
-    return _SENTENCE_MODEL
-
-
-# Pattern used to strip redaction markers before embedding — they are structured
-# noise that would distort topical similarity scores.
-_REDACTION_MARKER_RE = re.compile(r"\[REDACTED:[^\]]+\]")
-
-
-def _normalize_text_for_embedding(text: str, max_chars: int = 1000) -> str:
-    """Prepare a page's text for embedding.
-
-    Strips redaction markers, collapses whitespace, and truncates to max_chars
-    (roughly 200 tokens — well within the 512-token model limit).  Returns an
-    empty string when fewer than 20 non-whitespace characters remain.
-    """
-    t = _REDACTION_MARKER_RE.sub(" ", text)
-    t = re.sub(r"\s+", " ", t).strip()
-    t = t[:max_chars]
-    return t if len(t.replace(" ", "")) >= 20 else ""
-
-
-def _embed_pages(texts: list[str], model) -> list[np.ndarray | None]:
-    """Embed page texts in one batch; pages with empty text get None."""
-    non_empty = [(i, t) for i, t in enumerate(texts) if t]
-    result: list[np.ndarray | None] = [None] * len(texts)
-    if not non_empty:
-        return result
-    indices, batched = zip(*non_empty)
-    vectors = model.encode(
-        list(batched),
-        normalize_embeddings=True,   # unit vectors → cosine = dot product
-        show_progress_bar=False,
-        batch_size=32,
-    )
-    for idx, vec in zip(indices, vectors):
-        result[idx] = vec
-    return result
-
-
-def _cosine_sim(a: np.ndarray, b: np.ndarray) -> float:
-    """Cosine similarity in [0, 1] between two L2-normalised 1-D arrays."""
-    return float(np.dot(a, b))   # dot product of unit vectors = cosine
-
-
-def _semantic_boundaries(
-    embeddings: list[np.ndarray | None],
-) -> list[float | None]:
-    """Return per-page cosine similarity to the previous page (None at index 0
-    and wherever either neighbour has no embedding)."""
-    scores: list[float | None] = [None]
-    for i in range(1, len(embeddings)):
-        prev, curr = embeddings[i - 1], embeddings[i]
-        if prev is not None and curr is not None:
-            scores.append(_cosine_sim(prev, curr))
-        else:
-            scores.append(None)
-    return scores
-
-
-def _auto_split_boundaries_semantic(
-    page_data: list[dict],
-    embeddings: list[np.ndarray | None],
-    threshold: float,
-) -> list[bool]:
-    """Fuse semantic similarity with existing heuristic signals.
-
-    Signal priority (highest to lowest):
-      1. HIGH   within_doc_page==1  OR  'Pagina 1 van' in text  →  always split
-      2. MEDIUM cosine_sim < threshold (embedding available)      →  split
-      3. MEDIUM fresh email header on this page                   →  split
-      4. DEFAULT                                                   →  continue
-    """
-    scores = _semantic_boundaries(embeddings)
-    n = len(page_data)
-    is_new = [False] * n
-    is_new[0] = True
-
-    for i in range(1, n):
-        p = page_data[i]
-        score = scores[i]
-
-        text = p["text"]
-        if _is_new_doc_boundary(p):                        # signal 1
-            is_new[i] = True
-        elif score is not None and score < threshold:      # signal 2
-            is_new[i] = True
-        elif _is_fresh_email_start(text):                  # signal 3
-            is_new[i] = True
-        elif _is_fresh_nota_start(text):                   # signal 4
-            is_new[i] = True
-
-    return is_new
-
-
 # ---------------------------------------------------------------------------
 # Document-code assignment helpers
 # ---------------------------------------------------------------------------
@@ -623,19 +510,12 @@ def _build_docs_forward_fill(page_data: list[dict]) -> dict:
     return docs
 
 
-def _build_docs_auto_split(
-    page_data: list[dict],
-    boundaries: list[bool] | None = None,
-) -> dict:
+def _build_docs_auto_split(page_data: list[dict]) -> dict:
     """
     Assign auto-generated document codes (auto_001, auto_002, …) based on
-    automatically detected document boundaries.
-
-    If *boundaries* is None, the heuristic _auto_split_boundaries() is used.
-    Pass a pre-computed list to use semantic or other boundaries instead.
+    heuristic document boundary detection.
     """
-    if boundaries is None:
-        boundaries = _auto_split_boundaries(page_data)
+    boundaries = _auto_split_boundaries(page_data)
     docs: dict[str, dict] = defaultdict(
         lambda: {"pages": [], "text_parts": [], "code_counts": Counter(),
                  "page_nums_in_doc": []}
@@ -685,8 +565,6 @@ def _finalize_docs(docs_raw: dict, method: str) -> dict[str, dict]:
 def load_pdf(
     pdf_path: Path = PDF_PATH,
     ocr_supplement: bool = False,
-    semantic_split: bool = False,
-    semantic_threshold: float = 0.35,
     page_range: tuple[int, int] | None = None,
 ) -> dict[str, dict]:
     """
@@ -701,16 +579,9 @@ def load_pdf(
         and OCR'd.  The redaction-code count per page is taken as the max of
         the text-layer count and the OCR count, capturing image-only stamps
         that are invisible to the text layer.  Adds ~3 s per page.
-    semantic_split : bool, default False
-        When True and no stamps are found, uses sentence-transformer cosine
-        similarity to detect document boundaries by topic shift.  Falls back
-        to the heuristic auto-split when this is False.  Requires the
-        sentence-transformers package.
-    semantic_threshold : float, default 0.35
-        Cosine similarity below which an adjacent-page transition is treated
-        as a document boundary.  Only used when semantic_split=True.
-        Tune downward (e.g. 0.20) to merge more aggressively; upward (e.g.
-        0.50) to split more finely.
+    page_range : tuple[int, int] | None
+        Optional (start, end) 1-based page numbers to process a subset of the PDF.
+
     Returns
     -------
     dict[str, dict]
@@ -722,7 +593,7 @@ def load_pdf(
                 "pages":            list[int],        # 1-based PDF page numbers
                 "page_nums_in_doc": list[int | None], # within-doc page stamps
                 "text":             str,               # concatenated raw text
-                "annotated_text":   str,               # text with [REDACTED: …] markers
+                "annotated_text":   str,               # text with [GELAKT: …] markers
                 "redaction_codes":  dict[str, int],    # code → total count
                 "category":         str,               # one of 7 categories
                 "method":           "direct" | "ocr",
@@ -730,22 +601,15 @@ def load_pdf(
             ...
         }
 
-    Document detection strategy (trust hierarchy)
-    ----------------------------------------------
-    1. Stamped indicators found  →  forward-fill with 'unknown_N' for readable
-       boundaries that lack a code.
-    2. No stamps found anywhere  →
-         semantic_split=True  →  sentence-transformer similarity + heuristics
-         semantic_split=False →  heuristic auto-split only (email headers,
-                                 'Pagina 1 van', within-doc page stamp == 1)
+    Document detection strategy
+    ---------------------------
+    1. Stamps found  →  stamp forward-fill; 'unknown_N' for readable boundaries
+       that lack a code.
+    2. No stamps found  →  heuristic auto-split (email headers, 'Pagina 1 van',
+       within-doc page stamp == 1).
 
-    Region search order
-    -------------------
-    Doc-code detection searches text-layer regions (_DOC_CODE_TEXT_REGIONS)
-    first, then raster regions (_DOC_CODE_RASTER_REGIONS).  Page-number
-    detection uses _PAGE_NUM_REGIONS.  All lists are tried in priority order,
-    so the pipeline handles PDFs where the stamp is not in the primary WOO
-    location.
+    Doc-code detection searches text-layer regions first, then corner raster
+    regions (pytesseract). All region lists are tried in priority order.
     """
     if not pdf_path.exists():
         raise FileNotFoundError(f"PDF not found: {pdf_path}")
@@ -841,23 +705,6 @@ def load_pdf(
     has_stamps = any(p["detected_code"] for p in page_data)
     if has_stamps:
         docs_raw = _build_docs_forward_fill(page_data)
-    elif semantic_split:
-        print("[data_import] No stamps found — using semantic document splitting.")
-        model = _get_sentence_model()
-        norm_texts = [_normalize_text_for_embedding(p["text"]) for p in page_data]
-        embeddings = _embed_pages(norm_texts, model)
-        scores = _semantic_boundaries(embeddings)
-        candidates = [
-            (i + 1, f"{s:.3f}")
-            for i, s in enumerate(scores[1:], start=1)
-            if s is not None and s < semantic_threshold
-        ]
-        print(f"[data_import] Semantic: {len(candidates)} boundary candidate(s)"
-              f" at threshold={semantic_threshold}")
-        for pg, sc in candidates:
-            print(f"  Page {pg}: similarity={sc}")
-        boundaries = _auto_split_boundaries_semantic(page_data, embeddings, semantic_threshold)
-        docs_raw = _build_docs_auto_split(page_data, boundaries)
     else:
         print("[data_import] No stamps found — using heuristic document splitting.")
         docs_raw = _build_docs_auto_split(page_data)

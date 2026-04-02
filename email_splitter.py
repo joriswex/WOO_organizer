@@ -147,14 +147,14 @@ _FILENAME_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Redacted email-address patterns: "< @domain>" or "< ,@domain>" or "<@domain>"
-# where the local part has been blacked out.  Normalise to "<[REDACTED]@domain>".
+# Gelakte email-adrespatronen: "< @domain>" or "< ,@domain>" or "<@domain>"
+# where the local part has been blacked out.  Normalise to "<[GELAKT]@domain>".
 _REDACTED_ADDR_RE = re.compile(r"<\s*,?\s*@([\w.-]+\.\w{2,})\s*>", re.IGNORECASE)
 
 
 def _normalize_redacted_addrs(text: str) -> str:
     """Replace redacted email address fragments with a legible placeholder."""
-    return _REDACTED_ADDR_RE.sub(r"<[REDACTED]@\1>", text)
+    return _REDACTED_ADDR_RE.sub(r"<[GELAKT]@\1>", text)
 
 
 def _normalize_field(name: str) -> str:

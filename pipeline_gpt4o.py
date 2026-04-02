@@ -36,6 +36,7 @@ _RENDER_DPI     = 200
 _MAX_IMG_PX     = 1568      # GPT-4o "high" detail works best ≤ 2048px; 1568 is optimal tile size
 _MAX_RETRIES    = 3
 _MAX_WORKERS    = 10        # concurrent GPT-4o API calls
+_STAMP_THRESHOLD = 0.30     # min fraction of pages with a detected stamp to use forward-fill
 
 # WOO redaction code pattern — same as pipeline_ocr.py
 _REDACTION_RE = re.compile(r"5\.[12]\.[1-9][a-z]{0,2}", re.IGNORECASE)
@@ -56,7 +57,7 @@ _SYSTEM_PROMPT = (
     "the 3-digit document number). All pages of the same document share the same code.\n"
     "- Some pages also show an incrementing per-page sequence counter (e.g. 00001, 00002, 00003 "
     "— unique per page, increases by 1 each page). These are NOT document codes; ignore them.\n"
-    "- Sensitive content is redacted with redaction bars (some are black bars, other times white boxes or otherwise). The applicable WOO legal ground "
+    "- Sensitive content is gelakt (blacked out) with redaction bars (some are black bars, other times white boxes or otherwise). The applicable WOO legal ground "
     "is printed in small text inside or next to each black box, in the format 5.1.X or 5.2.X "
     "(e.g. '5.1.2e', '5.1.1', '5.2.1'). These are articles of the Wet Open Overheid.\n"
     "- The dossier sometimes starts with an Inventarislijst: a table listing all documents with "
@@ -98,11 +99,11 @@ TEXT EXTRACTION RULES:
   structure is recoverable. Include all column values including codes and page counts.
 - For page headers/footers (logo text, document reference numbers, "VERTROUWELIJK" stamps):
   include them at the top or bottom of the text field respectively.
-- For redacted email addresses where only the domain remains (black box before @domain.nl):
-    write: [REDACTED]@domain.nl
-- For redacted sections (solid black rectangles / censored areas):
-    If a WOO article code (e.g. "5.1.2e") is printed next to the box:  write [REDACTED: 5.1.2e]
-    If no article code is visible:                                       write [REDACTED]
+- For gelakte email addresses where only the domain remains (black box before @domain.nl):
+    write: [GELAKT]@domain.nl
+- For gelakte sections (solid black rectangles / censored areas):
+    If a WOO article code (e.g. "5.1.2e") is printed next to the box:  write [GELAKT: 5.1.2e]
+    If no article code is visible:                                       write [GELAKT]
 - For media in chat exports ([Foto], [Video], [Bestand], [Sticker], [Audio]):
     include the placeholder exactly as printed, e.g. "[Foto]" or "[Video weggelaten]".
 - If the page is blank or contains only a stamp/page number with no readable content:
@@ -165,14 +166,14 @@ DOC_SUBTYPE RULES — return exactly one of:
 
 CHAT PAGE RULES (only when category = "Chat"):
 - chat_name: the group or contact name shown at the top of the screen (e.g. "Bezoek praktische zaken").
-  If the name is redacted, write "[REDACTED]".
+  If the name is redacted, write "[GELAKT]".
 - Extract every visible message into chat_messages (array, top-to-bottom order):
   {
     "sender_position": "left" | "right",   // left = incoming, right = outgoing (device owner)
-    "sender_label": "<name or redaction code above the bubble; '[REDACTED]' if blacked out>",
+    "sender_label": "<name or redaction code above the bubble; '[GELAKT]' if blacked out>",
     "timestamp": "<HH:MM visible on the message, or null>",
     "is_system_message": <true for date separators, join/leave events, missed-call notices>,
-    "content": "<full message text; use [REDACTED] for blacked-out words; media as [Foto]/[Video]/[Audio]/[Bestand]>"
+    "content": "<full message text; use [GELAKT] for blacked-out words; media as [Foto]/[Video]/[Audio]/[Bestand]>"
   }
 - System messages (date separators like "Vandaag", "Gisteren", "15 oktober 2024"; join/leave
   notifications; "Berichten en oproepen zijn end-to-end versleuteld") should be included with
@@ -210,9 +211,9 @@ EMAIL HEADER RULES (only when category = "Email"):
 - email_start = false if the page is a continuation of an email body or quoted thread.
 - email_from: name only; strip email addresses.
     * "Verzonden namens [Name]" → use the delegated name
-    * Partially redacted (e.g. "[REDACTED]@minbuza.nl"): write "[REDACTED]"
+    * Partially redacted (e.g. "[GELAKT]@minbuza.nl"): write "[GELAKT]"
 - email_to, email_cc: names only, comma-separated for multiple recipients. Null if absent.
-- email_subject: include FW:/Re:/Fwd: prefixes as-is. "[REDACTED]" if fully redacted.
+- email_subject: include FW:/Re:/Fwd: prefixes as-is. "[GELAKT]" if fully redacted.
 - email_date: parse Datum:/Verzonden:/Sent:/Date:/Start Date/Time: → YYYY-MM-DD or YYYY-MM-DDTHH:MM.
     Strip day abbreviations and seconds. Null if not visible or not parseable.
 - If multiple emails start on the same page: report only the FIRST one's header fields.
@@ -406,12 +407,12 @@ def _count_redaction_codes(text: str) -> dict[str, int]:
 
 
 def _annotate_text(text: str) -> str:
-    # Negative lookbehind: skip codes already inside [REDACTED: ...] to prevent
-    # GPT-4o's own [REDACTED: 5.1.2e] from becoming [REDACTED: [REDACTED: 5.1.2e]].
-    # "[REDACTED: " is exactly 11 chars — a fixed-length lookbehind.
+    # Negative lookbehind: skip codes already inside [GELAKT: ...] to prevent
+    # GPT-4o's own [GELAKT: 5.1.2e] from becoming [GELAKT: [GELAKT: 5.1.2e]].
+    # "[GELAKT: " is exactly 9 chars — a fixed-length lookbehind.
     return re.sub(
-        r"(?<!\[REDACTED: )5\.[12]\.[1-9][a-z]{0,2}",
-        lambda m: f"[REDACTED: {m.group()}]",
+        r"(?<!\[GELAKT: )5\.[12]\.[1-9][a-z]{0,2}",
+        lambda m: f"[GELAKT: {m.group()}]",
         text,
         flags=re.IGNORECASE,
     )
@@ -547,6 +548,37 @@ def docs_from_cache(cache_path: Path, pdf_path: Path) -> dict[str, dict]:
     return _finalise_pipeline(page_data, boundary_docs=boundary_docs or None)
 
 
+# ── OCR stamp fallback ───────────────────────────────────────────────────────
+
+def _ocr_stamp_fallback(page_data: list[dict]) -> None:
+    """
+    For pages where GPT-4o returned no stamp code, attempt recovery using
+    targeted tesseract OCR on the same corner regions as pipeline_ocr.
+
+    Only runs when the dossier appears to use stamps (at least one page already
+    has a detected code). Mutates page_data in-place.
+    """
+    stamped = [p for p in page_data if p.get("doc_code")]
+    if not stamped:
+        return  # stampless dossier — nothing to recover
+
+    null_pages = [p for p in page_data if not p.get("doc_code") and p.get("image") is not None]
+    if not null_pages:
+        return
+
+    from pipeline_ocr import _find_doc_code_raster
+
+    recovered = 0
+    for p in null_pages:
+        code = _find_doc_code_raster(p["image"])
+        if code:
+            p["doc_code"] = code
+            recovered += 1
+
+    if recovered:
+        print(f"[gpt4o] OCR stamp fallback: recovered {recovered}/{len(null_pages)} missing stamps.")
+
+
 # ── Main pipeline ─────────────────────────────────────────────────────────────
 
 def load_pdf_vlm(
@@ -674,6 +706,11 @@ def load_pdf_vlm(
             "email_subject":   email_subject,
             "email_date":      email_date,
         })
+
+    # ── OCR stamp fallback ───────────────────────────────────────────────────
+    # For pages where GPT-4o missed the stamp, run targeted corner-crop OCR.
+    # Only runs when the dossier has stamps on at least some pages.
+    _ocr_stamp_fallback(page_data)
 
     # ── Save cache ───────────────────────────────────────────────────────────
     if cache_path:
@@ -814,7 +851,7 @@ Extract every individual email and return:
   "emails": [
     {{
       "subject":     "<Onderwerp/Subject/Betreft line, or null>",
-      "sender":      "<From/Van/Afzender — name only, no email address; '[REDACTED]' if redacted>",
+      "sender":      "<From/Van/Afzender — name only, no email address; '[GELAKT]' if redacted>",
       "to":          "<To/Aan field, or null>",
       "cc":          "<CC field, or null>",
             "date":        "<date as YYYY-MM-DD — parse any format; null if not found>",
@@ -840,9 +877,9 @@ Extraction rules:
 - attachments: look for "Bijlage:", "Bijlagen:", "Attachment:", or filenames (.pdf, .docx, .xlsx, etc.).
   Return [] if none found.
 - body: message body only — strip all Van/Aan/CC/Onderwerp/Datum header lines from the top.
-  Preserve [REDACTED: 5.1.2e] markers exactly as found.
+  Preserve [GELAKT: 5.1.2e] markers exactly as found.
 - sender: name only. Strip angle brackets and email addresses entirely.
-  If redacted, use "[REDACTED]".
+  If redacted, use "[GELAKT]".
 - If this is a single email (no thread), return an array with one item.
 
 Document text:
@@ -1007,19 +1044,42 @@ def _build_docs_from_boundaries(
     return docs_raw
 
 
+def _stamp_coverage(page_data: list[dict]) -> float:
+    """Fraction of pages that have a detected stamp code."""
+    if not page_data:
+        return 0.0
+    return sum(1 for p in page_data if p.get("doc_code")) / len(page_data)
+
+
 def _finalise_pipeline(
     page_data: list[dict],
     client=None,
     cache_path: Path | None = None,
     boundary_docs: list[dict] | None = None,
 ) -> dict[str, dict]:
-    """Stage 2 + 3: assign doc codes and build the final docs dict."""
-    if boundary_docs is not None:
-        # Cached boundary decisions — skip pass 2 entirely
+    """Stage 2 + 3: assign doc codes and build the final docs dict.
+
+    Priority:
+      1. Stamp forward-fill — when stamps cover >= _STAMP_THRESHOLD of pages.
+         Reliable and cheap; no LLM needed.
+      2. LLM pass-2 boundary detection — when stamps are absent/sparse.
+         Uses cached boundary_docs if available, else calls the API.
+      3. VLM is_new_document signal — when no client and no stamps.
+    """
+    coverage = _stamp_coverage(page_data)
+    has_reliable_stamps = coverage >= _STAMP_THRESHOLD
+
+    if has_reliable_stamps:
+        print(f"[gpt4o] Stamps detected on {coverage:.0%} of pages — using stamp forward-fill.")
+        docs_raw = _build_docs_forward_fill(page_data)
+        method   = "gpt4o-stamp"
+    elif boundary_docs is not None:
+        # Cached LLM boundary decisions from a previous pass-2 run
+        print(f"[gpt4o] No reliable stamps ({coverage:.0%}) — using cached LLM boundaries.")
         docs_raw = _build_docs_from_boundaries(page_data, boundary_docs)
         method   = "gpt4o-2pass"
     elif client is not None:
-        print(f"[gpt4o] Pass 2: identifying boundaries across {len(page_data)} pages...")
+        print(f"[gpt4o] No reliable stamps ({coverage:.0%}) — running pass 2 (LLM boundary detection)...")
         summary   = _build_page_summary(page_data)
         documents = _call_boundary_pass(summary, len(page_data), client)
         if documents:
@@ -1028,21 +1088,14 @@ def _finalise_pipeline(
             if cache_path:
                 _update_cache_boundaries(documents, cache_path)
         else:
-            print("[gpt4o] Pass 2 failed — falling back to stamp-based logic.")
-            has_stamps = any(p["doc_code"] for p in page_data)
-            docs_raw   = (_build_docs_forward_fill(page_data) if has_stamps
-                          else _build_docs_boundary(page_data))
-            method     = "gpt4o-stamp" if has_stamps else "gpt4o-boundary"
-    else:
-        # No client, no cached boundaries — original stamp/boundary logic
-        has_stamps = any(p["doc_code"] for p in page_data)
-        if has_stamps:
-            docs_raw = _build_docs_forward_fill(page_data)
-            method   = "gpt4o-stamp"
-        else:
-            print("[gpt4o] No doc-code stamps found — using VLM boundary detection.")
+            print("[gpt4o] Pass 2 failed — falling back to VLM boundary signals.")
             docs_raw = _build_docs_boundary(page_data)
             method   = "gpt4o-boundary"
+    else:
+        # No client, no cached boundaries, no stamps
+        print("[gpt4o] No stamps and no API client — using VLM boundary signals only.")
+        docs_raw = _build_docs_boundary(page_data)
+        method   = "gpt4o-boundary"
 
     docs: dict[str, dict] = {}
     for code, d in docs_raw.items():
