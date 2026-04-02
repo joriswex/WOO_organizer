@@ -53,8 +53,9 @@ _SYSTEM_PROMPT = (
     "a new document starts. Only fall back to content signals (headers, page counters, document "
     "type changes) when no stamps are visible.\n"
     "- Stamp codes are typically stamped in a corner or at the bottom-centre/top-centre of each "
-    "page. Common formats: 4-digit (e.g. 0143), 6-digit, or 7-digit barcode (760XXXD where XXX is "
-    "the 3-digit document number). All pages of the same document share the same code.\n"
+    "page. Common formats: 4-digit (e.g. 0143), 6-digit, 7-digit barcode (760XXXD where XXX is "
+    "the 3-digit document number), or a 'Doc XX' / 'Docnr XX' text label (first page only). "
+    "All pages of the same document share the same code.\n"
     "- Some pages also show an incrementing per-page sequence counter (e.g. 00001, 00002, 00003 "
     "— unique per page, increases by 1 each page). These are NOT document codes; ignore them.\n"
     "- Sensitive content is gelakt (blacked out) with redaction bars (some are black bars, other times white boxes or otherwise). The applicable WOO legal ground "
@@ -118,6 +119,8 @@ DOCUMENT BOUNDARY RULES:
     * The page shows a new Inventarislijst table header
     * A forwarded-message block ("-----Doorgestuurd bericht-----" / "-----Forwarded Message-----")
       appears at the very top, clearly starting a new forwarded document
+    * A "Doc XX" or "Docnr XX" label is visible in a corner (these appear ONLY on the first page
+      of each document — continuation pages have no such label)
 - is_new_document = false in ALL of the following cases:
     * within_doc_page is 2 or higher
     * The page starts with a salutation like "Geachte" or "Beste" but has NO header block above it
@@ -127,11 +130,15 @@ DOCUMENT BOUNDARY RULES:
     * No stamp is visible and the preceding page had a stamp (continuation is the default)
     * The page is blank or contains only a page separator / cover sheet
 - doc_code: check ALL four corners AND the bottom-centre/top-centre for a stamp code.
-    * Report the code exactly as printed — common formats: 4-digit (e.g. "0143"), 6-digit, 7-digit barcode.
+    * Common formats: 4-digit (e.g. "0143"), 6-digit, 7-digit barcode, or "Doc XX" / "Docnr XX"
+      label (e.g. "Doc 23", "Docnr 143"). For "Doc"/"Docnr" labels return the number zero-padded
+      to 4 digits (e.g. "Doc 23" → "0023", "Docnr 143" → "0143").
     * Year-like numbers (1900–2099) are NOT document codes — ignore them.
     * Incrementing per-page sequence counters (e.g. 00001, 00002, 00003 — every page gets a
       different, incrementing number) are NOT document codes — ignore them.
     * Document codes repeat: all pages of the same document share the same stamp code.
+      "Doc XX" labels are an exception — they appear ONLY on the first page; return null for
+      continuation pages (the pipeline will forward-fill the code automatically).
 - within_doc_page: return X if a stamp or footer explicitly reads "Pagina X van N" or "pag. X".
   Return null if no explicit page-within-document counter is visible.
 
@@ -434,7 +441,14 @@ def _normalise_doc_code(raw) -> str | None:
     elif len(s) >= 4:
         s = s[-4:].zfill(4)
     else:
-        return None
+        # 2–3 digit number — accept as a short WOO code (1–999) and zero-pad.
+        # Handles "Doc 23" → GPT-4o returns "0023" per prompt, but also catches
+        # cases where the model returns the raw digits only.
+        n = int(s) if s.isdigit() else 0
+        if 1 <= n <= 999:
+            s = s.zfill(4)
+        else:
+            return None
     # Reject year-like numbers (1900–2099)
     if re.fullmatch(r"(19|20)\d{2}", s):
         return None
