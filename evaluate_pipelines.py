@@ -1,6 +1,9 @@
 """
-Pipeline evaluation: OCR vs GPT-4o across 5 annotated dossiers.
+Pipeline evaluation: OCR vs GPT-4o across annotated dossiers.
 Compares boundary detection and document type classification.
+
+Auto-detects dossiers by scanning for annotations_dossier_X.json files.
+Skips any dossier that is missing either the OCR segs or GPT-4o cache in groundtruth/.
 """
 import json
 from collections import Counter
@@ -9,7 +12,23 @@ from pathlib import Path
 GT_DIR = Path("groundtruth")
 ROOT = Path(".")
 
-DOSSIERS = ["a", "b", "c", "d", "e"]
+
+def _discover_dossiers() -> list[str]:
+    """Return sorted list of dossier letters that have all three required files."""
+    letters = []
+    for ann in sorted(ROOT.glob("annotations_dossier_?.json")):
+        letter = ann.stem.split("_")[-1]        # "annotations_dossier_a" → "a"
+        ocr   = GT_DIR / f"dossier_{letter}_ocr_segs.json"
+        gpt4o = GT_DIR / f"dossier_{letter}_gpt4o_cache.json"
+        if ocr.exists() and gpt4o.exists():
+            letters.append(letter)
+        else:
+            missing = [f for f, p in [("ocr_segs", ocr), ("gpt4o_cache", gpt4o)] if not p.exists()]
+            print(f"[eval] skipping dossier {letter}: missing {', '.join(missing)}")
+    return letters
+
+
+DOSSIERS = _discover_dossiers()
 
 # Map GPT-4o / OCR types to a canonical set for fair comparison
 TYPE_MAP = {
@@ -198,8 +217,12 @@ def email_count_accuracy(gt_boundaries, gt_annotations, ocr_segments, gpt4o_data
 
 
 def run():
+    if not DOSSIERS:
+        print("No dossiers found. Add annotations_dossier_X.json + groundtruth/dossier_X_{ocr_segs,gpt4o_cache}.json")
+        return
+
     print("=" * 72)
-    print("WOO PIPELINE EVALUATION: OCR vs GPT-4o")
+    print(f"WOO PIPELINE EVALUATION: OCR vs GPT-4o  ({len(DOSSIERS)} dossiers: {', '.join(d.upper() for d in DOSSIERS)})")
     print("=" * 72)
 
     agg = {"ocr": [], "gpt4o": []}  # collect per-dossier metrics
@@ -299,7 +322,7 @@ def run():
 
     # ── Aggregate summary ─────────────────────────────────────────────────
     print(f"\n{'=' * 72}")
-    print("AGGREGATE SUMMARY (across 5 dossiers)")
+    print(f"AGGREGATE SUMMARY (across {len(DOSSIERS)} dossiers)")
     print(f"{'=' * 72}")
     print(f"\n  Boundary F1 (±1 page tolerance):")
     print(f"  {'Dossier':<12} {'OCR F1':>8} {'GPT-4o F1':>10}")
