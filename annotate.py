@@ -1,15 +1,64 @@
 """
 annotate.py — Browser-based annotation tool for WOO document segmentation evaluation.
 
-Usage:
-    python annotate.py --pdf dossier.pdf --from-cache cache.json
-    python annotate.py --pdf dossier.pdf --ocr
-    python annotate.py --pdf dossier.pdf --api-key sk-...
-    python annotate.py --pdf dossier.pdf
-    python annotate.py --pdf dossier.pdf --from-cache cache.json --annotations existing.json
-    python annotate.py --pdf dossier.pdf --port 5050
-    python annotate.py --pdf groundtruth/dossier_a.pdf --auto
+────────────────────────────────────────────────────────────────────────────────
+QUICK-START CHEATSHEET
+────────────────────────────────────────────────────────────────────────────────
 
+STANDARD WORKFLOW (GPT-4o + OCR side-by-side, recommended)
+───────────────────────────────────────────────────────────
+  # First run — calls GPT-4o API, saves cache next to the PDF
+  python annotate.py --pdf groundtruth/dossier_a.pdf --auto
+
+  # All subsequent runs — uses the saved cache, no API calls
+  python annotate.py --pdf groundtruth/dossier_a.pdf --auto
+
+DELETE CACHE AND RERUN GPT-4O FROM SCRATCH
+───────────────────────────────────────────
+  rm groundtruth/dossier_g_gpt4o_cache.json
+  python annotate.py --pdf groundtruth/dossier_g.pdf --auto
+
+  (Replace "dossier_g" with the dossier name you want to rerun.)
+
+RUN ONLY ONE PIPELINE
+─────────────────────
+  # GPT-4o only (loads from cache if present, otherwise calls API)
+  python annotate.py --pdf groundtruth/dossier_a.pdf --from-cache groundtruth/dossier_a_gpt4o_cache.json
+
+  # OCR only
+  python annotate.py --pdf groundtruth/dossier_a.pdf --ocr
+
+  # GPT-4o with explicit API key (overrides OPENAI_API_KEY env var)
+  python annotate.py --pdf groundtruth/dossier_a.pdf --api-key sk-...
+
+LOAD EXISTING ANNOTATIONS
+──────────────────────────
+  # Annotations are auto-saved to groundtruth/annotations_dossier_X.json on every
+  # save (S key). They are auto-loaded next time you open the same dossier with --auto.
+  # You can also load them explicitly:
+  python annotate.py --pdf groundtruth/dossier_a.pdf --auto \
+                     --annotations groundtruth/annotations_dossier_a.json
+
+CHANGE PORT (default 5050)
+──────────────────────────
+  python annotate.py --pdf groundtruth/dossier_a.pdf --auto --port 5051
+
+────────────────────────────────────────────────────────────────────────────────
+KEYBOARD SHORTCUTS (in the browser)
+────────────────────────────────────────────────────────────────────────────────
+  B              Toggle document boundary on the current page
+  S              Save annotations  (auto-saved to groundtruth/ folder)
+  ↑ / ↓         Navigate pages
+────────────────────────────────────────────────────────────────────────────────
+
+CACHE & SEGMENT FILES (auto-generated next to the PDF)
+───────────────────────────────────────────────────────
+  <stem>_gpt4o_cache.json   — GPT-4o pass-1 per-page data + pass-2 boundaries
+  <stem>_ocr_segs.json      — OCR pipeline segment list (regenerated if deleted)
+
+Both are gitignored so they are never committed.
+
+────────────────────────────────────────────────────────────────────────────────
 """
 
 import argparse

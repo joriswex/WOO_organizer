@@ -61,7 +61,10 @@ _SYSTEM_PROMPT = (
     "— unique per page, increases by 1 each page). These are NOT document codes; ignore them.\n"
     "- Sensitive content is gelakt (blacked out) with redaction bars (some are black bars, other times white boxes or otherwise). The applicable WOO legal ground "
     "is printed in small text inside or next to each black box, in the format 5.1.X or 5.2.X "
-    "(e.g. '5.1.2e', '5.1.1', '5.2.1'). These are articles of the Wet Open Overheid.\n"
+    "(e.g. '5.1.2e', '5.1.1', '5.2.1'). These are articles of the Wet Open Overheid. "
+    "WOO redaction articles are NOT document stamp codes — never return them as doc_code.\n"
+    "- Stamp codes appear only at the very edges of the page (corners or top/bottom centre strip), "
+    "never embedded inside the document body text.\n"
     "- The dossier sometimes starts with an Inventarislijst: a table listing all documents with "
     "their codes, titles, page counts, and the WOO decision (openbaar/deels openbaar/niet openbaar).\n"
     "- Document types in order of frequency: internal emails, forwarded email threads, memos "
@@ -141,6 +144,9 @@ DOCUMENT BOUNDARY RULES:
     * Year-like numbers (1900–2099) are NOT document codes — ignore them.
     * Incrementing per-page sequence counters (e.g. 00001, 00002, 00003 — every page gets a
       different, incrementing number) are NOT document codes — ignore them.
+    * WOO redaction articles (e.g. "5.1.2", "5.1.2e", "5.2.1") are NOT document codes — ignore them.
+    * Stamp codes appear only at the very edges of the page (corners, top/bottom centre strip),
+      NOT inside the text body. Disregard any number that appears within a paragraph or sentence.
     * Document codes repeat: all pages of the same document share the same stamp code.
       "Doc XX" labels are an exception — they appear ONLY on the first page; return null for
       continuation pages (the pipeline will forward-fill the code automatically).
@@ -436,6 +442,10 @@ def _annotate_text(text: str) -> str:
 def _normalise_doc_code(raw) -> str | None:
     """Validate and normalise a doc code string. Returns '0143' style or None."""
     if not raw:
+        return None
+    # Reject WOO redaction codes (5.1.x / 5.2.x) before stripping non-digits —
+    # otherwise "5.1.2" → "512" → "0512" which creates false document boundaries.
+    if re.match(r"5\.[12]\.", str(raw)):
         return None
     s = re.sub(r"\D", "", str(raw))   # digits only
     original_len = len(s)
