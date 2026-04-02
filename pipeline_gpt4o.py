@@ -926,7 +926,7 @@ def _extract_emails_full_doc(code: str, text: str, client) -> list[dict]:
         try:
             response = client.chat.completions.create(
                 model=_BOUNDARY_MODEL,   # gpt-4o-mini — text only, no vision needed
-                max_tokens=4096,
+                max_tokens=16384,        # gpt-4o-mini max — large threads can produce long JSON
                 temperature=0,
                 response_format={"type": "json_object"},
                 messages=[
@@ -934,7 +934,13 @@ def _extract_emails_full_doc(code: str, text: str, client) -> list[dict]:
                     {"role": "user",   "content": prompt},
                 ],
             )
-            data = json.loads(response.choices[0].message.content or "{}")
+            choice = response.choices[0]
+            if choice.finish_reason == "length":
+                # Response was truncated — JSON will be invalid; no point retrying
+                # with the same input. Fall back to per-page assembly.
+                print(f"  [gpt4o-email] {code}: output truncated even at max tokens — falling back")
+                return []
+            data = json.loads(choice.message.content or "{}")
             raw  = data.get("emails") or []
             result: list[dict] = []
             for i, em in enumerate(raw, 1):
