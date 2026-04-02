@@ -2,21 +2,21 @@
 Pipeline evaluation: OCR vs GPT-4o across annotated dossiers.
 Compares boundary detection and document type classification.
 
-Auto-detects dossiers by scanning for annotations_dossier_X.json files.
-Skips any dossier that is missing either the OCR segs or GPT-4o cache in groundtruth/.
+Auto-detects dossiers by scanning groundtruth/annotations_dossier_X.json files
+(the rich format auto-saved by annotate.py). Skips dossiers missing either the
+OCR segs or GPT-4o cache file.
 """
 import json
 from collections import Counter
 from pathlib import Path
 
 GT_DIR = Path("groundtruth")
-ROOT = Path(".")
 
 
 def _discover_dossiers() -> list[str]:
     """Return sorted list of dossier letters that have all three required files."""
     letters = []
-    for ann in sorted(ROOT.glob("annotations_dossier_?.json")):
+    for ann in sorted(GT_DIR.glob("annotations_dossier_?.json")):
         letter = ann.stem.split("_")[-1]        # "annotations_dossier_a" → "a"
         ocr   = GT_DIR / f"dossier_{letter}_ocr_segs.json"
         gpt4o = GT_DIR / f"dossier_{letter}_gpt4o_cache.json"
@@ -48,10 +48,33 @@ TYPE_MAP = {
 
 
 def load_gt(dossier: str):
-    path = ROOT / f"annotations_dossier_{dossier}.json"
+    """Load ground truth from groundtruth/annotations_dossier_X.json.
+
+    Handles two formats:
+    - Rich format (annotate.py auto-save): {documents: [{start_page, type_gt, ...}], ...}
+    - Simple format (older export):        {boundaries: [...], annotations: {...}}
+    """
+    path = GT_DIR / f"annotations_dossier_{dossier}.json"
     with open(path) as f:
         data = json.load(f)
-    return data["boundaries"], data["annotations"]
+
+    if "documents" in data:
+        docs = data["documents"]
+        boundaries = [doc["start_page"] for doc in docs]
+        annotations = {
+            str(doc["start_page"]): {
+                "type_gt":       doc.get("type_gt", ""),
+                "num_emails_gt": doc.get("num_emails_gt"),
+                "emails_gt":     doc.get("emails_gt", []),
+                "notes":         doc.get("notes", ""),
+            }
+            for doc in docs
+        }
+    else:
+        boundaries  = data["boundaries"]
+        annotations = data["annotations"]
+
+    return boundaries, annotations
 
 
 def load_ocr(dossier: str):
