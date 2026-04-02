@@ -8,6 +8,8 @@ Usage:
     python annotate.py --pdf dossier.pdf
     python annotate.py --pdf dossier.pdf --from-cache cache.json --annotations existing.json
     python annotate.py --pdf dossier.pdf --port 5050
+    python annotate.py --pdf groundtruth/dossier_a.pdf --auto
+
 """
 
 import argparse
@@ -83,17 +85,17 @@ HTML = r"""<!DOCTYPE html>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
   :root {
-    --bg:        #0f1117;
-    --pane-bg:   #0d1117;
-    --left-bg:   #0a0d16;
-    --border:    #1e2740;
-    --text:      #d1d5db;
-    --text-dim:  #6b7280;
-    --blue:      #3b82f6;
-    --yellow:    #facc15;
-    --green:     #34d399;
-    --red:       #f87171;
-    --purple:    #a78bfa;
+    --bg:        #ffffff;
+    --pane-bg:   #f8f9fa;
+    --left-bg:   #f0f2f5;
+    --border:    #d1d5db;
+    --text:      #111827;
+    --text-dim:  #4b5563;
+    --blue:      #2563eb;
+    --yellow:    #ca8a04;
+    --green:     #059669;
+    --red:       #dc2626;
+    --purple:    #7c3aed;
   }
 
   html, body { height: 100%; background: var(--bg); color: var(--text); font-family: system-ui, sans-serif; font-size: 13px; }
@@ -109,11 +111,11 @@ HTML = r"""<!DOCTYPE html>
   #toolbar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--pane-bg); border-bottom: 1px solid var(--border); flex-shrink: 0; }
   #toolbar h1 { font-size: 14px; font-weight: 600; color: var(--blue); margin-right: auto; }
   #toolbar .info { color: var(--text-dim); font-size: 11px; }
-  #toolbar .badge-mode { font-size: 10px; padding: 2px 6px; border-radius: 4px; background: #1e2740; color: var(--blue); font-family: monospace; }
+  #toolbar .badge-mode { font-size: 10px; padding: 2px 6px; border-radius: 4px; background: #dbeafe; color: var(--blue); font-family: monospace; }
   #save-flash { font-size: 11px; color: var(--green); opacity: 0; transition: opacity 0.3s; }
   #save-flash.visible { opacity: 1; }
-  .btn { padding: 4px 10px; border-radius: 5px; border: 1px solid var(--border); background: #1e2740; color: var(--text); cursor: pointer; font-size: 12px; }
-  .btn:hover { background: #2d3b5a; }
+  .btn { padding: 4px 10px; border-radius: 5px; border: 1px solid var(--border); background: #ffffff; color: var(--text); cursor: pointer; font-size: 12px; }
+  .btn:hover { background: #e5e7eb; }
 
   /* ── PDF viewer ── */
   #pdf-scroll { flex: 1; overflow-y: auto; padding: 8px 10px; }
@@ -142,7 +144,7 @@ HTML = r"""<!DOCTYPE html>
   }
 
   .pg-img-wrap {
-    position: relative; background: #111827; cursor: pointer;
+    position: relative; background: #e5e7eb; cursor: pointer;
     border: 2px solid transparent; transition: border-color 0.15s;
     min-height: 100px;
   }
@@ -168,7 +170,7 @@ HTML = r"""<!DOCTYPE html>
   .doc-row.active { background: rgba(59,130,246,0.15); }
 
   .doc-row-top { display: flex; align-items: center; gap: 5px; }
-  .doc-idx { font-family: monospace; font-size: 10px; color: var(--text-dim); background: #1e2740; padding: 1px 4px; border-radius: 3px; }
+  .doc-idx { font-family: monospace; font-size: 10px; color: var(--text-dim); background: #e5e7eb; padding: 1px 4px; border-radius: 3px; }
   .doc-pages { font-size: 11px; color: var(--text-dim); }
   .status-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
   .status-green  { background: var(--green); }
@@ -182,13 +184,13 @@ HTML = r"""<!DOCTYPE html>
   /* ── Right pane ── */
   #form-scroll { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 12px; }
 
-  .panel-block { background: #0f1117; border: 1px solid var(--border); border-radius: 6px; padding: 10px; }
+  .panel-block { background: #f8f9fa; border: 1px solid var(--border); border-radius: 6px; padding: 10px; }
   .panel-title { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-dim); margin-bottom: 8px; }
 
   .pred-code    { font-family: monospace; color: var(--blue); font-size: 14px; font-weight: 700; }
   .pred-type    { font-size: 12px; margin-top: 2px; }
   .pred-date    { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
-  .pred-method  { display: inline-block; font-size: 9px; padding: 2px 5px; border-radius: 3px; background: #1e2740; color: var(--text-dim); margin-top: 4px; font-family: monospace; }
+  .pred-method  { display: inline-block; font-size: 9px; padding: 2px 5px; border-radius: 3px; background: #e5e7eb; color: var(--text-dim); margin-top: 4px; font-family: monospace; }
   .pred-range   { font-size: 10px; color: var(--text-dim); margin-top: 4px; }
   .pred-none    { color: var(--text-dim); font-size: 12px; font-style: italic; }
 
@@ -197,7 +199,7 @@ HTML = r"""<!DOCTYPE html>
   .form-val   { font-size: 12px; color: var(--text-dim); padding: 4px 0; }
 
   select, input[type="text"], textarea {
-    width: 100%; background: #0a0d16; border: 1px solid var(--border);
+    width: 100%; background: #ffffff; border: 1px solid var(--border);
     color: var(--text); border-radius: 4px; padding: 5px 7px; font-size: 12px;
     font-family: inherit;
   }
@@ -224,14 +226,14 @@ HTML = r"""<!DOCTYPE html>
   .metric-2hdr span { font-size: 9px; min-width: 52px; text-align: right; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim); font-weight: 600; }
 
   /* ── Email detail rows ── */
-  .email-entry { background: #131925; border: 1px solid var(--border); border-radius: 5px; padding: 6px; margin-bottom: 4px; }
+  .email-entry { background: #f1f5f9; border: 1px solid var(--border); border-radius: 5px; padding: 6px; margin-bottom: 4px; }
   .email-entry-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
   .email-entry-idx { font-size: 10px; font-weight: 600; color: var(--purple); }
   .email-entry-lbl { font-size: 9px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.04em; margin-top: 3px; margin-bottom: 1px; }
   .btn-del-email { padding: 1px 5px; font-size: 11px; background: transparent; border: 1px solid var(--red); color: var(--red); border-radius: 3px; cursor: pointer; }
   .btn-del-email:hover { background: rgba(248,113,113,0.12); }
   #row-email-details .pred-emails { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border); }
-  .pred-email-row { display: flex; align-items: baseline; gap: 5px; font-size: 10px; color: var(--text-dim); padding: 3px 0; border-bottom: 1px dashed #1e2740; }
+  .pred-email-row { display: flex; align-items: baseline; gap: 5px; font-size: 10px; color: #374151; padding: 3px 0; border-bottom: 1px dashed var(--border); }
   .pred-email-row:last-child { border-bottom: none; }
   .pred-email-subj { color: var(--text); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .btn-copy-email { flex-shrink: 0; background: transparent; border: 1px solid var(--blue); color: var(--blue); border-radius: 3px; padding: 0 5px; font-size: 10px; cursor: pointer; line-height: 1.6; }
@@ -240,16 +242,16 @@ HTML = r"""<!DOCTYPE html>
 
   /* ── All pipeline emails panel ── */
   #all-emails-list { max-height: 380px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
-  .all-email-row { display: flex; align-items: flex-start; gap: 6px; padding: 5px 4px; border-bottom: 1px dashed #1e2740; }
+  .all-email-row { display: flex; align-items: flex-start; gap: 6px; padding: 5px 4px; border-bottom: 1px dashed var(--border); }
   .all-email-row:last-child { border-bottom: none; }
   .all-email-info { flex: 1; min-width: 0; }
   .all-email-subj { font-size: 11px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .all-email-meta { font-size: 10px; color: var(--text-dim); margin-top: 1px; }
+  .all-email-meta { font-size: 10px; color: #374151; margin-top: 1px; }
 
   /* ── Scrollbar ── */
   ::-webkit-scrollbar { width: 6px; }
   ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: #2d3b5a; border-radius: 3px; }
+  ::-webkit-scrollbar-thumb { background: #9ca3af; border-radius: 3px; }
 </style>
 </head>
 <body>
