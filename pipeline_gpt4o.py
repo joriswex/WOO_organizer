@@ -314,11 +314,14 @@ def _encode_image(img: Image.Image) -> str:
 
 def _repair_truncated_json(raw: str) -> dict:
     """
-    Close a JSON string that was truncated mid-value (hit max_tokens).
-    Walks the string to close any open string literal, then closes open
-    arrays/objects in reverse order so json.loads can parse the result.
+    Repair common GPT JSON issues: trailing commas and truncation.
+    - Strips trailing commas before } or ] (e.g. {"a": 1,} → {"a": 1})
+    - Closes open string literals and unclosed brackets left by max_tokens truncation.
     """
+    import re as _re
     s = raw.rstrip()
+    # Remove trailing commas before closing brace/bracket (invalid but GPT does it occasionally)
+    s = _re.sub(r",\s*([}\]])", r"\1", s)
 
     # Determine whether we ended inside a string literal
     in_string = False
@@ -394,12 +397,12 @@ def _call_gpt4o(image_b64: str, client, page_index: int, pdf_page_num: int) -> d
             try:
                 return json.loads(raw)
             except json.JSONDecodeError:
-                result = _repair_truncated_json(raw)
-                print(f"  [gpt4o] p{page_index+1}: JSON truncated — repaired, text may be partial")
-                return result
-
-        except json.JSONDecodeError as e:
-            print(f"  [gpt4o] p{page_index+1}: JSON parse error (attempt {attempt+1}): {e}")
+                try:
+                    result = _repair_truncated_json(raw)
+                    print(f"  [gpt4o] p{page_index+1}: JSON repaired (trailing comma or truncation)")
+                    return result
+                except json.JSONDecodeError as e:
+                    print(f"  [gpt4o] p{page_index+1}: JSON parse error (attempt {attempt+1}): {e}")
         except Exception as e:
             err = str(e)
             print(f"  [gpt4o] p{page_index+1}: API error (attempt {attempt+1}): {err[:120]}")
