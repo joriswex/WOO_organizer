@@ -24,3 +24,9 @@ palestina dossier/
 # Local data folders — not tracked
 OpenPSS Evaluation/
 annotation_trial/
+
+# Ground-truth evaluation data (PDFs, caches, annotations) — not tracked
+groundtruth/
+annotations_dossier_*.json
+*_eval_cache.json
+*_gpt4o_new_boundaries.json

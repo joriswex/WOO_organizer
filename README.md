@@ -1,19 +1,23 @@
 # WOO Organizer
 
-Converts Dutch WOO (*Wet Open Overheid*) disclosure PDFs into an interactive HTML timeline. Documents are split, dated, categorised, and rendered with inline email cards, page thumbnails, recipient tags, attachment markers, and redaction-code summaries.
+Converts Dutch WOO (*Wet Open Overheid*) disclosure PDFs into an interactive HTML timeline. Documents are split, dated, categorised, and rendered with inline email cards, chat threads, page thumbnails, redaction-code summaries, and inventory-list validation.
 
 ---
 
-## Pipelines
+## Architecture overview
 
-Two independent pipelines share the same date-extraction, sorting, and visualisation layer. They differ only in how they extract text and detect document boundaries.
+The project consists of a FastAPI server (`server.py`) that serves the frontend (`index.html`) and exposes a single pipeline endpoint (`/api/analyse`). When a PDF is uploaded, the server runs either the OCR pipeline or the GPT-4o vision pipeline in a background thread and streams progress and results back to the browser via Server-Sent Events.
 
-| Pipeline | Entry point | Text extraction | Requires |
-|---|---|---|---|
-| OCR | `main.py` | pdfplumber + Tesseract | Tesseract, Poppler |
-| GPT-4o VLM | `main_gpt4o.py` | GPT-4o vision API | OpenAI API key |
-
-Both produce the same output schema and are directly benchmarkable against each other.
+```
+browser  ←→  server.py (FastAPI)
+                ├── GET  /                         → index.html
+                ├── GET  /proxy?url=…              → proxies WOO database requests
+                ├── GET  /api/session_pdf[_range]  → serves the last uploaded PDF
+                ���── POST /api/analyse              → runs pipeline, streams SSE
+                        ├── pipeline_ocr.py        (pipeline="ocr")
+                        └── pipeline_gpt4o.py      (pipeline="gpt4o")
+                                └── pipeline_inventarislijst.py  (Inventarislijst pages)
+```
 
 ---
 
@@ -38,36 +42,33 @@ export OPENAI_API_KEY=sk-...
 
 ---
 
-## Usage
+## Running the server
 
-### OCR pipeline
 ```bash
-python main.py                                      # test.pdf → woo_timeline.html
-python main.py --pdf my_dossier.pdf --out out.html
+python server.py
+# or: uvicorn server:app --port 8000 --reload
 ```
 
-### GPT-4o pipeline
-```bash
-# Full run — processes every page, saves a cache automatically
-python main_gpt4o.py --pdf my_dossier.pdf
+Open `http://localhost:8000` in a browser. Upload a WOO dossier PDF, choose a pipeline, and click Analyseer.
 
-# Test run — first 15 pages only (saves to a separate cache)
-python main_gpt4o.py --pdf my_dossier.pdf --vlm-pages 15
+The GPT-4o pipeline requires an OpenAI API key. This can be set as an environment variable (`OPENAI_API_KEY`) or entered directly in the UI.
 
-# Regenerate HTML from an existing cache (no API cost)
-python main_gpt4o.py --pdf my_dossier.pdf --from-cache my_dossier_gpt4o_cache.json
+---
 
-# Explicit API key
-python main_gpt4o.py --pdf my_dossier.pdf --api-key sk-...
-```
+## Pipelines
+
+Two independent pipelines share the same date-extraction and sorting layer. They differ only in how they extract text and detect document boundaries.
+
+| Pipeline | `pipeline` value | Text extraction | Requires |
+|---|---|---|---|
+| OCR | `"ocr"` | pdfplumber (searchable PDFs) + Tesseract (image-based) | Tesseract, Poppler |
+| GPT-4o VLM | `"gpt4o"` | GPT-4o vision API, one call per page | OpenAI API key |
+
+Both produce the same output schema and are directly comparable.
 
 ---
 
 ## Pipeline walkthrough
-
-Both pipelines share the same date-extraction and sorting layer. The GPT-4o pipeline has an optional fourth step (event enrichment). Steps are described below in order.
-
----
 
 ### Step 1 — Text extraction and document splitting
 
@@ -79,158 +80,109 @@ This is the only step that differs between the two pipelines.
 
 **1a. Searchability check**
 
-`_is_searchable()` opens the PDF with pdfplumber and checks whether any page contains selectable text. The result decides whether the pipeline uses direct text extraction (fast) or full raster OCR (slower but handles image-based scans).
+`_is_searchable()` opens the PDF with pdfplumber and checks whether any page contains selectable text. The result decides whether the pipeline uses direct text extraction (fast) or full raster OCR (slower, handles image-based scans).
 
 **1b. Stage 1 — Per-page data collection**
 
-For every page in the PDF the pipeline collects four things:
+For every page the pipeline collects:
 
 **Doc code** — the 4-digit WOO catalogue stamp (e.g. `0144`) that identifies which document a page belongs to.
 
-- *Text layer:* `_find_doc_code_words()` scans the top strip of the page using pdfplumber's word list. Only top regions are searched (`_DOC_CODE_TEXT_REGIONS`: top-right → top-left → top-full) because body text lower on the page can contain 4-digit numbers (article references, years) that would produce false positives. The rightmost matching word in the first matching region wins. Year numbers (1900–2099) are excluded.
-- *Raster OCR:* `_find_doc_code_raster()` renders the page at 200 DPI and OCRs six corner/edge regions in priority order (`_DOC_CODE_RASTER_REGIONS`: top-right → top-left → bottom-right → bottom-middle → bottom-left → top-full). Uses a digits-only Tesseract whitelist (`--psm 6`). Two-stage matching per region:
-  1. Primary: `\b(0\d{3})\b` — requires a leading zero, rejecting article-number fragments like `5122`.
-  2. Fallback (bottom regions only): `\d{2,}(0\d{3})` — extracts embedded codes from merged barcode strings like `7601430` → `0143`.
-- Raster is always tried when `within_doc_page == 1` or the text layer found nothing, since boundary pages are most likely to have a misread or ambiguous stamp.
+- *Text layer:* `_find_doc_code_words()` scans the top strip using pdfplumber's word list. Only top regions are searched (`_DOC_CODE_TEXT_REGIONS`: top-right → top-left → top-full) to avoid false positives from body text. Year numbers (1900–2099) are excluded.
+- *Raster OCR:* `_find_doc_code_raster()` renders the page at 200 DPI and OCRs six corner/edge regions in priority order (`_DOC_CODE_RASTER_REGIONS`: top-right → top-left → bottom-right → bottom-middle → bottom-left → top-full). Two-stage matching per region:
+  1. Primary: `\b(0\d{3})\b` — requires a leading zero; rejects article-number fragments like `5122`.
+  2. Fallback (bottom regions only): `\d{2,}(0\d{3})` — extracts embedded codes from barcode strings like `7601430` → `0143`.
 
-**Within-doc page number** — the per-document page counter stamped on each page (e.g. page 1 of 3). `_find_within_doc_page_raster()` OCRs a tight strip at the bottom-right corner (`_PAGE_NUM_REGIONS`) with a digits-only whitelist and returns the integer found.
+**Within-doc page number** — `_find_within_doc_page_raster()` OCRs a tight strip at the bottom-right corner and returns the per-document page counter (e.g. page 1 of 3).
 
-**Page text** — `page.extract_text()` for searchable PDFs; `_ocr_image()` (Tesseract, Dutch+English) for image-based pages or any page with fewer than 20 text characters.
+**Page text** — `page.extract_text()` for searchable PDFs; `_ocr_image()` (Tesseract, Dutch+English) for image-based pages.
 
-**Redaction codes** — WOO legal grounds for redaction (regex `5\.[12]\.[1-9][a-z]{0,2}`, e.g. `5.1.2e`, `5.2.1`) are counted per page from the extracted text. With `ocr_supplement=True`, an additional 300 DPI OCR pass is run and counts are merged as `max(text_layer, ocr)` to capture image-only redaction stamps that the text layer misses.
+**Redaction codes** — WOO legal grounds (regex `5\.[12]\.[1-9][a-z]{0,2}`, e.g. `5.1.2e`) are counted per page. An optional supplementary 300 DPI OCR pass captures image-only redaction stamps.
 
 **1c. Stage 2 — Document code assignment**
 
-After all pages are collected, the pipeline decides which pages belong to the same document:
+- **Stamps detected** → `_build_docs_forward_fill()`: each page inherits the most recently seen stamp. Pages without a stamp but with `within_doc_page == 1` or `"Pagina 1 van"` in the text get an auto-generated `unknown_N` code.
+- **No stamps anywhere** → `_build_docs_auto_split()`: boundaries are detected from `within_doc_page == 1`, `"Pagina 1 van"` text, or a fresh email header block appearing after non-email content. Documents receive `auto_001`, `auto_002`, … codes. With `semantic_split=True`, a multilingual sentence-transformer model (`paraphrase-multilingual-MiniLM-L12-v2`) also detects cosine-similarity drops between adjacent pages.
 
-- **Stamps detected** → `_build_docs_forward_fill()`: each page inherits the most recently seen stamp code. If a page has no code but `_is_new_doc_boundary()` fires (i.e. `within_doc_page == 1` or `"Pagina 1 van"` appears in the text), an auto-generated `unknown_N` code is created for it.
-- **No stamps anywhere** → auto-split mode:
-  - *Default:* `_build_docs_auto_split()` uses heuristics — `within_doc_page == 1`, `"Pagina 1 van"` in text, or a fresh email header block (≥2 distinct header fields in the first 20 lines, with a first-line veto for continuation pages) appearing after non-email content. Documents receive `auto_001`, `auto_002`, … codes.
-  - *With `semantic_split=True`:* `_embed_pages()` encodes each page with a multilingual sentence-transformer model (`paraphrase-multilingual-MiniLM-L12-v2`). `_semantic_boundaries()` computes cosine similarity between adjacent pages; a drop below `semantic_threshold` (default 0.35) is treated as a document boundary, fused with the heuristic signals.
+**1d. Finalisation**
 
-**1d. Finalisation — `_finalize_docs()`**
-
-For each document: page texts are joined, redaction codes across all pages are summed, `_annotate_redactions()` wraps each bare code in a `[REDACTED: …]` marker, and `_categorize_document()` classifies the document by keyword scoring against 7 category rule sets (Email patterns scored on first page only to avoid false positives from quoted email headers in body text).
+Page texts are joined, redaction codes are summed and annotated as `[REDACTED: 5.1.2e]` markers, and `_categorize_document()` classifies each document by keyword scoring against 8 category rule sets (Email patterns scored on first page only to prevent false positives from quoted headers in the body).
 
 ---
 
 #### GPT-4o pipeline (`pipeline_gpt4o.py`)
 
-**1a. PDF → images**
+**Three-pass architecture**
 
-`convert_from_path()` renders every page to a PIL image at 200 DPI. In test mode (`--vlm-pages N`) only the first N pages are processed and cached under a separate filename.
+| Pass | Model | Input | Purpose |
+|---|---|---|---|
+| 1 | gpt-4o | Page images (base64 JPEG, 200 DPI) | Per-page text, category, doc code, boundary signals, email/chat metadata |
+| 2 | gpt-4o-mini | Concatenated page texts | Document boundary detection — decides which pages start a new document |
+| 3 | gpt-4o-mini | Full document text (E-mail docs only) | Extracts structured emails from the complete thread at once |
 
-**1b. Stage 1 — Per-page GPT-4o analysis**
+**Pass 1 — Per-page analysis**
 
-Each page image is encoded as a base64 JPEG (resized to ≤1568 px, the optimal tile size for GPT-4o `detail=high`) and sent to the OpenAI chat completions API with a structured JSON prompt. The model is asked to return:
+Each page is rendered at 200 DPI, resized to ≤1568 px (optimal for `detail=high`), and sent as a base64 JPEG. The model returns a structured JSON object per page:
 
-| Field | What it captures |
+| Field | Description |
 |---|---|
-| `text` | Full page text in reading order; email headers preserved on their own lines; redacted sections written as `[REDACTED]` or `<[REDACTED]@domain.nl>` |
+| `text` | Full page text in reading order; email headers on their own lines |
 | `is_new_document` | Whether this is the first page of a new document |
-| `doc_code` | 4-digit stamp visible anywhere on the page, or null |
-| `within_doc_page` | Page number within the document (`"Pagina X van N"`), or null |
-| `category` | One of: Email, Chat, Nota, Brief, Report, Timeline, Vergadernotulen, Other |
-| `doc_subtype` | Fine-grained subtype within the category (e.g. `kamerbrief`, `besluit`, `persbericht`, `chat_sms`) |
+| `doc_code` | 4-digit stamp visible on the page, or null |
+| `within_doc_page` | Per-document page counter (`"Pagina X van N"`), or null |
+| `category` | E-mail, Chat, Nota, Brief, Report, Timeline, Vergadernotulen, or Other |
+| `doc_subtype` | Fine-grained subtype (e.g. `kamerbrief`, `besluit`, `chat_sms`) |
 | `chat_name` | Chat group or contact name (Chat pages only) |
-| `chat_messages` | Array of `{sender_position, sender_label, timestamp, content}` objects (Chat pages only) |
+| `chat_messages` | Array of `{sender_position, sender_label, timestamp, content}` (Chat pages only) |
+| `email_start`, `email_from/to/cc/subject/date` | Per-page email header fields |
 
-The prompt explicitly instructs the model that `is_new_document` must be `false` when `within_doc_page ≥ 2`, preventing it from contradicting itself on continuation pages.
+Results are saved to a cache file (`<stem>_gpt4o_cache.json`) after pass 1. Pass 1 is never re-run if the cache already exists.
 
-`_normalise_doc_code()` validates and normalises the returned code: 7-digit barcodes are decoded (`7601430` → `0143`), non-WOO codes (no leading zero) are rejected. Results are streamed to a JSON cache file after the run.
+**Pass 2 — Boundary detection**
 
-**1c. Stage 2 — Document code assignment**
+The cached page texts are sent in bulk to gpt-4o-mini, which returns a list of document boundaries with start pages and doc codes. This is cheap (text-only) and can be re-run without vision API costs.
 
-Same logic as the OCR pipeline:
-- Stamps found → `_build_docs_forward_fill()` with forward-fill. `is_new_document` is only trusted as a boundary signal when `within_doc_page` is 1 or absent — if the model reports page 2 or higher, the flag is ignored regardless of `is_new_document`.
-- No stamps → `_build_docs_boundary()` uses only the `is_new_document` signal from the model.
+**Pass 3 — Email extraction**
 
-**1d. Finalisation**
+For each document classified as E-mail, the full concatenated text is sent to gpt-4o-mini in one call. It returns structured email objects with subject, sender, recipients, date, time, attachments, and body. Results are stored in `emails_by_doc` in the cache.
 
-Text is joined per document, redaction codes are counted and annotated, and category is determined by majority vote across the per-page `category` labels returned by the model.
+**Caching**
 
-**Cache and rebuild**
+The cache JSON stores all pass-1 per-page data, pass-2 boundary decisions, and pass-3 email results. A cached dossier can be fully re-analysed or re-displayed with zero API calls.
 
-`save_cache()` writes page metadata (text, codes, boundary flags, categories) to a JSON file. `docs_from_cache()` reloads it and re-renders page images from the original PDF, enabling full HTML regeneration without any API calls.
+---
+
+#### Inventarislijst pipeline (`pipeline_inventarislijst.py`)
+
+Extracts the document inventory table from a WOO *inventarislijst* page using GPT-4o-mini vision. Called automatically when the main pipeline detects an Inventarislijst document. Returns a list of rows with `code`, `title`, `date`, `pages`, `decision` (openbaar / gedeeltelijk openbaar / niet openbaar), and `grounds` (WOO redaction articles).
 
 ---
 
 ### Step 2 — Date extraction and sorting (`text_sorting.py`)
 
-For each document a date is extracted using a strategy that depends on the category:
+For each document a date is extracted using a category-specific strategy:
 
 | Category | Strategy |
 |---|---|
-| E-mail | `_date_from_email()` — splits the document into individual emails via `email_splitter` and uses the `Verzonden`/`Sent` date of the first email with a parseable date |
-| Nota, Brief, Report, Vergadernotulen | `_date_from_datum_field()` — searches the first 1500 characters for a `Datum:` / `Datum |` / `Datum <space>` field; falls back to `_date_from_text_scan()` if not found or not parseable |
-| Timeline, Other | `_date_from_text_scan()` — scans the first 1000 characters for any `DD-MM-YYYY` or `DD monthname YYYY` pattern |
+| E-mail | Date from the first parseable `Verzonden`/`Sent` header in the email thread |
+| Nota, Brief, Report, Vergadernotulen | Searches first 1 500 characters for a `Datum:` field; falls back to text scan |
+| Timeline, Other, Chat | Scans first 1 000 characters for any `DD-MM-YYYY` or `DD monthname YYYY` pattern |
 
-`_parse_date()` handles multiple formats: `DD-MM-YYYY`, `DD monthname YYYY`, English long date with weekday (`Wednesday, March 25, 2025`), Dutch weekday + date (`maandag 17 maart 2025`), US format with weekday (`Mon 3/17/2025`), and glued formats (`17maart2025`). Both Dutch and English month names are recognised.
+`_parse_date()` handles: `DD-MM-YYYY`, `DD monthname YYYY`, Dutch weekday + date (`maandag 17 maart 2025`), English long date, US format with weekday (`Mon 3/17/2025`), and glued formats (`17maart2025`). Both Dutch and English month names are recognised.
 
-Documents are sorted chronologically. Those without a parseable date are appended at the end, sorted by doc code.
-
----
-
-### Step 2b — Email splitting (`email_splitter.py`)
-
-Used internally by `text_sorting` for date extraction, and again by `visualisation` for rendering individual email cards.
-
-`split_emails()` splits the concatenated text of an email document into individual emails. It detects boundaries by two complementary signals:
-
-1. A header field type that already appeared in the current email reappears (e.g. a second `Van:` line) — a new email has started.
-2. A header field appears after 6 or more consecutive non-header lines — the parser re-entered a header block from body text.
-
-Outlook `"---- Original Message ----"` and `"---- Forwarded Message ----"` separators are hard split points.
-
-Both Dutch (`Van`, `Aan`, `Onderwerp`, `Verzonden`, `CC`) and English (`From`, `To`, `Subject`, `Sent`, `CC`, `BCC`) fields are normalised before comparison, so `Van:` and `From:` are treated as the same field type. Redacted addresses like `< @minbuza.nl>` are normalised to `<[REDACTED]@minbuza.nl>` before splitting.
-
-Each email gets an ID like `0003.2` and carries `subject`, `sender`, `to`, `cc`, `date` (YYYY-MM-DD), and `time` (HH:MM, when present) fields extracted from its header lines.
+Documents are sorted chronologically. Those without a parseable date are appended at the end in doc-code order.
 
 ---
 
-### Step 3 — Event enrichment (`event_enrichment.py`, GPT-4o pipeline only)
+### Step 3 — Email splitting (`email_splitter.py`)
 
-`enrich_events()` post-processes the extracted emails and chat messages into structured narrative timeline events using GPT-4o.
+`split_emails()` splits the concatenated text of an email document into individual emails. Boundaries are detected by:
 
-Emails are batched (25 per call) and grouped by normalised subject. Chat messages are grouped by day. Each batch is sent to GPT-4o with a structured prompt that returns:
+1. A header field type that already appeared in the current email reappears (e.g. a second `Van:` line).
+2. A header field appears after 6 or more consecutive non-header lines.
+3. Outlook separator lines (`---- Oorspronkelijk bericht ----`, `---- Original Message ----`).
 
-| Field | Description |
-|---|---|
-| `headline` | One-sentence event summary |
-| `ui_summary` | Short label for timeline display |
-| `detail_summary` | Longer narrative description |
-| `actors` | Named parties involved |
-| `tags` | Thematic tags |
-| `importance` | 1–5 score |
-| `phase` | Timeline phase label |
-| `confidence` | Model confidence in the enrichment |
-| `redactions` | Redaction codes present |
-
-Results are saved to a JSON file alongside the cache and can be reloaded without additional API calls.
-
----
-
-### Step 4 — HTML timeline (`visualisation.py`)
-
-`build_html()` produces a single self-contained HTML file with no external dependencies.
-
-**Timeline layout**
-
-Documents are laid out chronologically along a horizontal scrollable axis. Month labels are inserted when the year-month changes. Category filter chips at the top allow toggling visibility by document type.
-
-**Email documents** are exploded into individual cards at build time — one card per email, positioned at the email's own sent date rather than the document's date. Each card shows:
-- Van / Aan / CC as ministry pill tags. Ministry domains are resolved to short names (e.g. `Buitenlandse Zaken`). Multiple recipients from the same ministry collapse into one tag with a count badge (`×3`).
-- Subject line
-- Redaction code summary (counts per WOO ground)
-- Collapsible body with gradient fade; click anywhere on the card to expand
-
-**Non-email documents** show the first page as a thumbnail. Clicking the card opens a side panel where all pages of that document can be scrolled through.
-
-**Recipient resolution** — `_classify_domain()` maps known `@ministry.nl` domains to their short ministry names. Unknown external domains appear as `@domain (Extern)`.
-
-**Redaction display** — bare `5.1.x` / `5.2.x` codes in email bodies are rendered as styled `(REDACTED)` spans. Per-email and per-document summaries list total counts per code.
-
-**Boilerplate stripping** — `_strip_email_boilerplate()` removes confidentiality notices and saves-paper banners from email bodies before rendering.
+Both Dutch (`Van`, `Aan`, `Onderwerp`, `Verzonden`, `CC`) and English header field names are normalised before comparison. Each email gets an ID like `0003.2` with `subject`, `sender`, `to`, `cc`, `date` (YYYY-MM-DD), and `time` (HH:MM) fields.
 
 ---
 
@@ -238,16 +190,16 @@ Documents are laid out chronologically along a horizontal scrollable axis. Month
 
 | File | Role |
 |---|---|
-| `main.py` | Entry point — OCR pipeline |
-| `main_gpt4o.py` | Entry point — GPT-4o pipeline |
-| `pipeline_ocr.py` | PDF loading, stamp detection, OCR, document splitting |
-| `pipeline_gpt4o.py` | GPT-4o full-page text extraction, boundary detection, caching |
-| `event_enrichment.py` | Post-processes emails/chats into structured timeline events via GPT-4o |
+| `server.py` | FastAPI server — serves the frontend, proxies WOO database requests, exposes `/api/analyse` SSE endpoint |
+| `index.html` | WOOLens frontend — single-file vanilla JS + CSS, no build step; uses PDF.js for in-browser page rendering |
+| `pipeline_ocr.py` | OCR pipeline: stamp detection, pdfplumber + Tesseract text extraction, document splitting |
+| `pipeline_gpt4o.py` | GPT-4o pipeline: three-pass vision extraction, boundary detection, email extraction, cache management |
+| `pipeline_inventarislijst.py` | GPT-4o-mini vision extraction of WOO inventory table rows |
+| `email_splitter.py` | Splits email document text into individual emails with structured metadata |
 | `text_sorting.py` | Date extraction and chronological sorting |
-| `email_splitter.py` | Splits email document text into individual emails |
-| `visualisation.py` | Interactive HTML timeline generation (standalone CLI) |
-| `server.py` | FastAPI server — WOOLens proxy + `/api/analyse` SSE pipeline endpoint |
-| `diagnose_stamps.py` | Diagnostic tool — inspect stamp detection per page and region |
+| `requirements.txt` | Python dependencies |
+| `annotate.py` | Browser-based annotation tool for ground-truth labelling and pipeline comparison (development) |
+| `evaluate_pipelines.py` | Offline evaluation script — compares OCR vs GPT-4o on boundary detection and type classification (development) |
 
 ---
 
@@ -258,30 +210,48 @@ Both pipelines return `dict[str, dict]` keyed by document code. Each document co
 | Field | Type | Description |
 |---|---|---|
 | `doc_code` | `str` | 4-digit stamp code, `unknown_N`, or `auto_NNN` |
-| `pages` | `list[Image]` or `list[int]` | PIL page images (GPT-4o) or 1-based page numbers (OCR) |
+| `pages` | `list` | PIL page images (GPT-4o) or 1-based page numbers (OCR) |
 | `page_nums_in_doc` | `list[int\|None]` | Within-document page stamps |
 | `text` | `str` | Full extracted text |
 | `annotated_text` | `str` | Text with `[REDACTED: 5.1.2e]` markers |
 | `redaction_codes` | `dict[str, int]` | WOO redaction codes and their counts |
-| `category` | `str` | One of: E-mail, Chat, Nota, Brief, Report, Timeline, Vergadernotulen, Other |
-| `doc_subtype` | `str` | Fine-grained subtype (e.g. `kamerbrief`, `besluit`, `chat_sms`); `other` if not determined |
-| `method` | `str` | Extraction method used (`direct`, `ocr`, `gpt4o-stamp`, `gpt4o-boundary`) |
-
-The GPT-4o pipeline additionally sets `chat_name` and `chat_messages` on Chat documents.
+| `category` | `str` | E-mail, Chat, Nota, Brief, Report, Timeline, Vergadernotulen, or Other |
+| `doc_subtype` | `str` | Fine-grained subtype (e.g. `kamerbrief`, `chat_sms`); `other` if undetermined |
+| `method` | `str` | `direct`, `ocr`, `gpt4o-stamp`, or `gpt4o-boundary` |
+| `emails` | `list[dict]` | Structured emails (E-mail documents, GPT-4o pipeline) |
+| `chat_messages` | `list[dict]` | Structured chat messages (Chat documents, GPT-4o pipeline) |
 
 ---
 
-## Benchmarking
+## `/api/analyse` endpoint reference
 
-Both pipelines produce the same output schema. Run both on the same PDF and open the HTML files side by side:
+```
+POST /api/analyse
+Content-Type: multipart/form-data
 
-```bash
-python main.py --pdf dossier.pdf --out timeline_ocr.html
-python main_gpt4o.py --pdf dossier.pdf --out timeline_gpt4o.html
+pipeline:   "ocr" | "gpt4o"           (required)
+file:       <PDF upload>               (or use url)
+url:        <PDF URL>                  (or use file)
+api_key:    <OpenAI key>               (gpt4o only; falls back to OPENAI_API_KEY env var)
+page_start: <int>                      (optional — first page, 1-indexed)
+page_end:   <int>                      (optional — last page, 1-indexed)
 ```
 
-The GPT-4o cache preserves raw per-page extraction so the HTML can be regenerated without additional API costs:
+Returns `text/event-stream` with JSON events:
 
-```bash
-python main_gpt4o.py --pdf dossier.pdf --from-cache dossier_gpt4o_cache.json --out timeline_gpt4o.html
+```json
+{"type": "progress", "msg": "...", "pct": 0–100}
+{"type": "done",     "emails": [...], "timeline": [...], "stats": {...}}
+{"type": "error",    "msg": "..."}
 ```
+
+---
+
+## WOO redaction codes
+
+Legal grounds for redaction follow the pattern `5.[12].[1-9][a-z]{0,2}` (e.g. `5.1.2e`, `5.2.1`). They are:
+
+- Counted per document and stored in `redaction_codes`
+- Marked as `[REDACTED: 5.1.2e]` in `annotated_text`
+- Rendered as styled `(REDACTED)` spans in the frontend email body view
+- Summarised per document and per email in the timeline UI
