@@ -94,19 +94,63 @@ def ocr_boundaries(segments):
     return sorted({s["start_page"] for s in segments})
 
 
-def gpt4o_boundaries(pages):
+_NOTA_LIKE = frozenset({"Nota", "Brief", "Report", "Vergadernotulen"})
+
+
+def gpt4o_boundaries(gpt4o_data: dict) -> list[int]:
     """
-    Return sorted unique set of 0-indexed start pages.
-    page_num is 1-indexed; is_new_document=True marks a segment start.
-    Page 0 is always implicitly a boundary.
+    Return sorted 0-indexed start pages using the most authoritative source:
+
+    - boundary_documents (pass-2 LLM) for unstamped dossiers
+    - Forward-fill boundary logic for stamped dossiers — mirrors
+      _build_docs_forward_fill: a boundary is where the stamp code changes,
+      OR where within_doc_page==1 reoccurs on a nota-like doc within the same
+      stamp code (sub-split). This is what the pipeline actually produces.
+    - is_new_document flags as a last-resort fallback.
     """
-    boundaries = set()
+    pages = gpt4o_data.get("pages", [])
+    if not pages:
+        return []
+
+    bd = gpt4o_data.get("boundary_documents", [])
+    if bd:
+        # Unstamped: boundary_documents is the pass-2 LLM result (1-based start_page)
+        starts = {b["start_page"] - 1 for b in bd if b.get("start_page")}
+        starts.add(0)
+        return sorted(starts)
+
+    # Stamped: replicate _build_docs_forward_fill boundary detection
+    last_detected: str | None = None
+    boundaries: set[int] = {0}
+    for p in pages:
+        detected = p.get("doc_code")
+        wpn      = p.get("within_doc_page")
+        category = p.get("category", "Other")
+        is_new   = (p.get("is_new_document", False) or wpn == 1) and (wpn is None or wpn == 1)
+        pg0      = p["page_num"] - 1
+
+        if detected and detected != last_detected:
+            # Stamp changed — unambiguous new document
+            boundaries.add(pg0)
+            last_detected = detected
+        elif detected and is_new and category in _NOTA_LIKE:
+            # Same stamp but VLM sees a new nota-like heading — sub-split
+            boundaries.add(pg0)
+            last_detected = detected
+        elif detected:
+            last_detected = detected
+        elif is_new and last_detected is not None:
+            # Boundary but no stamp — new unknown segment
+            boundaries.add(pg0)
+            last_detected = None
+
+    if len(boundaries) > 1:
+        return sorted(boundaries)
+
+    # Fallback: is_new_document flags (pass-1 vision, rarely reliable)
     for p in pages:
         if p.get("is_new_document"):
-            boundaries.add(p["page_num"] - 1)  # convert to 0-indexed
-    # First page is always a boundary
-    if pages:
-        boundaries.add(0)
+            boundaries.add(p["page_num"] - 1)
     return sorted(boundaries)
 
 
@@ -298,7 +342,7 @@ def run():
         total_pages       = len(gpt4o_pages)
 
         ocr_bounds  = ocr_boundaries(ocr_segs)
-        gpt_bounds  = gpt4o_boundaries(gpt4o_pages)
+        gpt_bounds  = gpt4o_boundaries(gpt4o_data)
 
         print(f"\n  Pages: {total_pages}  |  GT segments: {len(gt_bounds)}")
 
