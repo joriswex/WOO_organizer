@@ -55,7 +55,8 @@ _SYSTEM_PROMPT = (
     "type changes) when no stamps are visible.\n"
     "- Stamp codes are typically stamped in a corner or at the bottom-centre/top-centre of each "
     "page. Common formats: 4-digit (e.g. 0143), 6-digit, 7-digit barcode (760XXXD where XXX is "
-    "the 3-digit document number), or a 'Doc XX' / 'Docnr XX' text label (first page only). "
+    "the 3-digit document number), or a 'Doc XX' / 'Docnr XX' text label — space optional "
+    "(e.g. 'Doc 5', 'Doc5', 'Docnr 23', 'Docnr23') — first page of each document only. "
     "All pages of the same document share the same code.\n"
     "- Some pages also show an incrementing per-page sequence counter (e.g. 00001, 00002, 00003 "
     "— unique per page, increases by 1 each page). These are NOT document codes; ignore them.\n"
@@ -142,8 +143,9 @@ DOCUMENT BOUNDARY RULES:
     * The page is blank or contains only a page separator / cover sheet
 - doc_code: check ALL four corners AND the bottom-centre/top-centre for a stamp code.
     * Common formats: 4-digit (e.g. "0143"), 6-digit, 7-digit barcode, or "Doc XX" / "Docnr XX"
-      label (e.g. "Doc 23", "Docnr 143"). For "Doc"/"Docnr" labels return the number zero-padded
-      to 4 digits (e.g. "Doc 23" → "0023", "Docnr 143" → "0143").
+      label — space between "Doc"/"Docnr" and the number is optional (e.g. "Doc 23", "Doc23",
+      "Docnr 143", "Docnr143" are all the same). Return the number zero-padded to 4 digits
+      (e.g. "Doc 23" → "0023", "Docnr143" → "0143").
     * Year-like numbers (1900–2099) are NOT document codes — ignore them.
     * Incrementing per-page sequence counters (e.g. 00001, 00002, 00003 — every page gets a
       different, incrementing number) are NOT document codes — ignore them.
@@ -246,6 +248,162 @@ EMAIL HEADER RULES (only when category = "Email"):
 - If multiple emails start on the same page: report only the FIRST one's header fields.
 - Non-email pages: email_start = false, all email_* fields = null.
 """
+
+
+# ── Pass-0: dossier profile ───────────────────────────────────────────────────
+# Profile is derived from a small pilot of real pass-1 calls; no separate prompt needed.
+
+_PROFILE_N_SAMPLES = 8    # pilot pages run through full pass-1 to determine stamp format
+
+
+def _profile_dossier(images: list, client) -> tuple[dict, dict[int, dict]]:
+    """
+    Pass 0: run a small pilot of real pass-1 calls on a spread of pages, then
+    determine the stamp format from the returned doc_code values in Python.
+
+    This is more reliable than asking GPT-4o to compare images directly, because
+    Python can count exact code repetitions — distinguishing a repeating document
+    code from an incrementing per-page counter whose digits look visually similar.
+
+    The pilot page results are returned so load_pdf_vlm() can slot them directly
+    into the main pass-1 loop, avoiding double-processing of those pages.
+
+    Returns:
+        profile       — dict: stamp_format, stamp_example, notes
+        pilot_results — {page_index: raw_gpt4o_result} for reuse in the main loop
+    """
+    total = len(images)
+    n     = min(_PROFILE_N_SAMPLES, total)
+
+    if total <= n:
+        indices = list(range(total))
+    else:
+        # Evenly distributed + a cluster of 4 consecutive pages around 35% of the doc.
+        # The cluster ensures adjacent pages are seen together so same-document code
+        # repetition is visible even in dense dossiers with many short documents.
+        n_cluster     = min(4, n // 2)
+        n_spread      = n - n_cluster
+        cluster_start = max(0, round(total * 0.35) - n_cluster // 2)
+        cluster_idx   = list(range(cluster_start, min(total, cluster_start + n_cluster)))
+        step          = (total - 1) / max(n_spread - 1, 1)
+        spread_idx    = [round(i * step) for i in range(n_spread)]
+        indices       = sorted(set(cluster_idx) | set(spread_idx))
+
+    print(f"[gpt4o] Pass 0: pilot run on {len(indices)} pages to profile stamp format...")
+
+    # Run pilot pages through the real pass-1 call (no hint yet — generic prompt)
+    pilot_results: dict[int, dict] = {}
+    for idx in indices:
+        b64 = _encode_image(images[idx])
+        pilot_results[idx] = _call_gpt4o(b64, client, idx, pdf_page_num=idx + 1)
+
+    # ── Analyse returned doc_codes in Python ──────────────────────────────────
+    raw_strs  = [str(pilot_results[i].get("doc_code") or "") for i in indices]
+    norm_codes = [_normalise_doc_code(pilot_results[i].get("doc_code")) for i in indices]
+    valid      = [c for c in norm_codes if c]
+    code_freq  = Counter(valid)
+
+    # DocnrXX: GPT-4o normalises "Docnr5" → "0005" BUT the raw string still contains
+    # "docnr" / "doc" — check raw strings before normalisation.
+    has_docnr = any(re.search(r"docnr?\s*\d", s, re.IGNORECASE) for s in raw_strs)
+
+    if has_docnr:
+        fmt     = "docnr"
+        example = next((s for s in raw_strs
+                        if re.search(r"docnr?\s*\d", s, re.IGNORECASE)), None)
+        notes   = f"DocnrXX label detected in pilot (raw: {example!r})"
+
+    elif not valid:
+        fmt     = "none"
+        example = None
+        notes   = "No stamp codes returned by pass-1 on pilot pages"
+
+    else:
+        # Determine format from raw digit lengths (before normalisation collapses them).
+        # 4-digit is the most common WOO stamp format — prefer it whenever any pilot
+        # page returned a 4-digit code, even if longer codes are more frequent
+        # (longer codes are often per-page counters that coexist with the real stamp).
+        raw_digit_lens = [len(re.sub(r"\D", "", s)) for s in raw_strs if s]
+        dominant_len   = Counter(raw_digit_lens).most_common(1)[0][0] if raw_digit_lens else 4
+        if any(l == 4 for l in raw_digit_lens):
+            fmt = "4-digit"
+        elif dominant_len <= 6:
+            fmt = "6-digit"
+        else:
+            fmt = "7-digit"
+
+        # Prefer the most frequent normalised code as the example
+        repeats = {c: cnt for c, cnt in code_freq.items() if cnt >= 2}
+        example = max(repeats, key=lambda c: repeats[c]) if repeats else (valid[0] if valid else None)
+
+        if repeats:
+            top_code = max(repeats, key=lambda c: repeats[c])
+            notes = (f"Code {top_code!r} seen {repeats[top_code]}× in pilot "
+                     f"({len(set(valid))} distinct codes across {len(indices)} pages)")
+        else:
+            notes = (f"No repeats in pilot ({len(indices)} pages, "
+                     f"{len(set(valid))} distinct codes) — format inferred from digit length")
+
+    print(f"[gpt4o] Pass 0 result: format={fmt}, example={example!r} | {notes}")
+    return {"stamp_format": fmt, "stamp_example": example, "notes": notes}, pilot_results
+
+
+def _profile_to_hint(profile: dict) -> str:
+    """
+    Convert a pass-0 dossier profile into a concrete system-prompt addition
+    that steers pass-1 toward the correct stamp format and location.
+    Returns an empty string when no useful profile is available.
+    """
+    fmt  = profile.get("stamp_format", "")
+    loc  = profile.get("stamp_location", "")
+    ex   = profile.get("stamp_example")
+    notes = profile.get("notes", "")
+
+    loc_str = f" in the {loc}" if loc not in ("", "unknown", "multiple") else ""
+    ex_str  = f' (example seen: "{ex}")' if ex else ""
+    note_str = f" Note: {notes}" if notes else ""
+
+    if fmt == "none":
+        return (
+            "DOSSIER-SPECIFIC OVERRIDE: This dossier contains NO document stamp codes. "
+            "Always return null for doc_code on every page. "
+            "Use content signals only (email headers, page counters, document headings) "
+            "for is_new_document."
+        )
+    if fmt == "docnr":
+        loc_hint = f" (typically seen {loc_str.strip()}, but check ALL four corners)" if loc_str else " (check ALL four corners)"
+        return (
+            f"DOSSIER-SPECIFIC OVERRIDE: This dossier uses 'DocnrXX' / 'DocXX' text labels"
+            f"{loc_hint} to identify documents{ex_str}. "
+            "Space between 'Docnr'/'Doc' and the number is optional. "
+            "These labels appear ONLY on the FIRST page of each document; "
+            "continuation pages have no label — return null for doc_code on those pages. "
+            "is_new_document = true when a 'Doc'/'Docnr' label is visible in any corner. "
+            f"Ignore all other numbers for doc_code.{note_str}"
+        )
+    if fmt == "4-digit":
+        return (
+            f"DOSSIER-SPECIFIC OVERRIDE: This dossier uses 4-digit stamp codes"
+            f"{loc_str}{ex_str}. "
+            "Every page of the same document shares the same code; a code change signals a new document. "
+            "For doc_code: look only for a 4-digit number with a leading zero stamped in the "
+            f"corners or top/bottom strip — not in the body text.{note_str}"
+        )
+    if fmt == "6-digit":
+        return (
+            f"DOSSIER-SPECIFIC OVERRIDE: This dossier uses 6-digit stamp codes"
+            f"{loc_str}{ex_str}. "
+            f"Every page of the same document shares the same code.{note_str}"
+        )
+    if fmt in ("7-digit", "barcode-7digit"):
+        return (
+            f"DOSSIER-SPECIFIC OVERRIDE: This dossier uses 7-digit stamp codes"
+            f"{loc_str}{ex_str}. "
+            "Report the full 7-digit code exactly as it appears — do not shorten or reformat it. "
+            "Every page of the same document shares the same 7-digit code; "
+            f"a code change means a new document starts.{note_str}"
+        )
+    return ""   # unknown format — fall back to the generic prompt
 
 
 # ── Category normalisation ────────────────────────────────────────────────────
@@ -381,9 +539,11 @@ def _repair_truncated_json(raw: str) -> dict:
 
 # ── GPT-4o call ───────────────────────────────────────────────────────────────
 
-def _call_gpt4o(image_b64: str, client, page_index: int, pdf_page_num: int) -> dict:
+def _call_gpt4o(image_b64: str, client, page_index: int, pdf_page_num: int,
+                system_hint: str = "") -> dict:
     """Call GPT-4o vision with retry logic. Returns parsed JSON dict."""
-    page_hint = f"[PDF page {pdf_page_num}]\n\n"
+    page_hint  = f"[PDF page {pdf_page_num}]\n\n"
+    system_msg = _SYSTEM_PROMPT + ("\n\n" + system_hint if system_hint else "")
     for attempt in range(_MAX_RETRIES):
         try:
             response = client.chat.completions.create(
@@ -392,7 +552,7 @@ def _call_gpt4o(image_b64: str, client, page_index: int, pdf_page_num: int) -> d
                 temperature=0,
                 response_format={"type": "json_object"},
                 messages=[
-                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {"role": "system", "content": system_msg},
                     {
                         "role": "user",
                         "content": [
@@ -497,7 +657,8 @@ def _normalise_doc_code(raw) -> str | None:
 
 # ── Cache helpers ─────────────────────────────────────────────────────────────
 
-def save_cache(page_data: list[dict], cache_path: Path) -> None:
+def save_cache(page_data: list[dict], cache_path: Path,
+               dossier_profile: dict | None = None) -> None:
     """Save per-page text/metadata to JSON. Images are excluded (re-rendered on load)."""
     payload = [
         {
@@ -521,8 +682,11 @@ def save_cache(page_data: list[dict], cache_path: Path) -> None:
         }
         for p in page_data
     ]
+    root: dict = {"dpi": _RENDER_DPI, "pages": payload}
+    if dossier_profile:
+        root["dossier_profile"] = dossier_profile
     with open(cache_path, "w", encoding="utf-8") as f:
-        json.dump({"dpi": _RENDER_DPI, "pages": payload}, f, ensure_ascii=False, indent=2)
+        json.dump(root, f, ensure_ascii=False, indent=2)
     print(f"[gpt4o] Cache saved → {cache_path}")
 
 
@@ -686,17 +850,25 @@ def load_pdf_vlm(
     total = len(images)
     print(f"[gpt4o] Analysing {total} pages with {OPENAI_MODEL} (detail=high, workers={_MAX_WORKERS})...")
 
+    # ── Pass 0: pilot run to profile stamp format ────────────────────────────
+    profile, pilot_results = _profile_dossier(images, client)
+    system_hint            = _profile_to_hint(profile)
+
     # ── Stage 1: per-page GPT-4o analysis (parallel) ────────────────────────
+    # Pilot pages already have results — only submit the remaining pages.
     def _process_page(args: tuple[int, Image.Image]) -> tuple[int, dict]:
         i, img = args
         image_b64 = _encode_image(img)
-        return i, _call_gpt4o(image_b64, client, i, pdf_page_num=i + 1 + page_offset)
+        return i, _call_gpt4o(image_b64, client, i, pdf_page_num=i + 1 + page_offset,
+                               system_hint=system_hint)
 
-    raw_results: dict[int, dict] = {}
-    completed = 0
+    raw_results: dict[int, dict] = dict(pilot_results)  # seed with pilot data
+    completed = len(pilot_results)
+
+    remaining = [(i, img) for i, img in enumerate(images) if i not in pilot_results]
 
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as executor:
-        futures = {executor.submit(_process_page, (i, img)): i for i, img in enumerate(images)}
+        futures = {executor.submit(_process_page, (i, img)): i for i, img in remaining}
         for future in as_completed(futures):
             i, result = future.result()
             completed += 1
@@ -762,7 +934,7 @@ def load_pdf_vlm(
 
     # ── Save cache ───────────────────────────────────────────────────────────
     if cache_path:
-        save_cache(page_data, cache_path)
+        save_cache(page_data, cache_path, dossier_profile=profile)
 
     return _finalise_pipeline(page_data, client=client, cache_path=cache_path)
 
@@ -929,8 +1101,16 @@ Extraction rules:
     "DD/MM/YYYY"           → "YYYY-MM-DD"
   Return null only if truly no date is present.
 - time: if a visible sent time exists, return it as HH:MM. Otherwise return null.
-- attachments: look for "Bijlage:", "Bijlagen:", "Attachment:", or filenames (.pdf, .docx, .xlsx, etc.).
-  Return [] if none found.
+- attachments: collect filenames of files attached to this email. They appear in two ways:
+    1. After a "Bijlage(n):" / "Attachment(s):" / "Bijlage:" label — list each filename
+    2. As bare standalone lines (inside or immediately after the header block, or at the end of the
+       email body) that consist of nothing but a filename with a document extension, e.g.:
+         "Rapport_Q3.pdf"
+         "overzicht kiosken.xlsx"
+         "brief aan gemeente.docx"
+       Recognised extensions: .pdf .doc .docx .xls .xlsx .ppt .pptx .msg .eml .zip .csv .txt .png .jpg .jpeg
+  Do NOT include sentences from the body that merely mention a filename.
+  Return [] if no attachments are found.
 - body: message body only — strip all Van/Aan/CC/Onderwerp/Datum header lines from the top.
   Preserve [GELAKT: 5.1.2e] markers exactly as found.
 - sender: name only. Strip angle brackets and email addresses entirely.
@@ -1003,6 +1183,78 @@ def _extract_emails_full_doc(code: str, text: str, client) -> list[dict]:
     return []
 
 
+# ── Inventarislijst boundary hint ─────────────────────────────────────────────
+
+# Header lines to skip when parsing inventarislijst rows
+_INV_SKIP_RE = re.compile(
+    r'^\s*(?:ProcesId|Document\s+nummer|Bestandsnaam|Inventarislijst|'
+    r'Titel|Nr\.?\s|Nummer|Kenmerk|Datum|Pagina|Omschrijving|'
+    r'Besluit|Weigeringsgrond|Openbaarheid|#\s)',
+    re.IGNORECASE,
+)
+# Data row: optional procesId (3–7 digits) + doc number (1–4 digits) + title
+_INV_ROW_RE = re.compile(
+    r'^\s*(?:\d{3,7}\s+)?'   # optional procesId (e.g. 6839)
+    r'(0?\d{1,4})\b\s+'      # doc number
+    r'(.{4,})',               # rest of line (title + optional grounds)
+)
+# Trailing transparency decisions / WOO grounds to strip from the end of the title.
+# \bBR\b prevents matching word-starts like "brief" or "Brf" — BR is a standalone code.
+_INV_GROUNDS_RE = re.compile(
+    r'\s+(?:5\.[12]\.\d\w*|\bBR\b|niet\s+openbaar|gedeeltelijk\s+openbaar|openbaar).*$',
+    re.IGNORECASE,
+)
+
+
+def _extract_inventarislijst_hint(page_data: list[dict]) -> str:
+    """
+    Scan pass-1 output for Inventarislijst pages and extract the document list.
+    Detection uses the category field set by the VLM — no header keyword required,
+    so tables without an 'Inventarislijst' heading are handled correctly.
+    Returns a formatted hint string for the pass-2 boundary prompt, or "" if none found.
+    """
+    inv_pages = [
+        p for p in page_data
+        if p.get("category") == "Inventarislijst" and p.get("text", "").strip()
+    ]
+    if not inv_pages:
+        return ""
+
+    items: list[tuple[str, str]] = []
+    seen:  set[str] = set()
+
+    for p in inv_pages:
+        for line in p.get("text", "").splitlines():
+            line = line.strip()
+            if not line or _INV_SKIP_RE.match(line):
+                continue
+            m = _INV_ROW_RE.match(line)
+            if not m:
+                continue
+            num_raw = m.group(1)
+            title   = _INV_GROUNDS_RE.sub("", m.group(2)).strip().rstrip(".,")
+            if not num_raw.isdigit() or len(title) < 4:
+                continue
+            num = num_raw.zfill(4)
+            if num in seen:
+                continue
+            seen.add(num)
+            items.append((num, title))
+
+    if not items:
+        return ""
+
+    out = [
+        f"INVENTARISLIJST — this dossier contains {len(items)} document(s).",
+        "When a page's email subject, letter heading, or document title matches one of",
+        "the entries below, treat it as a boundary signal for that document:",
+        "",
+    ]
+    for num, title in sorted(items):
+        out.append(f"  [{num}] {title}")
+    return "\n".join(out)
+
+
 _STAMP_NOISE_RE = re.compile(r"^\s*(?:\d{4,}|[A-Z]{2,}\d+|\[PDF page \d+\])\s*", re.IGNORECASE)
 
 
@@ -1040,9 +1292,10 @@ def _build_page_summary(page_data: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _call_boundary_pass(summary: str, n_pages: int, client) -> list[dict]:
+def _call_boundary_pass(summary: str, n_pages: int, client, inv_hint: str = "") -> list[dict]:
     """Single GPT-4o-mini text-only call that returns document + email boundaries."""
-    prompt = _BOUNDARY_PROMPT.format(n=n_pages, summary=summary)
+    hint_prefix = inv_hint + "\n\n" if inv_hint else ""
+    prompt = hint_prefix + _BOUNDARY_PROMPT.format(n=n_pages, summary=summary)
     for attempt in range(_MAX_RETRIES):
         try:
             response = client.chat.completions.create(
@@ -1141,8 +1394,12 @@ def _finalise_pipeline(
         method   = "gpt4o-2pass"
     elif client is not None:
         print(f"[gpt4o] No reliable stamps ({coverage:.0%}) — running pass 2 (LLM boundary detection)...")
+        inv_hint  = _extract_inventarislijst_hint(page_data)
+        if inv_hint:
+            n_docs = sum(1 for l in inv_hint.splitlines() if l.startswith("  ["))
+            print(f"[gpt4o] Inventarislijst hint: {n_docs} document(s) — injecting into pass 2.")
         summary   = _build_page_summary(page_data)
-        documents = _call_boundary_pass(summary, len(page_data), client)
+        documents = _call_boundary_pass(summary, len(page_data), client, inv_hint=inv_hint)
         if documents:
             docs_raw = _build_docs_from_boundaries(page_data, documents)
             method   = "gpt4o-2pass"

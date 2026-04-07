@@ -198,11 +198,50 @@ def type_accuracy(gt_boundaries, gt_annotations, ocr_segments, gpt4o_pages, tota
     return results, ocr_acc, gpt4o_acc
 
 
+def _resolve_gpt4o_code(start_0indexed: int, gpt4o_data: dict) -> str | None:
+    """
+    Find the final pipeline doc code the GPT-4o pipeline assigned to the page at
+    start_0indexed. The source depends on how the pipeline built its docs:
+
+    1. boundary_documents (pass-2 LLM) — present for unstamped dossiers.
+       emails_by_doc keys are derived directly from boundary_documents, so this is
+       the authoritative source when it exists. start_page values are 1-based.
+    2. Per-page doc_code — fallback for stamped dossiers using forward-fill
+       (boundary_documents absent; docs keyed by stamp code directly).
+    """
+    import re as _re
+
+    bd = gpt4o_data.get("boundary_documents", [])
+    if bd:
+        docs_sorted = sorted(bd, key=lambda d: d.get("start_page", 1))
+        containing_idx = None
+        for i, doc in enumerate(docs_sorted):
+            # boundary_documents start_page is 1-based; convert to 0-based
+            if doc.get("start_page", 1) - 1 <= start_0indexed:
+                containing_idx = i
+            else:
+                break
+        if containing_idx is None:
+            return None
+        raw_code = docs_sorted[containing_idx].get("doc_code")
+        if raw_code:
+            s = _re.sub(r"\D", "", str(raw_code))
+            if len(s) == 4 and _re.fullmatch(r"0\d{3}", s) and not _re.fullmatch(r"(19|20)\d{2}", s):
+                return s
+        return f"auto_{containing_idx + 1:03d}"
+
+    # No boundary_documents → stamped dossier using forward-fill
+    pages = gpt4o_data.get("pages", [])
+    first_page = next((p for p in pages if p["page_num"] - 1 == start_0indexed), None)
+    if first_page and first_page.get("doc_code"):
+        return first_page["doc_code"]
+    return None
+
+
 def email_count_accuracy(gt_boundaries, gt_annotations, ocr_segments, gpt4o_data, total_pages):
     """Compare email sub-document counts for Email-typed GT segments."""
     results = []
     emails_by_doc = gpt4o_data.get("emails_by_doc", {})
-    gpt4o_pages  = gpt4o_data["pages"]
 
     for i, start in enumerate(gt_boundaries):
         end = gt_boundaries[i + 1] - 1 if i + 1 < len(gt_boundaries) else total_pages - 1
@@ -220,13 +259,10 @@ def email_count_accuracy(gt_boundaries, gt_annotations, ocr_segments, gpt4o_data
                 ocr_emails = seg.get("num_emails", None)
                 break
 
-        # GPT-4o: look up emails_by_doc using doc_code from first page of segment
-        first_page = next(
-            (p for p in gpt4o_pages if p["page_num"] - 1 == start), None
-        )
+        # GPT-4o: resolve the pipeline doc code (stamped or auto_XXX) and look up
+        code = _resolve_gpt4o_code(start, gpt4o_data)
         gpt_emails = None
-        if first_page and first_page.get("doc_code"):
-            code = first_page["doc_code"]
+        if code:
             entries = emails_by_doc.get(code, [])
             gpt_emails = len(entries) if entries else None
 
