@@ -2132,6 +2132,104 @@
     line-height: 1.6;
   }
 
+  /* ── IN-DOCUMENT SEARCH ── */
+  .in-doc-search-wrap {
+    max-width: 680px;
+    margin: 0 auto;
+    padding: 4px 2px 16px;
+  }
+  .in-doc-search-input-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 16px;
+  }
+  .in-doc-search-field {
+    flex: 1;
+    padding: 10px 16px;
+    border: 1.5px solid var(--woo-border);
+    border-radius: var(--woo-radius-pill);
+    font-family: var(--woo-font);
+    font-size: 14px;
+    color: var(--woo-text);
+    background: var(--woo-white);
+    outline: none;
+    transition: border-color 0.15s, box-shadow 0.15s;
+    box-shadow: var(--woo-shadow-sm);
+  }
+  .in-doc-search-field:focus {
+    border-color: var(--woo-dark);
+    box-shadow: 0 0 0 3px rgba(56,5,4,0.08);
+  }
+  .in-doc-search-field::placeholder { color: var(--text-dimmer); }
+  .in-doc-search-count {
+    font-family: var(--woo-mono);
+    font-size: 11px;
+    color: var(--text-dimmer);
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .in-doc-search-results {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .in-doc-result-card {
+    background: var(--woo-white);
+    border: 1px solid var(--woo-border);
+    border-radius: var(--woo-radius-md);
+    padding: 13px 16px;
+    cursor: pointer;
+    transition: border-color 0.15s, box-shadow 0.15s;
+    box-shadow: var(--woo-shadow-sm);
+    animation: fadeUp 0.2s ease forwards;
+  }
+  .in-doc-result-card:hover { border-color: var(--border-bright); box-shadow: var(--woo-shadow-md); }
+  .in-doc-result-card-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+  .in-doc-result-title {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--woo-text-link);
+    line-height: 1.4;
+    margin-bottom: 5px;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .in-doc-result-card:hover .in-doc-result-title { color: var(--woo-text-link-hover); }
+  .in-doc-result-meta {
+    font-family: var(--woo-mono);
+    font-size: 10px;
+    color: var(--text-dimmer);
+    margin-bottom: 8px;
+  }
+  .in-doc-result-snippet {
+    font-size: 12px;
+    color: var(--woo-text-muted);
+    line-height: 1.55;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    padding: 8px 10px;
+    background: var(--woo-bg);
+    border-radius: var(--woo-radius-sm);
+    border: 1px solid var(--woo-border);
+  }
+  .in-doc-result-snippet mark {
+    background: rgba(255,200,0,0.4);
+    color: inherit;
+    border-radius: 2px;
+    padding: 0 1px;
+    font-style: normal;
+  }
+
   /* ── DOCUMENT BROWSER ── */
   .doc-browser { display: flex; flex-direction: column; height: 100%; background: var(--woo-bg); }
   .doc-browser-header {
@@ -2376,6 +2474,7 @@
           <button class="view-tab" id="tabOverig" onclick="setViewTab('overig')">Overig</button>
           <button class="view-tab" id="tabTimeline" onclick="setViewTab('timeline')">Tijdlijn</button>
           <button class="view-tab" id="tabSummary" onclick="setViewTab('summary')">✦ Samenvatting</button>
+          <button class="view-tab" id="tabSearch" onclick="setViewTab('search')">Zoeken</button>
         </div>
       </div>
       <div class="toolbar-actions">
@@ -2545,6 +2644,8 @@ const state = {
   chatFocusedSourceId: null,
   chatFocusedDate: null,
   timelineItems: [],
+  inDocSearchQuery: '',
+  inDocSearchResults: [],
   overigSelectedId: null,
   timelineSummary: null,
   timelineSummaryLoading: false,
@@ -3565,6 +3666,7 @@ function setViewTab(tab) {
   else if (tab === 'overig') renderOverigView(content);
   else if (tab === 'timeline') renderTimelineView(content);
   else if (tab === 'summary') renderSummaryView(content);
+  else if (tab === 'search') renderSearchView(content);
   else renderOverigView(content);
 }
 
@@ -4319,8 +4421,8 @@ function openDocTextPreview(item) {
   const container  = document.getElementById('viewerContent');
   const dateDisp   = item.date ? formatDisplayDate(item.date) : '—';
   const currentTab = state.viewTab || 'timeline';
-  const backLabel  = currentTab === 'overig' ? '‹ Ga terug' : '‹ Tijdlijn';
-  const backFn     = currentTab === 'overig' ? `setViewTab('overig')` : `setViewTab('timeline')`;
+  const backLabel  = currentTab === 'search' ? '‹ Zoekresultaten' : currentTab === 'overig' ? '‹ Ga terug' : '‹ Tijdlijn';
+  const backFn     = currentTab === 'search' ? `setViewTab('search')` : currentTab === 'overig' ? `setViewTab('overig')` : `setViewTab('timeline')`;
 
   // Resolve PDF URL — three sources in priority order:
   // 1. item.pdfUrl  (search result documents from WOO API)
@@ -4893,9 +4995,11 @@ function openIphoneMail(idx) {
   const tlItem  = (state.timelineItems || []).find(t => t.id === docCode);
   const hasPdf  = !!(state.pdfSource && tlItem?.pdf_page_start);
 
-  const backLabel = sourceTab === 'timeline' ? '‹ Tijdlijn' : '‹ Alle e-mails';
+  const backLabel = sourceTab === 'timeline' ? '‹ Tijdlijn' : sourceTab === 'search' ? '‹ Zoekresultaten' : '‹ Alle e-mails';
   const backFn    = sourceTab === 'timeline'
     ? '_backToTimeline()'
+    : sourceTab === 'search'
+    ? 'setViewTab(\'search\')'
     : 'renderEmailView(document.getElementById(\'viewerContent\'))';
 
   const actionBtnStyle = 'display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:6px;border:1px solid var(--woo-border);background:var(--woo-white);color:var(--woo-text);font-size:11px;cursor:pointer;white-space:nowrap;font-family:var(--woo-sans)';
@@ -5715,6 +5819,196 @@ function renderOverigView(container) {
       `).join('')}
     </div>
   `;
+}
+
+// ─────────────────────────────────────────────
+// IN-DOCUMENT SEARCH
+// ─────────────────────────────────────────────
+
+function renderSearchView(container) {
+  const q = state.inDocSearchQuery || '';
+  const results = state.inDocSearchResults || [];
+  const hasData = (state.emails.length + (state.chats||[]).length + getOverigDocs().length) > 0;
+
+  container.innerHTML = `
+    <div class="in-doc-search-wrap">
+      <div class="in-doc-search-input-row">
+        <input class="in-doc-search-field" id="inDocSearchField" type="text"
+               placeholder="Zoek in e-mails, chats en documenten…"
+               value="${escHtml(q)}"
+               oninput="_onInDocSearchInput(this.value)">
+        <div class="in-doc-search-count" id="inDocSearchCount">${q && results.length ? results.length + ' resultaten' : ''}</div>
+      </div>
+      <div class="in-doc-search-results" id="inDocSearchResults">
+        ${_inDocResultsHtml(q, results, hasData)}
+      </div>
+    </div>
+  `;
+
+  const field = document.getElementById('inDocSearchField');
+  if (field) { field.focus(); field.setSelectionRange(field.value.length, field.value.length); }
+}
+
+function _inDocResultsHtml(q, results, hasData) {
+  if (!hasData) return `<div class="empty-state"><div class="big-char">§</div><p>Analyseer eerst een dossier<br>om hierin te kunnen zoeken.</p></div>`;
+  if (!q) return `<div style="padding:32px 0;text-align:center;color:var(--text-dimmer);font-family:var(--woo-font);font-size:13px">Typ een zoekterm om te zoeken<br>in e-mails, chats en documenten.</div>`;
+  if (!results.length) return `<div style="padding:32px 0;text-align:center;color:var(--text-dimmer);font-family:var(--woo-font);font-size:13px">Geen resultaten voor <em>${escHtml(q)}</em></div>`;
+  return results.map(_renderInDocResultCard).join('');
+}
+
+const _inDocSearchDebounce = debounce(q => {
+  state.inDocSearchQuery = q;
+  state.inDocSearchResults = q.trim().length >= 2 ? runInDocSearch(q) : [];
+  const resultsEl = document.getElementById('inDocSearchResults');
+  const countEl   = document.getElementById('inDocSearchCount');
+  const hasData   = (state.emails.length + (state.chats||[]).length + getOverigDocs().length) > 0;
+  if (resultsEl) resultsEl.innerHTML = _inDocResultsHtml(state.inDocSearchQuery, state.inDocSearchResults, hasData);
+  if (countEl)   countEl.textContent = q && state.inDocSearchResults.length ? state.inDocSearchResults.length + ' resultaten' : '';
+}, 200);
+
+function _onInDocSearchInput(val) { _inDocSearchDebounce(val); }
+
+function runInDocSearch(query) {
+  if (!query || query.trim().length < 2) return [];
+  const q = query.trim().toLowerCase();
+  const results = [];
+
+  function getSnippet(text, q) {
+    if (!text) return '';
+    const idx = text.toLowerCase().indexOf(q);
+    if (idx < 0) return text.slice(0, 150);
+    const start = Math.max(0, idx - 60);
+    const end   = Math.min(text.length, idx + q.length + 100);
+    return (start > 0 ? '…' : '') + text.slice(start, end) + (end < text.length ? '…' : '');
+  }
+
+  function highlightSnippet(snippet, q) {
+    if (!snippet || !q) return escHtml(snippet || '');
+    const parts = [];
+    let rem = snippet;
+    const ql = q.toLowerCase();
+    while (rem.length > 0) {
+      const idx = rem.toLowerCase().indexOf(ql);
+      if (idx < 0) { parts.push(escHtml(rem)); break; }
+      if (idx > 0) parts.push(escHtml(rem.slice(0, idx)));
+      parts.push(`<mark>${escHtml(rem.slice(idx, idx + q.length))}</mark>`);
+      rem = rem.slice(idx + q.length);
+    }
+    return parts.join('');
+  }
+
+  function countMatches(text, q) {
+    if (!text || !q) return 0;
+    let count = 0, idx = 0;
+    const tl = text.toLowerCase();
+    while ((idx = tl.indexOf(q, idx)) >= 0) { count++; idx += q.length; }
+    return count;
+  }
+
+  // ── Emails ──
+  const sortedEmails = (_sortedEmails && _sortedEmails.length) ? _sortedEmails : (_buildThreadedEmailList ? _buildThreadedEmailList(state.emails) : state.emails);
+  sortedEmails.forEach((email, idx) => {
+    const searchable = [email.subject, email.sender, email.to, email.cc, email.text].filter(Boolean).join(' ');
+    if (!searchable.toLowerCase().includes(q)) return;
+    const snippetSrc = email.text || email.subject || '';
+    const snippet    = getSnippet(snippetSrc, q);
+    const metaParts  = [email.sender && `Van: ${email.sender}`, email.date].filter(Boolean);
+    results.push({
+      kind: 'email', id: email.id, idx,
+      title: email.subject || '(geen onderwerp)',
+      badge: 'E-mail', badgeClass: 'badge-email',
+      meta: metaParts.join(' · '),
+      highlightedSnippet: highlightSnippet(snippet, query.trim()),
+      matchCount: countMatches(searchable, q),
+    });
+  });
+
+  // ── Chats ──
+  (state.chats || []).forEach((chat, chatIdx) => {
+    const msgs = (chat.berichten || []).map(m => m.body || '').join(' ');
+    const searchable = [chat.chatName, ...(chat.deelnemers || []), msgs].filter(Boolean).join(' ');
+    if (!searchable.toLowerCase().includes(q)) return;
+    const snippetSrc = msgs || chat.chatName || '';
+    const snippet    = getSnippet(snippetSrc, q);
+    results.push({
+      kind: 'chat', id: chat.sourceDocId || `chat-${chatIdx}`, chatIdx,
+      title: chat.chatName || 'Chat',
+      badge: 'Chat', badgeClass: 'badge-other',
+      meta: (chat.deelnemers || []).filter(Boolean).join(', '),
+      highlightedSnippet: highlightSnippet(snippet, query.trim()),
+      matchCount: countMatches(searchable, q),
+    });
+  });
+
+  // ── Overig docs ──
+  getOverigDocs().forEach(item => {
+    const searchable = [item.title, item.description].filter(Boolean).join(' ');
+    if (!searchable.toLowerCase().includes(q)) return;
+    const snippetSrc = item.description || item.title || '';
+    const snippet    = getSnippet(snippetSrc, q);
+    results.push({
+      kind: 'overig', id: item.id,
+      title: item.title || 'Document',
+      badge: item.type || 'Document', badgeClass: getBadgeClass(item.type),
+      meta: item.date || '',
+      highlightedSnippet: highlightSnippet(snippet, query.trim()),
+      matchCount: countMatches(searchable, q),
+    });
+  });
+
+  results.sort((a, b) => b.matchCount - a.matchCount);
+  return results;
+}
+
+function _renderInDocResultCard(result) {
+  const onclickFn = result.kind === 'email'
+    ? `_openEmailFromSearch(${result.idx})`
+    : result.kind === 'chat'
+    ? `_openChatFromSearch('${escHtml(result.id)}')`
+    : `_openOverigFromSearch('${escHtml(result.id)}')`;
+
+  return `
+    <div class="in-doc-result-card" onclick="${onclickFn}">
+      <div class="in-doc-result-card-header">
+        <span class="result-type-badge ${result.badgeClass}">${escHtml(result.badge)}</span>
+        ${result.matchCount > 1 ? `<span style="font-family:var(--woo-mono);font-size:10px;color:var(--text-dimmer)">${result.matchCount}×</span>` : ''}
+      </div>
+      <div class="in-doc-result-title">${escHtml(result.title)}</div>
+      ${result.meta ? `<div class="in-doc-result-meta">${escHtml(result.meta)}</div>` : ''}
+      ${result.highlightedSnippet ? `<div class="in-doc-result-snippet">${result.highlightedSnippet}</div>` : ''}
+    </div>
+  `;
+}
+
+function _openEmailFromSearch(idx) {
+  state.viewTab = 'search';
+  if (!_sortedEmails || !_sortedEmails.length) {
+    _sortedEmails = _buildThreadedEmailList(state.emails);
+  }
+  openIphoneMail(idx);
+}
+
+function _openChatFromSearch(sourceDocId) {
+  state.chatFocusedSourceId = sourceDocId || null;
+  state.chatFocusedDate = null;
+  const container = document.getElementById('viewerContent');
+  renderChatsView(container);
+  container.insertAdjacentHTML('afterbegin', `
+    <div class="iphone-detail-back woo-back-link" onclick="setViewTab('search')" style="margin-bottom:10px">
+      ‹ Zoekresultaten
+    </div>
+  `);
+  setTimeout(() => {
+    const focused = container.querySelector('.chat-thread-card.focused');
+    if (focused) focused.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, 50);
+}
+
+function _openOverigFromSearch(id) {
+  state.viewTab = 'search';
+  const item = state.timelineItems.find(t => t.id === id);
+  if (!item) return;
+  openDocTextPreview(item);
 }
 
 // ─────────────────────────────────────────────
