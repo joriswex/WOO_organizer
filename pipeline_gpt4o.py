@@ -406,6 +406,206 @@ def _profile_to_hint(profile: dict) -> str:
     return ""   # unknown format — fall back to the generic prompt
 
 
+# ── Raster stamp survey (pass-0b, runs before GPT-4o) ────────────────────────
+
+def _raster_stamp_survey(images: list, page_offset: int = 0) -> dict:
+    """
+    Cheap Tesseract-only pre-scan of all pages to determine whether the dossier
+    uses stamps, what the code range is, and where jumps signal boundaries.
+
+    Runs before any GPT-4o call so the result can:
+      - Skip the GPT-4o pilot entirely for stampless dossiers (saves API cost)
+      - Inject a per-page code table into the pass-1 system prompt
+      - Replace _ocr_stamp_fallback as the authoritative raster source
+
+    Consistency rules for "has_stamps = True":
+      - At least 2 distinct valid codes
+      - Coverage >= 10% of pages
+      - Codes are generally monotonically non-decreasing (>= 60% of consecutive
+        pairs with a valid code are non-decreasing) — noise is tolerated but
+        random churn is not
+    """
+    from pipeline_ocr import _find_doc_code_raster
+
+    n = len(images)
+    raw: list[str | None] = [None] * n
+
+    def _scan(args: tuple[int, object]) -> tuple[int, str | None]:
+        idx, img = args
+        code = _find_doc_code_raster(img)
+        return idx, (_normalise_doc_code(code) if code else None)
+
+    with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
+        for idx, code in ex.map(_scan, enumerate(images)):
+            raw[idx] = code
+
+    valid_pages = [(i, c) for i, c in enumerate(raw) if c]
+    coverage    = len(valid_pages) / n if n else 0.0
+    distinct    = sorted({c for _, c in valid_pages})
+
+    if len(distinct) < 2 or coverage < 0.10:
+        return {
+            "has_stamps":    False,
+            "coverage":      coverage,
+            "codes":         raw,
+            "distinct_count": len(distinct),
+            "range":         None,
+            "jumps":         [],
+        }
+
+    # Monotonicity check — real stamps go up; noise bounces randomly
+    int_vals = []
+    for _, c in valid_pages:
+        try:
+            int_vals.append(int(c))
+        except ValueError:
+            pass
+
+    if len(int_vals) >= 2:
+        non_dec = sum(1 for a, b in zip(int_vals, int_vals[1:]) if b >= a)
+        monotone_ratio = non_dec / (len(int_vals) - 1)
+    else:
+        monotone_ratio = 1.0
+
+    if monotone_ratio < 0.60:
+        return {
+            "has_stamps":    False,
+            "coverage":      coverage,
+            "codes":         raw,
+            "distinct_count": len(distinct),
+            "range":         None,
+            "jumps":         [],
+        }
+
+    # Detect jumps: build runs of consecutive identical codes, then look for
+    # integer gaps > 1 between runs of length >= 2.
+    # Single-page runs (singletons) are excluded from jump detection because
+    # a single misread stamp surrounded by a different sequence is almost
+    # always an OCR error, not a real document boundary.
+    runs: list[tuple[str, int, int]] = []   # (code, first_page_idx, run_length)
+    if valid_pages:
+        run_code, run_start, run_len = valid_pages[0][1], valid_pages[0][0], 1
+        for pg_idx, code in valid_pages[1:]:
+            if code == run_code:
+                run_len += 1
+            else:
+                runs.append((run_code, run_start, run_len))
+                run_code, run_start, run_len = code, pg_idx, 1
+        runs.append((run_code, run_start, run_len))
+
+    sustained = [(code, start) for code, start, length in runs if length >= 2]
+
+    # Only flag jumps that are large enough to be meaningful — small gaps (≤ 5)
+    # are almost always single-page documents whose stamps the raster OCR read as
+    # singletons, not real skips in the sequence.
+    _MIN_JUMP_GAP = 6
+    jumps: list[dict] = []
+    for i in range(1, len(sustained)):
+        prev_code, _         = sustained[i - 1]
+        cur_code,  cur_start = sustained[i]
+        try:
+            gap = int(cur_code) - int(prev_code)
+        except ValueError:
+            continue
+        if gap > _MIN_JUMP_GAP:
+            jumps.append({
+                "page":      cur_start + page_offset,
+                "from_code": prev_code,
+                "to_code":   cur_code,
+                "gap":       gap,
+            })
+
+    # Derive range from sustained runs only — singleton outliers (OCR errors on
+    # a single page) can produce spurious high/low codes that distort the range.
+    sustained_ints = [int(c) for c, _ in sustained if c.isdigit()]
+    if sustained_ints:
+        min_code = f"{min(sustained_ints):04d}"
+        max_code = f"{max(sustained_ints):04d}"
+    else:
+        all_ints = [int(c) for c in distinct if c.isdigit()]
+        min_code = f"{min(all_ints):04d}" if all_ints else None
+        max_code = f"{max(all_ints):04d}" if all_ints else None
+
+    return {
+        "has_stamps":    True,
+        "coverage":      coverage,
+        "codes":         raw,
+        "distinct_count": len(distinct),
+        "range":         (min_code, max_code) if min_code else None,
+        "jumps":         jumps,
+    }
+
+
+def _raster_survey_to_hint(survey: dict, page_offset: int = 0) -> str:
+    """Convert raster stamp survey to a system-prompt addition for GPT-4o pass-1."""
+    codes = survey.get("codes", [])
+
+    if not survey.get("has_stamps"):
+        cov = survey.get("coverage", 0)
+        n   = survey.get("distinct_count", 0)
+        if cov <= 0.05:
+            # Near-zero coverage — genuinely stampless
+            return (
+                f"RASTER PRE-SCAN: No stamp codes found across {len(codes)} pages "
+                f"({cov:.0%} coverage). "
+                "This appears to be a stampless dossier — return null for doc_code on every page "
+                "unless a stamp is unambiguously visible in a page corner."
+            )
+        else:
+            # Some fragments detected but no consistent sequence —
+            # could be DocNr-format (first-page-only labels) or sparse stamps
+            return (
+                f"RASTER PRE-SCAN: Sparse or inconsistent stamp codes "
+                f"({cov:.0%} coverage, {n} distinct value(s) — no consistent sequence). "
+                "May be a DocNr-format dossier where stamps appear only on the first page "
+                "of each document. Check all four corners carefully for 'DocNr XX', "
+                "'Doc XX', or a 4-digit stamp code."
+            )
+
+    lo, hi = survey["range"]
+    cov    = survey["coverage"]
+    n_dist = survey["distinct_count"]
+    jumps  = survey.get("jumps", [])
+
+    # Compact per-page table: only pages that have a detected code
+    entries = [
+        f"{i + page_offset + 1}:{c}"
+        for i, c in enumerate(codes) if c
+    ]
+    # Keep the table under ~500 chars to avoid bloating the system prompt
+    table = "  " + "  ".join(entries)
+    if len(table) > 500:
+        shown  = []
+        length = 2
+        for e in entries:
+            if length + len(e) + 2 > 497:
+                shown.append("...")
+                break
+            shown.append(e)
+            length += len(e) + 2
+        table = "  " + "  ".join(shown)
+
+    jump_block = ""
+    if jumps:
+        lines = [
+            f"  pg {j['page'] + 1}: {j['from_code']} → {j['to_code']} (gap {j['gap']})"
+            for j in jumps[:15]
+        ]
+        jump_block = (
+            "\nStamp sequence jumps (likely document boundaries where codes skipped):\n"
+            + "\n".join(lines)
+        )
+
+    return (
+        f"RASTER PRE-SCAN: Stamps on {cov:.0%} of pages, "
+        f"{n_dist} distinct codes, range {lo}–{hi}.\n"
+        f"Per-page raster codes (pdf_page: code):\n{table}"
+        f"{jump_block}\n"
+        "Use these as a cross-check: if your visual reading differs from the raster hint, "
+        "prefer what you see in the image — but treat the raster code as a strong prior."
+    )
+
+
 # ── Category normalisation ────────────────────────────────────────────────────
 # Maps GPT-4o category labels → canonical labels used by visualisation.py
 _GPT4O_TO_CATEGORY: dict[str, str] = {
@@ -639,6 +839,9 @@ def _normalise_doc_code(raw) -> str | None:
     # Reject year-like numbers (1900–2099)
     if re.fullmatch(r"(19|20)\d{2}", s):
         return None
+    # Reject 0000 — not a valid WOO document code (valid range 0001–9999)
+    if s == "0000":
+        return None
     # Reject codes that are the normalised form of WOO redaction articles:
     #   5.1.X → digits 51X → zero-padded → 051X  (X = 1–9)
     #   5.2.X → digits 52X → zero-padded → 052X
@@ -773,6 +976,12 @@ def _ocr_stamp_fallback(page_data: list[dict]) -> None:
     stamped = [p for p in page_data if p.get("doc_code")]
     if not stamped:
         return  # stampless dossier — nothing to recover
+    # Require at least 2 distinct codes before spreading via OCR fallback.
+    # A single repeated code (e.g. all "0000") is a false-positive signal —
+    # running OCR would only propagate the bad code to remaining pages.
+    distinct_codes = {p["doc_code"] for p in stamped}
+    if len(distinct_codes) < 2:
+        return
 
     null_pages = [p for p in page_data if not p.get("doc_code") and p.get("image") is not None]
     if not null_pages:
@@ -850,9 +1059,37 @@ def load_pdf_vlm(
     total = len(images)
     print(f"[gpt4o] Analysing {total} pages with {OPENAI_MODEL} (detail=high, workers={_MAX_WORKERS})...")
 
+    # ── Raster stamp survey (before GPT-4o, free) ───────────────────────────
+    print(f"[gpt4o] Raster stamp survey: scanning {total} pages...")
+    raster_survey = _raster_stamp_survey(images, page_offset)
+    if raster_survey["has_stamps"]:
+        lo, hi = raster_survey["range"]
+        print(f"[gpt4o] Raster survey: stamped dossier — {raster_survey['distinct_count']} codes "
+              f"({lo}–{hi}), {raster_survey['coverage']:.0%} coverage, "
+              f"{len(raster_survey['jumps'])} jump(s) detected.")
+    else:
+        print(f"[gpt4o] Raster survey: no consistent stamps "
+              f"({raster_survey['coverage']:.0%} coverage, "
+              f"{raster_survey['distinct_count']} distinct value(s)).")
+
     # ── Pass 0: pilot run to profile stamp format ────────────────────────────
-    profile, pilot_results = _profile_dossier(images, client)
-    system_hint            = _profile_to_hint(profile)
+    # Only skip the GPT-4o pilot when raster coverage is near-zero (<= 5%).
+    # Low-but-nonzero coverage (e.g. 17%) can indicate a DocNr-format dossier
+    # where stamps appear only on the first page of each document — the pilot
+    # must still run so it can detect the "docnr" format and inject the right hint.
+    raster_confident_no_stamps = (
+        not raster_survey["has_stamps"] and raster_survey["coverage"] <= 0.05
+    )
+    if raster_confident_no_stamps:
+        profile       = {"stamp_format": "none", "notes": "raster survey confirmed no stamps"}
+        pilot_results = {}
+        print("[gpt4o] Pass 0 skipped (raster: near-zero coverage, stampless dossier).")
+    else:
+        profile, pilot_results = _profile_dossier(images, client)
+
+    profile_hint = _profile_to_hint(profile)
+    raster_hint  = _raster_survey_to_hint(raster_survey, page_offset)
+    system_hint  = "\n\n".join(h for h in [profile_hint, raster_hint] if h)
 
     # ── Stage 1: per-page GPT-4o analysis (parallel) ────────────────────────
     # Pilot pages already have results — only submit the remaining pages.
@@ -926,6 +1163,12 @@ def load_pdf_vlm(
             "email_subject":   email_subject,
             "email_date":      email_date,
         })
+
+    # ── Attach raster codes to page_data ────────────────────────────────────
+    raster_codes = raster_survey.get("codes", [])
+    for p in page_data:
+        idx = p["page_num"] - 1 - page_offset
+        p["raster_code"] = raster_codes[idx] if 0 <= idx < len(raster_codes) else None
 
     # ── OCR stamp fallback ───────────────────────────────────────────────────
     # For pages where GPT-4o missed the stamp, run targeted corner-crop OCR.
@@ -1359,10 +1602,10 @@ def _build_docs_from_boundaries(
 
 
 def _stamp_coverage(page_data: list[dict]) -> float:
-    """Fraction of pages that have a detected stamp code."""
+    """Fraction of pages that have a detected stamp code (GPT-4o or raster)."""
     if not page_data:
         return 0.0
-    return sum(1 for p in page_data if p.get("doc_code")) / len(page_data)
+    return sum(1 for p in page_data if p.get("doc_code") or p.get("raster_code")) / len(page_data)
 
 
 def _finalise_pipeline(
@@ -1499,7 +1742,8 @@ def _build_docs_forward_fill(page_data: list[dict]) -> dict[str, dict]:
     sub_counts: dict[str, int] = {}  # base_code → number of sub-splits created so far
 
     for p in page_data:
-        detected = p["doc_code"]
+        # Prefer GPT-4o doc_code; fall back to raster_code when GPT-4o missed the stamp
+        detected = p["doc_code"] or p.get("raster_code")
         wpn      = p["within_doc_page"]
         category = p.get("category", "Other")
         # Never start a new doc if VLM explicitly says this is page 2+
