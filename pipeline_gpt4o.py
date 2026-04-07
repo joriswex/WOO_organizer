@@ -62,9 +62,12 @@ _SYSTEM_PROMPT = (
     "- Sensitive content is gelakt (blacked out) with redaction bars (some are black bars, other times white boxes or otherwise). The applicable WOO legal ground "
     "is printed in small text inside or next to each black box, in the format 5.1.X or 5.2.X "
     "(e.g. '5.1.2e', '5.1.1', '5.2.1'). These are articles of the Wet Open Overheid. "
-    "WOO redaction articles are NOT document stamp codes — never return them as doc_code.\n"
-    "- Stamp codes appear only at the very edges of the page (corners or top/bottom centre strip), "
-    "never embedded inside the document body text.\n"
+    "WOO redaction articles are NOT document stamp codes — never return them as doc_code, "
+    "even if printed near a margin.\n"
+    "- Stamp codes are physically separate elements printed in a corner margin or centre strip, "
+    "visually distinct from the document's own text. Numbers found inside the document body — "
+    "including reference lines ('Kenmerk: 0230'), first lines of body text, case numbers, or "
+    "any number embedded in a sentence — are NOT stamp codes; return null for doc_code in those cases.\n"
     "- The dossier sometimes starts with an Inventarislijst: a table listing all documents with "
     "their codes, titles, page counts, and the WOO decision (openbaar/deels openbaar/niet openbaar).\n"
     "- Document types in order of frequency: internal emails, forwarded email threads, memos "
@@ -144,9 +147,15 @@ DOCUMENT BOUNDARY RULES:
     * Year-like numbers (1900–2099) are NOT document codes — ignore them.
     * Incrementing per-page sequence counters (e.g. 00001, 00002, 00003 — every page gets a
       different, incrementing number) are NOT document codes — ignore them.
-    * WOO redaction articles (e.g. "5.1.2", "5.1.2e", "5.2.1") are NOT document codes — ignore them.
-    * Stamp codes appear only at the very edges of the page (corners, top/bottom centre strip),
-      NOT inside the text body. Disregard any number that appears within a paragraph or sentence.
+    * WOO redaction articles (e.g. "5.1.2", "5.1.2e", "5.2.1") are NOT document codes — ignore
+      them even if they appear near a page margin (they are printed next to redaction bars).
+    * Stamp codes are PHYSICALLY DISTINCT elements — printed as a discrete stamp or label in a
+      corner margin, clearly separate from the document's own text. They are NOT:
+        - Numbers in a document reference line (e.g. "Kenmerk: 0230", "Ons kenmerk 0230")
+        - Numbers appearing as the first word or first line of body text
+        - Case numbers, file numbers, or any number embedded in a sentence or header field
+        - Numbers that appear on only one or two pages of a multi-page document
+      If a number appears anywhere in the body of the document (even at the top), return null.
     * Document codes repeat: all pages of the same document share the same stamp code.
       "Doc XX" labels are an exception — they appear ONLY on the first page; return null for
       continuation pages (the pipeline will forward-fill the code automatically).
@@ -469,6 +478,13 @@ def _normalise_doc_code(raw) -> str | None:
             return None
     # Reject year-like numbers (1900–2099)
     if re.fullmatch(r"(19|20)\d{2}", s):
+        return None
+    # Reject codes that are the normalised form of WOO redaction articles:
+    #   5.1.X → digits 51X → zero-padded → 051X  (X = 1–9)
+    #   5.2.X → digits 52X → zero-padded → 052X
+    # Covers both the case where GPT-4o returns the raw "5.1.2" string (caught above)
+    # and the case where it returns the already-digit-stripped "0512" directly.
+    if re.fullmatch(r"05[12][1-9]", s):
         return None
     # For 4-digit input: require WOO-style 0NNN (leading zero) to reject bare page counters
     if original_len == 4 and not re.fullmatch(r"0\d{3}", s):
@@ -828,6 +844,9 @@ DOCUMENT BOUNDARY RULES — apply signals in priority order:
 1. DEFINITIVE (never override):
    - cont=Y means a sentence continued from the previous page. This page CANNOT start a new document.
    - Every page must belong to exactly one document; list documents in ascending start_page order with no gaps.
+   - A page that immediately follows an Inventarislijst segment ALWAYS starts a new document,
+     even if cont=Y, even if no stamp is present. The Inventarislijst is always document 1;
+     everything after it is a separate document.
 
 2. STAMP CODES — when stamps are present they are the PRIMARY split signal:
    - Stamp code CHANGES between consecutive pages: this alone is sufficient to start a new document.
@@ -845,11 +864,15 @@ DOCUMENT BOUNDARY RULES — apply signals in priority order:
    - The text preview shows a complete, fresh document header at the very top: a full
      Van/Aan/Onderwerp email block, a new memo heading with date + reference, or a new
      letter/rapport title page.
+   - A clear category transition between consecutive pages (e.g. Inventarislijst → E-mail,
+     E-mail → Nota, Other → E-mail) when the new page's text preview shows a fresh document
+     opening (email header, new letterhead, new title). Category alone — without a content
+     signal — is not sufficient; but category + any visible document start in the text is.
 
 4. MODERATE content signals (combine two or more to split when no stamps are present):
    - new=Y alone (pass-1 detected a new header, but could be a quoted/forwarded header in a body)
    - wpn=1 alone (within-doc page resets to 1)
-   - Category changes significantly between consecutive pages (e.g. Email → Nota)
+   - Category changes significantly between consecutive pages without a visible new document start
    - Text preview clearly shows a new letterhead, new ministry logo, or new document reference
 
 5. DEFAULT — when in doubt, keep pages together. Spurious splits create empty documents;
