@@ -786,6 +786,33 @@
   }
   .timeline-h-card-snippet { font-size: 10px; color: var(--woo-text-muted); line-height: 1.4; margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--woo-border); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 
+  /* ── STREAM DENSITY TIMELINE ── */
+  .tl-stream-wrap {
+    position: relative; height: 72px; margin: 0 0 10px;
+    border-radius: var(--woo-radius-md); overflow: hidden;
+    background: var(--surface2); border: 1px solid var(--woo-border);
+    cursor: crosshair; flex-shrink: 0;
+  }
+  .tl-stream-canvas { display: block; width: 100%; height: 100%; }
+  .tl-lens {
+    position: absolute; top: 0; height: 100%;
+    background: rgba(255,255,255,0.55);
+    border: 2px solid var(--woo-dark);
+    border-radius: 5px; cursor: grab;
+    backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
+    box-shadow: 0 2px 12px rgba(56,5,4,0.18), inset 0 0 0 1px rgba(255,255,255,0.4);
+    display: flex; align-items: center; justify-content: center;
+    user-select: none; -webkit-user-select: none;
+    transition: box-shadow 0.12s;
+  }
+  .tl-lens:hover { box-shadow: 0 4px 18px rgba(56,5,4,0.24), inset 0 0 0 1px rgba(255,255,255,0.5); }
+  .tl-lens:active { cursor: grabbing; }
+  .tl-lens-label {
+    font-family: var(--woo-mono); font-size: 9px; font-weight: 700;
+    color: var(--woo-dark); letter-spacing: 0.04em; pointer-events: none;
+    opacity: 0.75; text-align: center; padding: 0 6px; white-space: nowrap;
+  }
+
   /* ── ATTACHMENT TAGS ── */
   .attachment-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 2px; }
   .attachment-tag {
@@ -1563,6 +1590,26 @@
     color: var(--woo-text-link-hover);
     opacity: 1;
   }
+
+  /* ── EMAIL THREAD VIEW ── */
+  .email-thread-wrap { max-width: 680px; margin: 0 auto; }
+  .email-thread-reply-sep {
+    display: flex; align-items: center; gap: 10px;
+    padding: 6px 4px 6px 20px;
+  }
+  .email-thread-reply-sep-line {
+    width: 2px; height: 20px;
+    background: var(--woo-border); border-radius: 1px; flex-shrink: 0;
+  }
+  .email-thread-reply-type {
+    font-family: var(--woo-mono); font-size: 10px; font-weight: 700;
+    letter-spacing: 0.07em; text-transform: uppercase;
+    padding: 2px 7px; border-radius: 3px; flex-shrink: 0;
+  }
+  .email-thread-reply-type.re  { color: #2563a8; background: #e8f0fb; border: 1px solid #bbd0f0; }
+  .email-thread-reply-type.fw  { color: #2a7d52; background: #e0f5eb; border: 1px solid #9dcfb8; }
+  .email-thread-reply-type.fwd { color: #2a7d52; background: #e0f5eb; border: 1px solid #9dcfb8; }
+  .email-thread-reply-type.reply { color: var(--text-dimmer); background: var(--surface2); border: 1px solid var(--woo-border); }
 
   /* ── SMART REDACTION ── */
   .redact {
@@ -4975,7 +5022,7 @@ function openIphoneMail(idx) {
   const email = emails[idx];
   if (!email) return;
 
-  // Capture context before rendering so the back button returns to the right view
+  // Capture scroll position before leaving timeline
   const sourceTab = state.viewTab;
   if (sourceTab === 'timeline') {
     const scroller = document.querySelector('.timeline-h-scroll');
@@ -4983,61 +5030,100 @@ function openIphoneMail(idx) {
   }
 
   const container = document.getElementById('viewerContent');
-  const bodyHtml = formatEmailBody(email.text || '');
-  const formattedDate = formatDisplayDate(email.date);
-  const formattedTime = getEmailTimeStr(email);
-  const senderHtml = formatMetadataValueHtml(email.sender);
-  const toHtml = formatMetadataValueHtml(email.to);
-  const ccHtml = formatMetadataValueHtml(email.cc, '');
-  const bodyId = 'email-body-' + (email.id || 'x').replace(/\./g, '-');
-  const hasApiKey = !!(OPENAI_API_KEY || '').trim();
-  const docCode = (email.id || '').split('.')[0];
-  const tlItem  = (state.timelineItems || []).find(t => t.id === docCode);
-  const hasPdf  = !!(state.pdfSource && tlItem?.pdf_page_start);
+  const docCode   = (email.id || '').split('.')[0];
+  const tlItem    = (state.timelineItems || []).find(t => t.id === docCode);
+  const hasPdf    = !!(state.pdfSource && tlItem?.pdf_page_start);
 
+  // ── Back button: always goes to emails tab (fix: was renderEmailView which didn't update state.viewTab)
   const backLabel = sourceTab === 'timeline' ? '‹ Tijdlijn' : sourceTab === 'search' ? '‹ Zoekresultaten' : '‹ Alle e-mails';
   const backFn    = sourceTab === 'timeline'
     ? '_backToTimeline()'
     : sourceTab === 'search'
     ? 'setViewTab(\'search\')'
-    : 'renderEmailView(document.getElementById(\'viewerContent\'))';
+    : 'setViewTab(\'emails\')';
+
+  // ── Gather thread: root + all replies, sorted original-first then chronological
+  const rootId = email.__threadDepth === 0 ? email.id : (email.__threadParentId || email.id);
+  let threadEmails;
+  if ((email.__threadSize || 1) > 1) {
+    threadEmails = emails.filter(e => e.id === rootId || e.__threadParentId === rootId);
+    threadEmails.sort((a, b) => {
+      // Non-reply (original) always first
+      if (!a.__isReply && b.__isReply) return -1;
+      if (a.__isReply && !b.__isReply) return 1;
+      return a.__sortKey < b.__sortKey ? -1 : a.__sortKey > b.__sortKey ? 1 : 0;
+    });
+  } else {
+    threadEmails = [email];
+  }
 
   const actionBtnStyle = 'display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:6px;border:1px solid var(--woo-border);background:var(--woo-white);color:var(--woo-text);font-size:11px;cursor:pointer;white-space:nowrap;font-family:var(--woo-sans)';
 
+  const messagesHtml = threadEmails
+    .map((em, i) => _renderThreadMessageHtml(em, i === 0, docCode, hasPdf, actionBtnStyle, i))
+    .join('');
+
   container.innerHTML = `
-    <div class="iphone-detail-back" onclick="${backFn}">
-      ${backLabel}
-    </div>
-    <div class="iphone-mail-detail">
-      <div class="iphone-detail-header" style="background:#fff">
-        <div class="iphone-detail-subject" style="color:#1a1a1a;font-size:16px;font-weight:700;line-height:1.35;margin-bottom:12px">${formatLabelRedactions(email.subject || '(geen onderwerp)')}</div>
-        <table style="border-collapse:collapse;width:100%;font-size:12px;color:#444">
-          <tr><td style="padding:2px 10px 2px 0;font-weight:600;color:#888;white-space:nowrap;vertical-align:top">Van</td><td style="padding:2px 0;color:#1a1a1a">${senderHtml}</td></tr>
-          <tr><td style="padding:2px 10px 2px 0;font-weight:600;color:#888;white-space:nowrap;vertical-align:top">Aan</td><td style="padding:2px 0;color:#1a1a1a">${toHtml}</td></tr>
-          ${email.cc ? `<tr><td style="padding:2px 10px 2px 0;font-weight:600;color:#888;white-space:nowrap;vertical-align:top">CC</td><td style="padding:2px 0;color:#1a1a1a">${ccHtml}</td></tr>` : ''}
-          <tr><td style="padding:2px 10px 2px 0;font-weight:600;color:#888;white-space:nowrap">Datum</td><td style="padding:2px 0;color:#1a1a1a">${escHtml(formattedDate)}${formattedTime ? ` ${escHtml(formattedTime)}` : ''} <button onclick="_editDocDate('${escHtml(docCode)}')" title="Datum aanpassen" style="background:none;border:none;cursor:pointer;padding:0 0 0 3px;font-size:11px;color:var(--text-dimmer);vertical-align:middle;line-height:1">✎</button></td></tr>
-          <tr><td style="padding:2px 10px 2px 0;font-weight:600;color:#888;white-space:nowrap">Ref</td><td style="padding:2px 0;font-family:var(--woo-mono);font-size:10px;color:#888">${escHtml(email.id || '—')}</td></tr>
-          ${renderAttachmentTags(email.text || '', email.attachments)}
-        </table>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:12px;padding-top:10px;border-top:1px solid var(--woo-border)">
-          ${hasPdf ? `<button style="${actionBtnStyle}" onclick="_showInWooDossier('${escHtml(docCode)}')" title="Ga naar de originele pagina in het PDF-dossier">📄 Toon in WOO-dossier</button>` : ''}
-          <button style="${actionBtnStyle};color:#c0392b;border-color:#e8c2c2" onclick="_deleteDoc('${escHtml(docCode)}')" title="Verwijder dit document uit de analyse">✕ Verwijder</button>
-        </div>
-      </div>
-      <div class="iphone-detail-body" id="${bodyId}">${bodyHtml}</div>
-    </div>
+    <div class="iphone-detail-back" onclick="${backFn}">${backLabel}</div>
+    <div class="email-thread-wrap">${messagesHtml}</div>
   `;
 
-  // Scroll to top
   container.scrollTop = 0;
 
-  // Highlight this email in doc nav (email.id is '0003.1', timeline item id is '0003')
+  // Highlight doc nav
   const tIdx = state.timelineItems.findIndex(t => t.id === docCode || t.id === email.id);
   if (tIdx >= 0) {
-    document.querySelectorAll('.doc-nav-item').forEach((el,i) => {
+    document.querySelectorAll('.doc-nav-item').forEach((el, i) => {
       el.classList.toggle('active', i === tIdx);
     });
   }
+}
+
+function _renderThreadMessageHtml(email, isRoot, docCode, hasPdf, actionBtnStyle, msgIdx) {
+  const bodyHtml      = formatEmailBody(email.text || '');
+  const formattedDate = formatDisplayDate(email.date);
+  const formattedTime = getEmailTimeStr(email);
+  const senderHtml    = formatMetadataValueHtml(email.sender);
+  const toHtml        = formatMetadataValueHtml(email.to);
+  const ccHtml        = formatMetadataValueHtml(email.cc, '');
+  const bodyId        = 'email-body-' + (email.id || 'x').replace(/\./g, '-') + '-' + msgIdx;
+
+  // Detect reply/forward type from subject prefix
+  const rawSubj = (email.subject || '').trim();
+  let typeLabel = '', typeCls = 'reply';
+  if (/^\s*re\s*:/i.test(rawSubj))               { typeLabel = 'RE';  typeCls = 're'; }
+  else if (/^\s*(?:fw|fwd|doorst)\s*:/i.test(rawSubj)) { typeLabel = 'FW';  typeCls = 'fw'; }
+  else if (!isRoot)                              { typeLabel = 'Reply'; typeCls = 'reply'; }
+
+  // Connector separator between messages
+  const sepHtml = isRoot ? '' : `
+    <div class="email-thread-reply-sep">
+      <div class="email-thread-reply-sep-line"></div>
+      ${typeLabel ? `<span class="email-thread-reply-type ${typeCls}">${typeLabel}</span>` : ''}
+      <span style="font-family:var(--woo-mono);font-size:10px;color:var(--text-dimmer)">${escHtml(formattedDate)}${formattedTime ? ` · ${escHtml(formattedTime)}` : ''}</span>
+    </div>`;
+
+  return `
+    ${sepHtml}
+    <div class="iphone-mail-detail" style="margin-bottom:0;${!isRoot ? 'border-top:none;border-radius:0 0 12px 12px;' : ''}">
+      <div class="iphone-detail-header" style="background:#fff">
+        ${isRoot ? `<div class="iphone-detail-subject" style="color:#1a1a1a;font-size:16px;font-weight:700;line-height:1.35;margin-bottom:12px">${formatLabelRedactions(rawSubj || '(geen onderwerp)')}</div>` : ''}
+        <table style="border-collapse:collapse;width:100%;font-size:12px;color:#444">
+          <tr><td style="padding:2px 10px 2px 0;font-weight:600;color:#888;white-space:nowrap;vertical-align:top">Van</td><td style="padding:2px 0;color:#1a1a1a">${senderHtml}</td></tr>
+          ${isRoot || email.to  ? `<tr><td style="padding:2px 10px 2px 0;font-weight:600;color:#888;white-space:nowrap;vertical-align:top">Aan</td><td style="padding:2px 0;color:#1a1a1a">${toHtml}</td></tr>` : ''}
+          ${(isRoot || email.cc) && email.cc ? `<tr><td style="padding:2px 10px 2px 0;font-weight:600;color:#888;white-space:nowrap;vertical-align:top">CC</td><td style="padding:2px 0;color:#1a1a1a">${ccHtml}</td></tr>` : ''}
+          <tr><td style="padding:2px 10px 2px 0;font-weight:600;color:#888;white-space:nowrap">Datum</td><td style="padding:2px 0;color:#1a1a1a">${escHtml(formattedDate)}${formattedTime ? ` ${escHtml(formattedTime)}` : ''}${isRoot ? ` <button onclick="_editDocDate('${escHtml(docCode)}')" title="Datum aanpassen" style="background:none;border:none;cursor:pointer;padding:0 0 0 3px;font-size:11px;color:var(--text-dimmer);vertical-align:middle;line-height:1">✎</button>` : ''}</td></tr>
+          ${isRoot ? `<tr><td style="padding:2px 10px 2px 0;font-weight:600;color:#888;white-space:nowrap">Ref</td><td style="padding:2px 0;font-family:var(--woo-mono);font-size:10px;color:#888">${escHtml(email.id || '—')}</td></tr>` : ''}
+          ${isRoot ? renderAttachmentTags(email.text || '', email.attachments) : ''}
+        </table>
+        ${isRoot ? `
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:12px;padding-top:10px;border-top:1px solid var(--woo-border)">
+            ${hasPdf ? `<button style="${actionBtnStyle}" onclick="_showInWooDossier('${escHtml(docCode)}')" title="Ga naar de originele pagina in het PDF-dossier">📄 Toon in WOO-dossier</button>` : ''}
+            <button style="${actionBtnStyle};color:#c0392b;border-color:#e8c2c2" onclick="_deleteDoc('${escHtml(docCode)}')" title="Verwijder dit document uit de analyse">✕ Verwijder</button>
+          </div>` : ''}
+      </div>
+      <div class="iphone-detail-body" id="${bodyId}">${bodyHtml}</div>
+    </div>`;
 }
 
 function toggleEmailBody(id) {
@@ -5625,27 +5711,46 @@ function renderTimelineView(container) {
     ? 'Analyseren…'
     : (summaryDays.length ? '↺ Vat tijdlijn opnieuw samen' : '✦ Vat tijdlijn samen');
 
+  const streamHtml = datedCards.length > 1
+    ? `<div class="tl-stream-wrap" id="tl-stream-wrap"><canvas id="tl-stream-canvas" class="tl-stream-canvas"></canvas><div id="tl-lens" class="tl-lens"><span class="tl-lens-label"></span></div></div>`
+    : '';
+
   container.innerHTML = `
     <div class="timeline-h-outer">
       <div class="doc-meta-header timeline-h-header">
         <div class="timeline-h-summary-head">
           <div class="doc-meta-type">Chronologische tijdlijn</div>
           <div style="display:flex;align-items:center;gap:8px">
-            <div style="display:flex;gap:2px">
-              <button class="timeline-scroll-btn" onclick="_scrollTimeline(-1)" title="Scroll naar links">‹</button>
-              <button class="timeline-scroll-btn" onclick="_scrollTimeline(1)"  title="Scroll naar rechts">›</button>
-            </div>
             <button class="timeline-summarize-btn" onclick="summarizeTimelineChronology()" ${state.timelineSummaryLoading ? 'disabled' : ''}>${sumBtnLabel}</button>
           </div>
         </div>
         <div class="doc-meta-title" style="font-size:15px">${escHtml(dossier?.title || 'Dossier')}</div>
-        <div style="font-family:var(--woo-mono);font-size:10px;color:var(--text-dimmer);margin-top:4px">${datedCards.length} document${datedCards.length !== 1 ? 'en' : ''} gedateerd${undatedCards.length ? `, ${undatedCards.length} zonder datum (links)` : ''} — scroll horizontaal</div>
+        <div style="font-family:var(--woo-mono);font-size:10px;color:var(--text-dimmer);margin-top:4px">${datedCards.length} document${datedCards.length !== 1 ? 'en' : ''}${undatedCards.length ? ` · ${undatedCards.length} zonder datum` : ''}</div>
       </div>
       ${summaryHtml}
+      ${streamHtml}
       <div class="timeline-h-scroll">${cardHtml}</div>
-      <div class="timeline-h-axis-row">${spacers}</div>
     </div>
   `;
+
+  if (datedCards.length > 1) {
+    requestAnimationFrame(() => {
+      const wrap   = document.getElementById('tl-stream-wrap');
+      const canvas = document.getElementById('tl-stream-canvas');
+      if (!wrap || !canvas) return;
+      const dpr = window.devicePixelRatio || 1;
+      const W = wrap.offsetWidth;
+      const H = 72;
+      canvas.width  = W * dpr;
+      canvas.height = H * dpr;
+      canvas.style.width  = W + 'px';
+      canvas.style.height = H + 'px';
+      const ctx = canvas.getContext('2d');
+      ctx.scale(dpr, dpr);
+      _drawStream(ctx, W, H, datedCards);
+      _initTimelineLens(datedCards, allOrdered, W);
+    });
+  }
 }
 
 function _renderHCard(c, idx, undated) {
@@ -8401,6 +8506,276 @@ function _applyPipelineResult(data, pid, file) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ── STREAM DENSITY CHART + LENS ──────────────────────────────────────────────
+
+let _streamData   = null; // { minT, maxT } — set by _drawStream, read by _initTimelineLens
+let _lensCleanup  = null; // removes document-level drag listeners from previous render
+
+function _gaussSmooth(arr, sigma) {
+  return arr.map((_, i) => {
+    let sum = 0, w = 0;
+    for (let j = -5; j <= 5; j++) {
+      const src = Math.max(0, Math.min(arr.length - 1, i + j));
+      const weight = Math.exp(-(j * j) / (2 * sigma * sigma));
+      sum += arr[src] * weight;
+      w   += weight;
+    }
+    return sum / w;
+  });
+}
+
+function _drawStream(ctx, W, H, datedCards) {
+  ctx.clearRect(0, 0, W, H);
+  if (!datedCards.length) return;
+
+  const dates = datedCards.map(c => new Date(c.iso).getTime()).filter(d => !isNaN(d));
+  if (dates.length < 2) return;
+
+  const minT  = Math.min(...dates);
+  const maxT  = Math.max(...dates);
+  const range = maxT - minT;
+  _streamData = { minT, maxT };
+
+  // Build histogram
+  const N       = Math.max(40, Math.min(120, datedCards.length * 4));
+  const buckets = new Array(N).fill(0);
+  for (const c of datedCards) {
+    const t = new Date(c.iso).getTime();
+    if (isNaN(t)) continue;
+    const idx = Math.min(N - 1, Math.floor(((t - minT) / range) * N));
+    buckets[idx]++;
+  }
+
+  const smoothed = _gaussSmooth(buckets, N / 10);
+  const maxV     = Math.max(...smoothed, 0.01);
+
+  const midY = H / 2;
+  const maxA = H * 0.36; // max half-amplitude
+  const minA = H * 0.06; // min half-amplitude (always visible)
+
+  const pts = smoothed.map((v, i) => ({
+    x: (i / (N - 1)) * W,
+    a: minA + (v / maxV) * (maxA - minA),
+  }));
+
+  // Draw smooth closed stream shape
+  ctx.beginPath();
+  ctx.moveTo(pts[0].x, midY - pts[0].a);
+  for (let i = 1; i < pts.length; i++) {
+    const p = pts[i - 1], q = pts[i];
+    const mx = (p.x + q.x) / 2;
+    ctx.bezierCurveTo(mx, midY - p.a, mx, midY - q.a, q.x, midY - q.a);
+  }
+  // right cap + bottom edge right→left
+  ctx.lineTo(W, midY + pts[pts.length - 1].a);
+  for (let i = pts.length - 2; i >= 0; i--) {
+    const p = pts[i + 1], q = pts[i];
+    const mx = (p.x + q.x) / 2;
+    ctx.bezierCurveTo(mx, midY + p.a, mx, midY + q.a, q.x, midY + q.a);
+  }
+  ctx.closePath();
+
+  const grad = ctx.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0,   'rgba(56,5,4,0.07)');
+  grad.addColorStop(0.38,'rgba(255,41,3,0.22)');
+  grad.addColorStop(0.62,'rgba(255,41,3,0.22)');
+  grad.addColorStop(1,   'rgba(56,5,4,0.07)');
+  ctx.fillStyle = grad;
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,41,3,0.28)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // Individual doc dots along midline
+  for (const c of datedCards) {
+    const t = new Date(c.iso).getTime();
+    if (isNaN(t)) continue;
+    const x = ((t - minT) / range) * W;
+    ctx.beginPath();
+    ctx.arc(x, midY, 1.8, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(255,41,3,0.40)';
+    ctx.fill();
+  }
+
+  // Date axis labels at bottom
+  _drawStreamLabels(ctx, W, H, minT, maxT, range);
+}
+
+function _drawStreamLabels(ctx, W, H, minT, maxT, range) {
+  const days = range / 86400000;
+  let unit, step;
+  if      (days < 90)   { unit = 'month'; step = 1; }
+  else if (days < 365)  { unit = 'month'; step = 2; }
+  else if (days < 730)  { unit = 'month'; step = 3; }
+  else if (days < 1825) { unit = 'month'; step = 6; }
+  else                  { unit = 'year';  step = 1; }
+
+  const ticks = [];
+  const s = new Date(minT);
+  if (unit === 'year') {
+    for (let y = s.getUTCFullYear() + 1; ; y += step) {
+      const t = Date.UTC(y, 0, 1);
+      if (t >= maxT) break;
+      ticks.push(t);
+    }
+  } else {
+    let y = s.getUTCFullYear(), m = s.getUTCMonth();
+    for (;;) {
+      m += step;
+      if (m >= 12) { y += Math.floor(m / 12); m = m % 12; }
+      const t = Date.UTC(y, m, 1);
+      if (t >= maxT) break;
+      ticks.push(t);
+    }
+  }
+
+  ctx.font        = '9px "Geist Mono", monospace';
+  ctx.textBaseline = 'bottom';
+  ctx.fillStyle   = 'rgba(56,5,4,0.45)';
+
+  const fmtD = ms => {
+    const d = new Date(ms);
+    return `${String(d.getUTCDate()).padStart(2,'0')}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${d.getUTCFullYear()}`;
+  };
+  ctx.textAlign = 'left';  ctx.fillText(fmtD(minT), 3, H - 1);
+  ctx.textAlign = 'right'; ctx.fillText(fmtD(maxT), W - 3, H - 1);
+
+  for (const t of ticks) {
+    const x = ((t - minT) / range) * W;
+    if (x < 45 || x > W - 45) continue;
+    ctx.strokeStyle = 'rgba(56,5,4,0.15)';
+    ctx.lineWidth   = 1;
+    ctx.beginPath(); ctx.moveTo(x, H - 10); ctx.lineTo(x, H - 2); ctx.stroke();
+    const d     = new Date(t);
+    const label = unit === 'year'
+      ? `${d.getUTCFullYear()}`
+      : `${d.getUTCMonth() + 1}/${String(d.getUTCFullYear()).slice(2)}`;
+    ctx.textAlign = 'center';
+    ctx.fillStyle = 'rgba(56,5,4,0.45)';
+    ctx.fillText(label, x, H - 1);
+  }
+}
+
+function _initTimelineLens(datedCards, allOrdered, wrapW) {
+  // Clean up document listeners from any previous render
+  if (_lensCleanup) { _lensCleanup(); _lensCleanup = null; }
+
+  const lens     = document.getElementById('tl-lens');
+  const wrap     = document.getElementById('tl-stream-wrap');
+  const scroller = document.querySelector('.timeline-h-scroll');
+  if (!lens || !wrap || !scroller || !_streamData) return;
+
+  const { minT, maxT } = _streamData;
+  const totalRange  = maxT - minT;
+  if (!totalRange) return;
+
+  const CARD_W      = 270; // card width + gap
+  const undatedCount = allOrdered.filter(c => !c.iso).length;
+
+  // Lens width proportional to visible/total ratio
+  const visibleCards = Math.max(1, Math.floor(scroller.offsetWidth / CARD_W));
+  const ratio  = Math.min(0.85, visibleCards / Math.max(1, datedCards.length));
+  const lensW  = Math.max(55, Math.round(wrapW * ratio));
+  lens.style.width = lensW + 'px';
+
+  const maxLensX = wrapW - lensW;
+
+  function tToLensX(t) {
+    return Math.max(0, Math.min(maxLensX, ((t - minT) / totalRange) * maxLensX));
+  }
+  function lensXToT(lx) {
+    return minT + ((lx + lensW / 2) / wrapW) * totalRange;
+  }
+  function tToScrollLeft(t) {
+    let bestIdx = 0, bestDiff = Infinity;
+    for (let i = 0; i < datedCards.length; i++) {
+      const ct = new Date(datedCards[i].iso).getTime();
+      if (isNaN(ct)) continue;
+      const d = Math.abs(ct - t);
+      if (d < bestDiff) { bestDiff = d; bestIdx = i; }
+    }
+    return (undatedCount + bestIdx) * CARD_W;
+  }
+  function setLensLabel(t) {
+    const lbl = lens.querySelector('.tl-lens-label');
+    if (!lbl) return;
+    const d = new Date(t);
+    const months = ['jan','feb','mrt','apr','mei','jun','jul','aug','sep','okt','nov','dec'];
+    lbl.textContent = `${months[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
+  }
+
+  function syncLensFromScroll() {
+    const cardIdx  = Math.round(scroller.scrollLeft / CARD_W);
+    const datedIdx = Math.max(0, Math.min(datedCards.length - 1, cardIdx - undatedCount));
+    const c = datedCards[datedIdx];
+    if (!c?.iso) return;
+    const t = new Date(c.iso).getTime();
+    if (isNaN(t)) return;
+    lens.style.left = tToLensX(t) + 'px';
+    setLensLabel(t);
+  }
+
+  // Click on stream to jump lens + cards
+  function onWrapClick(e) {
+    if (lens.contains(e.target)) return;
+    const rect = wrap.getBoundingClientRect();
+    const lx   = Math.max(0, Math.min(maxLensX, e.clientX - rect.left - lensW / 2));
+    lens.style.left = lx + 'px';
+    const t = lensXToT(lx);
+    setLensLabel(t);
+    scroller.scrollTo({ left: tToScrollLeft(t), behavior: 'smooth' });
+  }
+  wrap.addEventListener('click', onWrapClick);
+
+  // Drag
+  let dragging = false, dragStartX = 0, lensStartX = 0;
+
+  function onLensDown(e) {
+    dragging   = true;
+    dragStartX = e.clientX ?? e.touches?.[0]?.clientX ?? 0;
+    lensStartX = parseFloat(lens.style.left) || 0;
+    lens.style.cursor = 'grabbing';
+    e.preventDefault();
+    e.stopPropagation();
+  }
+  function onMove(e) {
+    if (!dragging) return;
+    const cx = e.clientX ?? e.touches?.[0]?.clientX ?? dragStartX;
+    const nx = Math.max(0, Math.min(maxLensX, lensStartX + (cx - dragStartX)));
+    lens.style.left = nx + 'px';
+    const t = lensXToT(nx);
+    setLensLabel(t);
+    scroller.scrollTo({ left: tToScrollLeft(t), behavior: 'auto' });
+  }
+  function onUp() {
+    if (dragging) { dragging = false; lens.style.cursor = 'grab'; }
+  }
+
+  lens.addEventListener('mousedown', onLensDown);
+  lens.addEventListener('touchstart', onLensDown, { passive: false });
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('touchmove', onMove, { passive: true });
+  document.addEventListener('mouseup', onUp);
+  document.addEventListener('touchend', onUp);
+
+  // Sync lens when user scrolls the cards manually
+  let _scrollTmr = null;
+  scroller.addEventListener('scroll', () => {
+    clearTimeout(_scrollTmr);
+    _scrollTmr = setTimeout(syncLensFromScroll, 40);
+  });
+
+  _lensCleanup = () => {
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('touchmove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    document.removeEventListener('touchend', onUp);
+  };
+
+  // Initial position
+  syncLensFromScroll();
+}
+
 function _scrollTimeline(dir) {
   const el = document.querySelector('.timeline-h-scroll');
   if (el) el.scrollBy({ left: dir * 290, behavior: 'smooth' });
