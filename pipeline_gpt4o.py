@@ -428,16 +428,35 @@ def _raster_stamp_survey(images: list, page_offset: int = 0) -> dict:
     from pipeline_ocr import _find_doc_code_raster
 
     n = len(images)
-    raw: list[str | None] = [None] * n
+    raw:         list[str | None] = [None] * n
+    docnr_flags: list[bool]       = [False] * n
 
-    def _scan(args: tuple[int, object]) -> tuple[int, str | None]:
+    def _scan(args: tuple[int, object]) -> tuple[int, str | None, bool]:
         idx, img = args
         code = _find_doc_code_raster(img)
-        return idx, (_normalise_doc_code(code) if code else None)
+        if code:
+            return idx, _normalise_doc_code(code), False
+        # Check for DocNr text labels (e.g. "Docnr26") — no leading zero, so the
+        # numeric regex in _find_doc_code_raster cannot match them.  A quick
+        # Tesseract pass on the top strip is enough to detect the pattern.
+        try:
+            import pytesseract
+            w, h = img.size
+            top  = img.crop((0, 0, w, int(h * 0.15)))
+            txt  = pytesseract.image_to_string(top, lang="nld+eng", config="--psm 6")
+            if re.search(r"docnr?\s*\d+", txt, re.IGNORECASE):
+                return idx, None, True
+        except Exception:
+            pass
+        return idx, None, False
 
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
-        for idx, code in ex.map(_scan, enumerate(images)):
-            raw[idx] = code
+        for idx, code, is_docnr in ex.map(_scan, enumerate(images)):
+            raw[idx]         = code
+            docnr_flags[idx] = is_docnr
+
+    docnr_pages      = sum(docnr_flags)
+    has_docnr_labels = docnr_pages >= 2   # require ≥2 pages to avoid stray OCR hits
 
     valid_pages = [(i, c) for i, c in enumerate(raw) if c]
     coverage    = len(valid_pages) / n if n else 0.0
@@ -445,12 +464,13 @@ def _raster_stamp_survey(images: list, page_offset: int = 0) -> dict:
 
     if len(distinct) < 2 or coverage < 0.10:
         return {
-            "has_stamps":    False,
-            "coverage":      coverage,
-            "codes":         raw,
-            "distinct_count": len(distinct),
-            "range":         None,
-            "jumps":         [],
+            "has_stamps":      False,
+            "has_docnr_labels": has_docnr_labels,
+            "coverage":        coverage,
+            "codes":           raw,
+            "distinct_count":  len(distinct),
+            "range":           None,
+            "jumps":           [],
         }
 
     # Monotonicity check — real stamps go up; noise bounces randomly
@@ -469,12 +489,13 @@ def _raster_stamp_survey(images: list, page_offset: int = 0) -> dict:
 
     if monotone_ratio < 0.60:
         return {
-            "has_stamps":    False,
-            "coverage":      coverage,
-            "codes":         raw,
-            "distinct_count": len(distinct),
-            "range":         None,
-            "jumps":         [],
+            "has_stamps":       False,
+            "has_docnr_labels": has_docnr_labels,
+            "coverage":         coverage,
+            "codes":            raw,
+            "distinct_count":   len(distinct),
+            "range":            None,
+            "jumps":            [],
         }
 
     # Detect jumps: build runs of consecutive identical codes, then look for
@@ -527,12 +548,13 @@ def _raster_stamp_survey(images: list, page_offset: int = 0) -> dict:
         max_code = f"{max(all_ints):04d}" if all_ints else None
 
     return {
-        "has_stamps":    True,
-        "coverage":      coverage,
-        "codes":         raw,
-        "distinct_count": len(distinct),
-        "range":         (min_code, max_code) if min_code else None,
-        "jumps":         jumps,
+        "has_stamps":       True,
+        "has_docnr_labels": has_docnr_labels,
+        "coverage":         coverage,
+        "codes":            raw,
+        "distinct_count":   len(distinct),
+        "range":            (min_code, max_code) if min_code else None,
+        "jumps":            jumps,
     }
 
 
@@ -541,8 +563,20 @@ def _raster_survey_to_hint(survey: dict, page_offset: int = 0) -> str:
     codes = survey.get("codes", [])
 
     if not survey.get("has_stamps"):
-        cov = survey.get("coverage", 0)
-        n   = survey.get("distinct_count", 0)
+        cov       = survey.get("coverage", 0)
+        n         = survey.get("distinct_count", 0)
+        has_docnr = survey.get("has_docnr_labels", False)
+        if has_docnr:
+            # Raster Tesseract detected "DocNrXX" text labels on ≥2 pages.
+            # The numeric regex cannot match them (no leading zero), but the
+            # pilot confirmed their presence.
+            return (
+                f"RASTER PRE-SCAN: 'DocNr' / 'Doc' text labels detected on ≥2 pages "
+                f"({len(codes)} pages total). "
+                "These labels have no leading zero (e.g. 'Docnr26'), so numeric stamp patterns "
+                "do not apply. Look for 'DocNrXX' or 'DocXX' text in page corners — "
+                "it appears ONLY on the first page of each document."
+            )
         if cov <= 0.05:
             # Near-zero coverage — genuinely stampless
             return (
@@ -1078,12 +1112,14 @@ def load_pdf_vlm(
     # where stamps appear only on the first page of each document — the pilot
     # must still run so it can detect the "docnr" format and inject the right hint.
     raster_confident_no_stamps = (
-        not raster_survey["has_stamps"] and raster_survey["coverage"] <= 0.05
+        not raster_survey["has_stamps"]
+        and raster_survey["coverage"] <= 0.05
+        and not raster_survey.get("has_docnr_labels")
     )
     if raster_confident_no_stamps:
         profile       = {"stamp_format": "none", "notes": "raster survey confirmed no stamps"}
         pilot_results = {}
-        print("[gpt4o] Pass 0 skipped (raster: near-zero coverage, stampless dossier).")
+        print("[gpt4o] Pass 0 skipped (raster: near-zero coverage, no DocNr labels, stampless dossier).")
     else:
         profile, pilot_results = _profile_dossier(images, client)
 
