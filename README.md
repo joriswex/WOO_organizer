@@ -112,23 +112,42 @@ Page texts are joined, redaction codes are summed and annotated as `[REDACTED: 5
 
 #### GPT-4o pipeline (`pipeline_gpt4o.py`)
 
-**Three-pass architecture**
+**Pipeline architecture**
 
-| Pass | Model | Input | Purpose |
+| Step | Model | Input | Purpose |
 |---|---|---|---|
-| 1 | gpt-4o | Page images (base64 JPEG, 200 DPI) | Per-page text, category, doc code, boundary signals, email/chat metadata |
-| 2 | gpt-4o-mini | Concatenated page texts | Document boundary detection — decides which pages start a new document |
-| 3 | gpt-4o-mini | Full document text (E-mail docs only) | Extracts structured emails from the complete thread at once |
+| Raster survey | Tesseract (free) | All page images | Detect stamp format, coverage, and sequence before any API call |
+| Pass 0 (pilot) | gpt-4o | 8 sampled pages | Confirm stamp format (4-digit, DocNr, 7-digit barcode, none); skipped for stampless dossiers |
+| Pass 1 | gpt-4o | All page images (base64 JPEG, 200 DPI) | Per-page text, category, doc code, boundary signals, email/chat metadata |
+| Pass 2 | gpt-4o-mini | Concatenated page texts | Document boundary detection for unstamped dossiers |
+| Pass 3 | gpt-4o-mini | Full document text (E-mail docs only) | Structured email extraction from the complete thread |
+
+**Raster stamp survey (pass-0b)**
+
+Before any GPT-4o call, `_raster_stamp_survey()` runs Tesseract OCR on all pages in parallel to determine whether the dossier uses stamps:
+
+- Checks **monotonicity** of the detected code sequence — real stamps increase page-by-page; random OCR artefacts bounce randomly. A sequence with fewer than 60% non-decreasing consecutive pairs is treated as noise.
+- Requires at least 2 distinct valid codes and ≥10% page coverage to classify a dossier as stamped.
+- Detects **large jumps** (gap > 5 between sustained runs) as likely document boundaries where code numbers were skipped.
+- Derives the expected code range from sustained runs only (runs of ≥2 pages), ignoring single-page OCR outliers.
+- The result is injected into the GPT-4o pass-1 system prompt as a per-page cross-check table and jump list.
+
+For stampless dossiers (near-zero raster coverage), the GPT-4o pilot pass is skipped entirely. For dossiers with sparse but nonzero coverage (e.g. DocNr-format where labels appear only on first pages), the pilot still runs.
+
+**Stamp detection hardening**
+
+- `_normalise_doc_code()` rejects `0000` — it is not a valid WOO document code (valid range `0001`–`9999`).
+- `_ocr_stamp_fallback()` requires at least 2 distinct seed codes before spreading stamps to unstamped pages via OCR. A single repeated false-positive code is not sufficient to trigger recovery.
 
 **Pass 1 — Per-page analysis**
 
-Each page is rendered at 200 DPI, resized to ≤1568 px (optimal for `detail=high`), and sent as a base64 JPEG. The model returns a structured JSON object per page:
+Each page is rendered at 200 DPI, resized to ≤1568 px (optimal for `detail=high`), and sent as a base64 JPEG. The system prompt includes the raster survey cross-check and a dossier-specific format hint from the pilot. The model returns a structured JSON object per page:
 
 | Field | Description |
 |---|---|
 | `text` | Full page text in reading order; email headers on their own lines |
 | `is_new_document` | Whether this is the first page of a new document |
-| `doc_code` | 4-digit stamp visible on the page, or null |
+| `doc_code` | Stamp code visible on the page (normalised to 4 digits), or null |
 | `within_doc_page` | Per-document page counter (`"Pagina X van N"`), or null |
 | `category` | E-mail, Chat, Nota, Brief, Report, Timeline, Vergadernotulen, or Other |
 | `doc_subtype` | Fine-grained subtype (e.g. `kamerbrief`, `besluit`, `chat_sms`) |
@@ -136,11 +155,13 @@ Each page is rendered at 200 DPI, resized to ≤1568 px (optimal for `detail=hig
 | `chat_messages` | Array of `{sender_position, sender_label, timestamp, content}` (Chat pages only) |
 | `email_start`, `email_from/to/cc/subject/date` | Per-page email header fields |
 
+After pass 1, per-page `raster_code` values from the survey are attached to each page. `_stamp_coverage()` and `_build_docs_forward_fill()` use `raster_code` as a fallback when GPT-4o returned no `doc_code`.
+
 Results are saved to a cache file (`<stem>_gpt4o_cache.json`) after pass 1. Pass 1 is never re-run if the cache already exists.
 
 **Pass 2 — Boundary detection**
 
-The cached page texts are sent in bulk to gpt-4o-mini, which returns a list of document boundaries with start pages and doc codes. This is cheap (text-only) and can be re-run without vision API costs.
+Only runs for dossiers where stamp coverage is below the reliability threshold. The page text summary is sent to gpt-4o-mini. If the dossier contains an **inventarislijst** (document inventory table), its document list is extracted and prepended to the boundary-detection prompt — giving the model explicit document titles to match against email subjects and letter headings, significantly improving recall.
 
 **Pass 3 — Email extraction**
 
