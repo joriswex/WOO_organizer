@@ -474,8 +474,8 @@ def run():
 
     # Aggregate collectors
     agg = {
-        "ocr":   {"page_p": [], "page_r": [], "page_f1": [], "rq": [], "sq": [], "pq": [], "type_acc": []},
-        "gpt4o": {"page_p": [], "page_r": [], "page_f1": [], "rq": [], "sq": [], "pq": [], "type_acc": []},
+        "ocr":   {"page_p0": [], "page_r0": [], "page_f1_0": [], "page_p": [], "page_r": [], "page_f1": [], "rq": [], "sq": [], "pq": [], "type_acc": []},
+        "gpt4o": {"page_p0": [], "page_r0": [], "page_f1_0": [], "page_p": [], "page_r": [], "page_f1": [], "rq": [], "sq": [], "pq": [], "type_acc": []},
     }
 
     for d in DOSSIERS:
@@ -531,8 +531,13 @@ def run():
         )
 
         # Collect for aggregate
+        om0 = page_level_metrics(ocr_bounds, gt_bounds, total_pages, 0)
+        gm0 = page_level_metrics(gpt_bounds, gt_bounds, total_pages, 0)
         om1 = page_level_metrics(ocr_bounds, gt_bounds, total_pages, 1)
         gm1 = page_level_metrics(gpt_bounds, gt_bounds, total_pages, 1)
+        agg["ocr"]["page_p0"].append(om0["precision"])
+        agg["ocr"]["page_r0"].append(om0["recall"])
+        agg["ocr"]["page_f1_0"].append(om0["f1"])
         agg["ocr"]["page_p"].append(om1["precision"])
         agg["ocr"]["page_r"].append(om1["recall"])
         agg["ocr"]["page_f1"].append(om1["f1"])
@@ -540,6 +545,9 @@ def run():
         agg["ocr"]["sq"].append(o_pq["sq"])
         agg["ocr"]["pq"].append(o_pq["pq"])
         agg["ocr"]["type_acc"].append(ocr_tacc)
+        agg["gpt4o"]["page_p0"].append(gm0["precision"])
+        agg["gpt4o"]["page_r0"].append(gm0["recall"])
+        agg["gpt4o"]["page_f1_0"].append(gm0["f1"])
         agg["gpt4o"]["page_p"].append(gm1["precision"])
         agg["gpt4o"]["page_r"].append(gm1["recall"])
         agg["gpt4o"]["page_f1"].append(gm1["f1"])
@@ -608,41 +616,46 @@ def run():
     print(f"{'=' * 96}")
     print()
     print("  Metrics follow van Heusden et al. (OpenPSS 2024):")
-    print("  Page P/R/F1: page-level boundary detection (±1 tolerance).")
+    print("  Page (Exact) P/R/F1: strict boundary matching, no tolerance.")
+    print("  Page (±1)    P/R/F1: boundary within ±1 page counts as TP.")
     print("  RQ: Recognition Quality = unweighted doc F1 (IoU > 0.5 matching).")
     print("  SQ: Segmentation Quality = mean IoU of matched doc pairs.")
     print("  PQ: Panoptic Quality = RQ × SQ (weighted doc F1).")
     print("  Type Acc: fraction of GT segments with correct type prediction.")
     print()
 
-    # Header — two pipelines side by side, matching paper column order
     col_w = 6
     def pct(v): return f"{v:.3f}"
     def flt(v): return f"{v:.3f}"
 
-    # Two parallel tables — one per pipeline — each with full Page + Doc + Type columns
     hdr = (f"  {'Dossier':<12}  {'P':>{col_w}}  {'R':>{col_w}}  {'F1':>{col_w}}  "
+           f"{'P':>{col_w}}  {'R':>{col_w}}  {'F1':>{col_w}}  "
            f"{'RQ':>{col_w}}  {'SQ':>{col_w}}  {'PQ':>{col_w}}  {'Type Acc':>{col_w+2}}")
     div = "  " + "─" * (len(hdr) - 2)
 
-    def _row(d_label, pp, pr, pf, rq, sq, pq, ta):
-        return (f"  {d_label:<12}  {pct(pp):>{col_w}}  {pct(pr):>{col_w}}  {pct(pf):>{col_w}}  "
+    def _row(d_label, pp0, pr0, pf0, pp1, pr1, pf1, rq, sq, pq, ta):
+        return (f"  {d_label:<12}  {pct(pp0):>{col_w}}  {pct(pr0):>{col_w}}  {pct(pf0):>{col_w}}  "
+                f"{pct(pp1):>{col_w}}  {pct(pr1):>{col_w}}  {pct(pf1):>{col_w}}  "
                 f"{pct(rq):>{col_w}}  {flt(sq):>{col_w}}  {pct(pq):>{col_w}}  {pct(ta):>{col_w+2}}")
 
+    g_w = col_w * 3 + 4  # width of a 3-metric group label
     for pipeline in ("ocr", "gpt4o"):
         label = "OCR pipeline" if pipeline == "ocr" else "GPT-4o pipeline"
         a = agg[pipeline]
         print(f"  {label}")
-        print(f"  {'':12}  {'── Page (±1 tol.) ──':^22}  {'── Document (IoU>0.5) ───':^24}  {'':>8}")
+        print(f"  {'':12}  {'── Page (Exact) ──':^{g_w}}  {'── Page (±1 tol.) ──':^{g_w}}  "
+              f"{'── Document (IoU>0.5) ──':^{g_w}}  {'':>8}")
         print(hdr)
         print(div)
         for i, d in enumerate(DOSSIERS):
             print(_row(d.upper(),
-                       a["page_p"][i], a["page_r"][i], a["page_f1"][i],
+                       a["page_p0"][i], a["page_r0"][i], a["page_f1_0"][i],
+                       a["page_p"][i],  a["page_r"][i],  a["page_f1"][i],
                        a["rq"][i], a["sq"][i], a["pq"][i], a["type_acc"][i]))
         print(div)
         print(_row("Average",
-                   avg(a["page_p"]), avg(a["page_r"]), avg(a["page_f1"]),
+                   avg(a["page_p0"]), avg(a["page_r0"]), avg(a["page_f1_0"]),
+                   avg(a["page_p"]),  avg(a["page_r"]),  avg(a["page_f1"]),
                    avg(a["rq"]), avg(a["sq"]), avg(a["pq"]), avg(a["type_acc"])))
         print()
 
@@ -718,8 +731,8 @@ def export_word(agg: dict, dossiers: list[str], stats: list[dict] | None = None,
     for inclusion in a research paper.
 
     Produces two tables — one per pipeline — each with columns:
-      Dossier | P | R | F1 | RQ | SQ | PQ | Type Acc
-    (Page metrics use ±1 tolerance; document metrics use IoU > 0.5 matching.)
+      Dossier | P | R | F1 (Exact) | P | R | F1 (±1) | RQ | SQ | PQ | Type Acc
+    (Page metrics shown for both exact and ±1 tolerance; document metrics use IoU > 0.5 matching.)
 
     Requires: pip install python-docx
     """
@@ -773,8 +786,8 @@ def export_word(agg: dict, dossiers: list[str], stats: list[dict] | None = None,
 
     avg = lambda lst: sum(lst) / len(lst)
 
-    col_headers = ["Dossier", "P", "R", "F1", "RQ", "SQ", "PQ", "Type Acc"]
-    col_widths  = [0.85, 0.55, 0.55, 0.55, 0.55, 0.55, 0.55, 0.75]  # inches
+    col_headers = ["Dossier", "P", "R", "F1", "P", "R", "F1", "RQ", "SQ", "PQ", "Type Acc"]
+    col_widths  = [0.80, 0.50, 0.50, 0.50, 0.50, 0.50, 0.50, 0.50, 0.50, 0.50, 0.70]  # inches
 
     for pipeline in ("ocr", "gpt4o"):
         label = "OCR Pipeline" if pipeline == "ocr" else "GPT-4o Pipeline"
@@ -788,29 +801,33 @@ def export_word(agg: dict, dossiers: list[str], stats: list[dict] | None = None,
 
         # Sub-caption
         cap = doc.add_paragraph(
-            "Page metrics use ±1 page tolerance. Document metrics use IoU > 0.5 matching. "
+            "Page (Exact): strict boundary matching. Page (±1): boundary within ±1 page counts as TP. "
+            "Document metrics use IoU > 0.5 matching. "
             "RQ = Recognition Quality (unweighted doc F1); SQ = Segmentation Quality (mean IoU); "
             "PQ = Panoptic Quality = RQ × SQ. Type Acc = type classification accuracy."
         )
         for run in cap.runs:
             run.font.size = Pt(9)
 
-        # Build table: 1 header row + 1 subheader row + N dossier rows + 1 average row
-        n_rows = 3 + len(dossiers)   # group header + col header + dossiers + average
+        # Build table: group header + col header + N dossier rows + average row
+        n_rows = 3 + len(dossiers)
         table  = doc.add_table(rows=n_rows, cols=len(col_headers))
         table.style     = "Table Grid"
         table.alignment = WD_TABLE_ALIGNMENT.CENTER
 
-        # Row 0: group header spanning page / document columns
+        # Row 0: group headers
         row0 = table.rows[0].cells
         _bold(row0[0], "")
-        # Merge P R F1 under "Page (±1 tol.)"
+        # Merge cols 1-3 under "Page (Exact)"
         row0[1].merge(row0[3])
-        _bold(row0[1], "Page (±1 tol.)")
-        # Merge RQ SQ PQ under "Document (IoU > 0.5)"
+        _bold(row0[1], "Page (Exact)")
+        # Merge cols 4-6 under "Page (±1 tol.)"
         row0[4].merge(row0[6])
-        _bold(row0[4], "Document (IoU > 0.5)")
-        _bold(row0[7], "Type")
+        _bold(row0[4], "Page (±1 tol.)")
+        # Merge cols 7-9 under "Document (IoU > 0.5)"
+        row0[7].merge(row0[9])
+        _bold(row0[7], "Document (IoU > 0.5)")
+        _bold(row0[10], "Type")
 
         # Row 1: column headers
         row1 = table.rows[1].cells
@@ -822,6 +839,9 @@ def export_word(agg: dict, dossiers: list[str], stats: list[dict] | None = None,
             row = table.rows[2 + i].cells
             vals = [
                 d.upper(),
+                f"{a['page_p0'][i]:.3f}",
+                f"{a['page_r0'][i]:.3f}",
+                f"{a['page_f1_0'][i]:.3f}",
                 f"{a['page_p'][i]:.3f}",
                 f"{a['page_r'][i]:.3f}",
                 f"{a['page_f1'][i]:.3f}",
@@ -837,6 +857,9 @@ def export_word(agg: dict, dossiers: list[str], stats: list[dict] | None = None,
         row_avg = table.rows[2 + len(dossiers)].cells
         avg_vals = [
             "Average",
+            f"{avg(a['page_p0']):.3f}",
+            f"{avg(a['page_r0']):.3f}",
+            f"{avg(a['page_f1_0']):.3f}",
             f"{avg(a['page_p']):.3f}",
             f"{avg(a['page_r']):.3f}",
             f"{avg(a['page_f1']):.3f}",
