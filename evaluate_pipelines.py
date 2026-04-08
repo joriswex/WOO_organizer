@@ -646,6 +646,283 @@ def run():
                    avg(a["rq"]), avg(a["sq"]), avg(a["pq"]), avg(a["type_acc"])))
         print()
 
+    return agg
+
+
+def descriptive_stats(dossiers: list[str]) -> list[dict]:
+    """
+    Compute per-dossier descriptive statistics from GT boundaries and GPT-4o cache.
+
+    Metrics per dossier:
+      - Pages       : total number of pages in the dossier
+      - Documents   : number of GT-annotated documents
+      - Mean pgs/doc: average pages per document
+      - Median pgs/doc
+      - Min pgs/doc : shortest document in pages
+      - Max pgs/doc : longest document in pages
+    """
+    import statistics
+
+    rows = []
+    for d in dossiers:
+        gt_bounds, _ = load_gt(d)
+        gpt4o_data   = load_gpt4o(d)
+        total_pages  = len(gpt4o_data["pages"])
+
+        # Document lengths in pages from GT boundaries
+        doc_lengths = []
+        for i, start in enumerate(gt_bounds):
+            end = gt_bounds[i + 1] if i + 1 < len(gt_bounds) else total_pages
+            doc_lengths.append(end - start)
+
+        n_docs = len(doc_lengths)
+        rows.append({
+            "dossier":  d.upper(),
+            "pages":    total_pages,
+            "docs":     n_docs,
+            "mean_ppd": statistics.mean(doc_lengths)   if doc_lengths else 0,
+            "med_ppd":  statistics.median(doc_lengths) if doc_lengths else 0,
+            "min_ppd":  min(doc_lengths)               if doc_lengths else 0,
+            "max_ppd":  max(doc_lengths)               if doc_lengths else 0,
+        })
+
+    # Print table
+    print("\n" + "=" * 72)
+    print("DESCRIPTIVE STATISTICS")
+    print("=" * 72)
+    print()
+    hdr = f"  {'Dossier':<10}  {'Pages':>6}  {'Docs':>5}  {'Mean p/d':>9}  {'Median p/d':>10}  {'Min p/d':>8}  {'Max p/d':>8}"
+    print(hdr)
+    print("  " + "─" * (len(hdr) - 2))
+    for r in rows:
+        print(f"  {r['dossier']:<10}  {r['pages']:>6}  {r['docs']:>5}  "
+              f"{r['mean_ppd']:>9.1f}  {r['med_ppd']:>10.1f}  "
+              f"{r['min_ppd']:>8}  {r['max_ppd']:>8}")
+    print("  " + "─" * (len(hdr) - 2))
+
+    import statistics as _st
+    all_pages = [r["pages"] for r in rows]
+    all_docs  = [r["docs"]  for r in rows]
+    all_mean  = [r["mean_ppd"] for r in rows]
+    print(f"  {'Total/Avg':<10}  {sum(all_pages):>6}  {sum(all_docs):>5}  "
+          f"{_st.mean(all_mean):>9.1f}  {'':>10}  {'':>8}  {'':>8}")
+    print()
+
+    return rows
+
+
+def export_word(agg: dict, dossiers: list[str], stats: list[dict] | None = None,
+                out_path: str = "evaluation_results.docx") -> None:
+    """
+    Export the aggregate evaluation tables to a Word (.docx) file suitable
+    for inclusion in a research paper.
+
+    Produces two tables — one per pipeline — each with columns:
+      Dossier | P | R | F1 | RQ | SQ | PQ | Type Acc
+    (Page metrics use ±1 tolerance; document metrics use IoU > 0.5 matching.)
+
+    Requires: pip install python-docx
+    """
+    from docx import Document
+    from docx.shared import Pt
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.enum.table import WD_TABLE_ALIGNMENT
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+    from docx.styles.style import _ParagraphStyle
+
+    doc = Document()
+
+    # ── Styles ────────────────────────────────────────────────────────────────
+    style = doc.styles["Normal"]
+    if isinstance(style, _ParagraphStyle):
+        style.font.name = "Times New Roman"
+        style.font.size = Pt(10)
+
+    def _set_col_width(cell, width_inches: float):
+        tc = cell._tc
+        tcPr = tc.get_or_add_tcPr()
+        tcW = OxmlElement("w:tcW")
+        tcW.set(qn("w:w"), str(int(width_inches * 1440)))
+        tcW.set(qn("w:type"), "dxa")
+        tcPr.append(tcW)
+
+    def _bold(cell, text: str, center: bool = True):
+        cell.text = ""
+        run = cell.paragraphs[0].add_run(text)
+        run.bold = True
+        run.font.size = Pt(10)
+        if center:
+            cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    def _cell(cell, text: str, bold: bool = False, center: bool = True,
+              shade: bool = False):
+        cell.text = ""
+        run = cell.paragraphs[0].add_run(text)
+        run.bold = bold
+        run.font.size = Pt(10)
+        if center:
+            cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+        if shade:
+            tcPr = cell._tc.get_or_add_tcPr()
+            shd  = OxmlElement("w:shd")
+            shd.set(qn("w:val"),   "clear")
+            shd.set(qn("w:color"), "auto")
+            shd.set(qn("w:fill"), "EEEEEE")
+            tcPr.append(shd)
+
+    avg = lambda lst: sum(lst) / len(lst)
+
+    col_headers = ["Dossier", "P", "R", "F1", "RQ", "SQ", "PQ", "Type Acc"]
+    col_widths  = [0.85, 0.55, 0.55, 0.55, 0.55, 0.55, 0.55, 0.75]  # inches
+
+    for pipeline in ("ocr", "gpt4o"):
+        label = "OCR Pipeline" if pipeline == "ocr" else "GPT-4o Pipeline"
+        a     = agg[pipeline]
+
+        # Section heading
+        heading = doc.add_paragraph()
+        run = heading.add_run(f"Table: Results of the {label}")
+        run.bold      = True
+        run.font.size = Pt(10)
+
+        # Sub-caption
+        cap = doc.add_paragraph(
+            "Page metrics use ±1 page tolerance. Document metrics use IoU > 0.5 matching. "
+            "RQ = Recognition Quality (unweighted doc F1); SQ = Segmentation Quality (mean IoU); "
+            "PQ = Panoptic Quality = RQ × SQ. Type Acc = type classification accuracy."
+        )
+        for run in cap.runs:
+            run.font.size = Pt(9)
+
+        # Build table: 1 header row + 1 subheader row + N dossier rows + 1 average row
+        n_rows = 3 + len(dossiers)   # group header + col header + dossiers + average
+        table  = doc.add_table(rows=n_rows, cols=len(col_headers))
+        table.style     = "Table Grid"
+        table.alignment = WD_TABLE_ALIGNMENT.CENTER
+
+        # Row 0: group header spanning page / document columns
+        row0 = table.rows[0].cells
+        _bold(row0[0], "")
+        # Merge P R F1 under "Page (±1 tol.)"
+        row0[1].merge(row0[3])
+        _bold(row0[1], "Page (±1 tol.)")
+        # Merge RQ SQ PQ under "Document (IoU > 0.5)"
+        row0[4].merge(row0[6])
+        _bold(row0[4], "Document (IoU > 0.5)")
+        _bold(row0[7], "Type")
+
+        # Row 1: column headers
+        row1 = table.rows[1].cells
+        for j, h in enumerate(col_headers):
+            _bold(row1[j], h)
+
+        # Dossier rows
+        for i, d in enumerate(dossiers):
+            row = table.rows[2 + i].cells
+            vals = [
+                d.upper(),
+                f"{a['page_p'][i]:.3f}",
+                f"{a['page_r'][i]:.3f}",
+                f"{a['page_f1'][i]:.3f}",
+                f"{a['rq'][i]:.3f}",
+                f"{a['sq'][i]:.3f}",
+                f"{a['pq'][i]:.3f}",
+                f"{a['type_acc'][i]:.3f}",
+            ]
+            for j, v in enumerate(vals):
+                _cell(row[j], v, center=(j > 0))
+
+        # Average row (shaded)
+        row_avg = table.rows[2 + len(dossiers)].cells
+        avg_vals = [
+            "Average",
+            f"{avg(a['page_p']):.3f}",
+            f"{avg(a['page_r']):.3f}",
+            f"{avg(a['page_f1']):.3f}",
+            f"{avg(a['rq']):.3f}",
+            f"{avg(a['sq']):.3f}",
+            f"{avg(a['pq']):.3f}",
+            f"{avg(a['type_acc']):.3f}",
+        ]
+        for j, v in enumerate(avg_vals):
+            _cell(row_avg[j], v, bold=True, center=(j > 0), shade=True)
+
+        # Column widths
+        for row in table.rows:
+            for j, cell in enumerate(row.cells):
+                _set_col_width(cell, col_widths[j])
+
+        doc.add_paragraph()   # spacing between tables
+
+    # ── Descriptive statistics table ─────────────────────────────────────────
+    if stats:
+        import statistics as _st
+
+        heading = doc.add_paragraph()
+        run = heading.add_run("Table: Descriptive Statistics of the Evaluation Dossiers")
+        run.bold      = True
+        run.font.size = Pt(10)
+
+        cap = doc.add_paragraph(
+            "Pages = total pages in dossier. Docs = number of ground-truth documents. "
+            "Mean/Median/Min/Max p/d = pages per document."
+        )
+        for r in cap.runs:
+            r.font.size = Pt(9)
+
+        stat_headers = ["Dossier", "Pages", "Docs", "Mean p/d", "Median p/d", "Min p/d", "Max p/d"]
+        stat_widths  = [0.85, 0.65, 0.60, 0.80, 0.90, 0.75, 0.75]
+        n_rows       = 1 + len(stats) + 1   # header + dossiers + total row
+        stbl         = doc.add_table(rows=n_rows, cols=len(stat_headers))
+        stbl.style     = "Table Grid"
+        stbl.alignment = WD_TABLE_ALIGNMENT.CENTER
+
+        # Header row
+        for j, h in enumerate(stat_headers):
+            _bold(stbl.rows[0].cells[j], h)
+
+        # Data rows
+        for i, r in enumerate(stats):
+            row = stbl.rows[1 + i].cells
+            vals = [
+                r["dossier"],
+                str(r["pages"]),
+                str(r["docs"]),
+                f"{r['mean_ppd']:.1f}",
+                f"{r['med_ppd']:.1f}",
+                str(r["min_ppd"]),
+                str(r["max_ppd"]),
+            ]
+            for j, v in enumerate(vals):
+                _cell(row[j], v, center=(j > 0))
+
+        # Total / average row (shaded)
+        row_t = stbl.rows[1 + len(stats)].cells
+        tot_vals = [
+            "Total / Avg",
+            str(sum(r["pages"] for r in stats)),
+            str(sum(r["docs"]  for r in stats)),
+            f"{_st.mean(r['mean_ppd'] for r in stats):.1f}",
+            "",
+            str(min(r["min_ppd"] for r in stats)),
+            str(max(r["max_ppd"] for r in stats)),
+        ]
+        for j, v in enumerate(tot_vals):
+            _cell(row_t[j], v, bold=True, center=(j > 0), shade=True)
+
+        for row in stbl.rows:
+            for j, cell in enumerate(row.cells):
+                _set_col_width(cell, stat_widths[j])
+
+        doc.add_paragraph()
+
+    doc.save(out_path)
+    print(f"[eval] Word table exported to: {out_path}")
+
 
 if __name__ == "__main__":
-    run()
+    agg_result = run()
+    if agg_result:
+        stats = descriptive_stats(DOSSIERS)
+        export_word(agg_result, DOSSIERS, stats=stats)
