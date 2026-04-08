@@ -148,13 +148,25 @@ def _find_doc_code_words(page) -> str | None:
 _LEADING_ZERO_RE = re.compile(r"\b(0\d{3})\b")
 
 
-def _find_doc_code_raster(image: Image.Image) -> str | None:
+def _find_doc_code_raster(
+    image: Image.Image,
+    *,
+    regions: "list | None" = None,
+    return_location: bool = False,
+) -> "str | tuple[str, str] | None":
     """
-    OCR all corner/edge regions of a rendered page image for a 4-digit document
-    code.
+    OCR corner/edge regions of a rendered page image for a 4-digit document code.
 
     Regions in _DOC_CODE_RASTER_REGIONS are tried in priority order; the first
     unambiguous match wins.
+
+    Parameters
+    ----------
+    regions : list | None
+        Override which regions to scan (same format as _DOC_CODE_RASTER_REGIONS).
+        Defaults to _DOC_CODE_RASTER_REGIONS when None.
+    return_location : bool
+        When True, return ``(code, region_name)`` instead of just the code.
 
     Two-stage matching per region:
       1. Primary  : isolated leading-zero code  ``\\b(0\\d{3})\\b``
@@ -168,14 +180,15 @@ def _find_doc_code_raster(image: Image.Image) -> str | None:
                     fallback would wrongly extract a spurious code.
     """
     w, h = image.size
-    for name, (x0f, y0f, x1f, y1f) in _DOC_CODE_RASTER_REGIONS:
+    for name, (x0f, y0f, x1f, y1f) in (regions or _DOC_CODE_RASTER_REGIONS):
         crop = image.crop((int(w * x0f), int(h * y0f), int(w * x1f), int(h * y1f)))
         text = pytesseract.image_to_string(
             crop, config="--psm 6 -c tessedit_char_whitelist=0123456789"
         )
         m = _LEADING_ZERO_RE.search(text)
         if m and not _is_year(m.group(1)):
-            return m.group(1)
+            code = m.group(1)
+            return (code, name) if return_location else code
         # Fallback: '0NNN' embedded in a longer barcode (at least 2 preceding digits).
         # Pattern: "\d{2,}(0\d{3})" matches barcodes like "7601441" → "0144" and
         # "542240014" → "0014" but NOT short sequences like "00001" (only 5 chars,
@@ -184,7 +197,8 @@ def _find_doc_code_raster(image: Image.Image) -> str | None:
         if name.startswith("btm"):
             m = re.search(r"\d{2,}(0\d{3})", text)
             if m:
-                return m.group(1)
+                code = m.group(1)
+                return (code, name) if return_location else code
     return None
 
 

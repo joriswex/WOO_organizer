@@ -59,7 +59,8 @@ _SYSTEM_PROMPT = (
     "(e.g. 'Doc 5', 'Doc5', 'Docnr 23', 'Docnr23') — first page of each document only. "
     "All pages of the same document share the same code.\n"
     "- Some pages also show an incrementing per-page sequence counter (e.g. 00001, 00002, 00003 "
-    "— unique per page, increases by 1 each page). These are NOT document codes; ignore them.\n"
+    "or 0001, 0002, 0003 — unique per page, increases by 1 each page across the entire dossier). "
+    "These are NOT document codes; ignore them even if they look like a 4-digit leading-zero code.\n"
     "- Sensitive content is gelakt (blacked out) with redaction bars (some are black bars, other times white boxes or otherwise). The applicable WOO legal ground "
     "is printed in small text inside or next to each black box, in the format 5.1.X or 5.2.X "
     "(e.g. '5.1.2e', '5.1.1', '5.2.1'). These are articles of the Wet Open Overheid. "
@@ -289,7 +290,7 @@ def _profile_dossier(images: list, client) -> tuple[dict, dict[int, dict]]:
         spread_idx    = [round(i * step) for i in range(n_spread)]
         indices       = sorted(set(cluster_idx) | set(spread_idx))
 
-    print(f"[gpt4o] Pass 0: pilot run on {len(indices)} pages to profile stamp format...")
+    print(f"[gpt4o] Sampling {len(indices)} pages to detect stamp format...")
 
     # Run pilot pages through the real pass-1 call (no hint yet — generic prompt)
     pilot_results: dict[int, dict] = {}
@@ -344,7 +345,8 @@ def _profile_dossier(images: list, client) -> tuple[dict, dict[int, dict]]:
             notes = (f"No repeats in pilot ({len(indices)} pages, "
                      f"{len(set(valid))} distinct codes) — format inferred from digit length")
 
-    print(f"[gpt4o] Pass 0 result: format={fmt}, example={example!r} | {notes}")
+    ex_str = f" (e.g. '{example}')" if example else ""
+    print(f"[gpt4o] Stamp format detected: {fmt}{ex_str}")
     return {"stamp_format": fmt, "stamp_example": example, "notes": notes}, pilot_results
 
 
@@ -387,7 +389,10 @@ def _profile_to_hint(profile: dict) -> str:
             f"{loc_str}{ex_str}. "
             "Every page of the same document shares the same code; a code change signals a new document. "
             "For doc_code: look only for a 4-digit number with a leading zero stamped in the "
-            f"corners or top/bottom strip — not in the body text.{note_str}"
+            f"corners or top/bottom strip — not in the body text. "
+            "If two 4-digit numbers appear on the same page, use the one that is shared by "
+            "consecutive pages (the stable doc code), NOT the one that increments by 1 each "
+            f"page across the dossier (a per-page counter).{note_str}"
         )
     if fmt == "6-digit":
         return (
@@ -425,17 +430,19 @@ def _raster_stamp_survey(images: list, page_offset: int = 0) -> dict:
         pairs with a valid code are non-decreasing) — noise is tolerated but
         random churn is not
     """
-    from pipeline_ocr import _find_doc_code_raster
+    from pipeline_ocr import _find_doc_code_raster, _DOC_CODE_RASTER_REGIONS
 
     n = len(images)
-    raw:         list[str | None] = [None] * n
-    docnr_flags: list[bool]       = [False] * n
+    raw:          list[str | None] = [None] * n
+    raw_regions:  list[str | None] = [None] * n   # which region produced each code
+    docnr_flags:  list[bool]       = [False] * n
 
-    def _scan(args: tuple[int, object]) -> tuple[int, str | None, bool]:
+    def _scan(args: tuple[int, object]) -> tuple[int, str | None, str | None, bool]:
         idx, img = args
-        code = _find_doc_code_raster(img)
-        if code:
-            return idx, _normalise_doc_code(code), False
+        result = _find_doc_code_raster(img, return_location=True)
+        if result:
+            code, region = result
+            return idx, _normalise_doc_code(code), region, False
         # Check for DocNr text labels (e.g. "Docnr26") — no leading zero, so the
         # numeric regex in _find_doc_code_raster cannot match them.  A quick
         # Tesseract pass on the top strip is enough to detect the pattern.
@@ -445,15 +452,57 @@ def _raster_stamp_survey(images: list, page_offset: int = 0) -> dict:
             top  = img.crop((0, 0, w, int(h * 0.15)))
             txt  = pytesseract.image_to_string(top, lang="nld+eng", config="--psm 6")
             if re.search(r"docnr?\s*\d+", txt, re.IGNORECASE):
-                return idx, None, True
+                return idx, None, None, True
         except Exception:
             pass
-        return idx, None, False
+        return idx, None, None, False
 
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
-        for idx, code, is_docnr in ex.map(_scan, enumerate(images)):
+        for idx, code, region, is_docnr in ex.map(_scan, enumerate(images)):
             raw[idx]         = code
+            raw_regions[idx] = region
             docnr_flags[idx] = is_docnr
+
+    # ── Dominant-region lock-in ───────────────────────────────────────────────
+    # Stamps in a dossier are always at the same position.  Count which region
+    # produced the most hits; if one region has a clear majority (>50%), restrict
+    # a second pass to that region only.  This prevents a different region from
+    # producing spurious hits on pages where the dominant region is blank (e.g.
+    # btm-left picking up fragments of an 8-digit code when btm-middle is the
+    # true stamp location).
+    region_hits: dict[str, int] = {}
+    for r in raw_regions:
+        if r:
+            region_hits[r] = region_hits.get(r, 0) + 1
+
+    dominant_region: str | None = None
+    if region_hits:
+        total_hits = sum(region_hits.values())
+        top_region, top_count = max(region_hits.items(), key=lambda x: x[1])
+        if top_count / total_hits > 0.50:
+            dominant_region = top_region
+
+    if dominant_region:
+        dominant_region_spec = [r for r in _DOC_CODE_RASTER_REGIONS if r[0] == dominant_region]
+        if dominant_region_spec:
+            # Pages whose code came from a non-dominant region need re-scanning
+            # restricted to the dominant region only (may return None if blank there).
+            pages_to_rescan = [
+                (idx, images[idx]) for idx in range(n)
+                if raw_regions[idx] and raw_regions[idx] != dominant_region
+            ]
+            def _rescan(args: tuple[int, object]) -> tuple[int, str | None]:
+                idx, img = args
+                result = _find_doc_code_raster(img, regions=dominant_region_spec)
+                return idx, _normalise_doc_code(result) if result else None
+
+            if pages_to_rescan:
+                with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
+                    for idx, corrected_code in ex.map(_rescan, pages_to_rescan):
+                        raw[idx] = corrected_code   # None if stamp not at dominant loc
+                print(f"[gpt4o] Dominant stamp region: {dominant_region!r} "
+                      f"({top_count}/{total_hits} hits); "
+                      f"re-scanned {len(pages_to_rescan)} page(s) restricted to that region.")
 
     docnr_pages      = sum(docnr_flags)
     has_docnr_labels = docnr_pages >= 2   # require ≥2 pages to avoid stray OCR hits
@@ -497,6 +546,78 @@ def _raster_stamp_survey(images: list, page_offset: int = 0) -> dict:
             "range":            None,
             "jumps":            [],
         }
+
+    # Page-counter detection: real doc codes repeat across consecutive pages.
+    # A per-page sequence counter (0001, 0002, 0003...) has every code unique —
+    # unique_ratio ≈ 1.0.  If virtually all codes are unique AND the sequence
+    # increments by exactly 1 nearly every step, it is a page counter, not stamps.
+    unique_ratio = len(distinct) / len(valid_pages) if valid_pages else 0.0
+    if unique_ratio > 0.90 and len(int_vals) >= 4:
+        step_1 = sum(1 for a, b in zip(int_vals, int_vals[1:]) if b - a == 1)
+        step_1_ratio = step_1 / (len(int_vals) - 1)
+        if step_1_ratio > 0.80:
+            # The raster codes are a page counter, not document stamps.
+            # If we know which region produced them, rescan every page excluding
+            # that region — the real stamp may be at a different position.
+            counter_region = dominant_region
+            fallback_regions = (
+                [r for r in _DOC_CODE_RASTER_REGIONS if r[0] != counter_region]
+                if counter_region else None
+            )
+            raw2 = [None] * n
+            if fallback_regions:
+                def _rescan_excl(args: tuple[int, object]) -> tuple[int, str | None]:
+                    idx, img = args
+                    res = _find_doc_code_raster(img, regions=fallback_regions)
+                    return idx, _normalise_doc_code(res) if res else None
+                with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
+                    for idx, code in ex.map(_rescan_excl, enumerate(images)):
+                        raw2[idx] = code
+                valid2   = [(i, c) for i, c in enumerate(raw2) if c]
+                distinct2 = {c for _, c in valid2}
+                # Accept the fallback scan if it found ≥2 distinct repeating codes
+                if len(distinct2) >= 2 and len(valid2) > len(distinct2):
+                    print(f"[gpt4o] Page counter detected in {counter_region!r}; "
+                          f"fallback scan (excluding that region) found "
+                          f"{len(distinct2)} distinct stamp code(s) — using those.")
+                    # Replace raw with fallback results and recompute derived values.
+                    raw        = raw2
+                    valid_pages = valid2
+                    distinct    = sorted(distinct2)
+                    int_vals    = []
+                    for _, c in valid_pages:
+                        try:
+                            int_vals.append(int(c))
+                        except ValueError:
+                            pass
+                    dominant_region = counter_region  # keep for location hint
+                    # Fall through to jump detection with corrected codes.
+                else:
+                    print(f"[gpt4o] Page counter detected in {counter_region!r}; "
+                          f"fallback scan found no stable stamps — flagging stampless.")
+                    return {
+                        "has_stamps":            False,
+                        "has_docnr_labels":      has_docnr_labels,
+                        "coverage":              coverage,
+                        "codes":                 [None] * n,
+                        "distinct_count":        0,
+                        "range":                 None,
+                        "jumps":                 [],
+                        "_page_counter_detected": True,
+                        "_counter_region":        counter_region,
+                    }
+            else:
+                return {
+                    "has_stamps":            False,
+                    "has_docnr_labels":      has_docnr_labels,
+                    "coverage":              coverage,
+                    "codes":                 [None] * n,
+                    "distinct_count":        0,
+                    "range":                 None,
+                    "jumps":                 [],
+                    "_page_counter_detected": True,
+                    "_counter_region":        None,
+                }
 
     # Detect jumps: build runs of consecutive identical codes, then look for
     # integer gaps > 1 between runs of length >= 2.
@@ -548,13 +669,14 @@ def _raster_stamp_survey(images: list, page_offset: int = 0) -> dict:
         max_code = f"{max(all_ints):04d}" if all_ints else None
 
     return {
-        "has_stamps":       True,
-        "has_docnr_labels": has_docnr_labels,
-        "coverage":         coverage,
-        "codes":            raw,
-        "distinct_count":   len(distinct),
-        "range":            (min_code, max_code) if min_code else None,
-        "jumps":            jumps,
+        "has_stamps":        True,
+        "has_docnr_labels":  has_docnr_labels,
+        "coverage":          coverage,
+        "codes":             raw,
+        "distinct_count":    len(distinct),
+        "range":             (min_code, max_code) if min_code else None,
+        "jumps":             jumps,
+        "dominant_region":   dominant_region,
     }
 
 
@@ -577,6 +699,27 @@ def _raster_survey_to_hint(survey: dict, page_offset: int = 0) -> str:
                 "do not apply. Look for 'DocNrXX' or 'DocXX' text in page corners — "
                 "it appears ONLY on the first page of each document."
             )
+        if survey.get("_page_counter_detected"):
+            _REGION_LABEL = {
+                "top-right":  "top-right corner",
+                "top-left":   "top-left corner",
+                "btm-right":  "bottom-right corner",
+                "btm-middle": "bottom-centre strip",
+                "btm-left":   "bottom-left corner",
+                "top-full":   "top strip",
+            }
+            counter_region = survey.get("_counter_region")
+            counter_loc = (f" in the {_REGION_LABEL.get(counter_region, counter_region)}"
+                           if counter_region else "")
+            return (
+                f"RASTER PRE-SCAN: A monotonically incrementing 4-digit sequence was found"
+                f"{counter_loc} ({len(codes)} pages). "
+                f"This is a per-page counter, NOT a document stamp code. "
+                f"Ignore any 4-digit number{counter_loc} that increments by 1 each page. "
+                "Look for a separate 4-digit stamp that stays the same across consecutive pages "
+                "of the same document — that is the doc_code. "
+                "Return null if no such stable stamp is visible."
+            )
         if cov <= 0.05:
             # Near-zero coverage — genuinely stampless
             return (
@@ -596,10 +739,11 @@ def _raster_survey_to_hint(survey: dict, page_offset: int = 0) -> str:
                 "'Doc XX', or a 4-digit stamp code."
             )
 
-    lo, hi = survey["range"]
-    cov    = survey["coverage"]
-    n_dist = survey["distinct_count"]
-    jumps  = survey.get("jumps", [])
+    lo, hi          = survey["range"]
+    cov             = survey["coverage"]
+    n_dist          = survey["distinct_count"]
+    jumps           = survey.get("jumps", [])
+    dominant_region = survey.get("dominant_region")
 
     # Compact per-page table: only pages that have a detected code
     entries = [
@@ -630,11 +774,29 @@ def _raster_survey_to_hint(survey: dict, page_offset: int = 0) -> str:
             + "\n".join(lines)
         )
 
+    loc_hint = ""
+    if dominant_region:
+        # Map internal region names to human-readable descriptions for GPT-4o
+        _REGION_LABEL = {
+            "top-right":  "top-right corner",
+            "top-left":   "top-left corner",
+            "btm-right":  "bottom-right corner",
+            "btm-middle": "bottom-centre strip",
+            "btm-left":   "bottom-left corner",
+            "top-full":   "top strip",
+        }
+        label = _REGION_LABEL.get(dominant_region, dominant_region)
+        loc_hint = (
+            f"\nSTAMP LOCATION: All stamps in this dossier are in the {label}. "
+            "Look ONLY there for doc_code — ignore any 4-digit numbers in other positions."
+        )
+
     return (
         f"RASTER PRE-SCAN: Stamps on {cov:.0%} of pages, "
         f"{n_dist} distinct codes, range {lo}–{hi}.\n"
         f"Per-page raster codes (pdf_page: code):\n{table}"
-        f"{jump_block}\n"
+        f"{jump_block}"
+        f"{loc_hint}\n"
         "Use these as a cross-check: if your visual reading differs from the raster hint, "
         "prefer what you see in the image — but treat the raster code as a strong prior."
     )
@@ -924,7 +1086,7 @@ def save_cache(page_data: list[dict], cache_path: Path,
         root["dossier_profile"] = dossier_profile
     with open(cache_path, "w", encoding="utf-8") as f:
         json.dump(root, f, ensure_ascii=False, indent=2)
-    print(f"[gpt4o] Cache saved → {cache_path}")
+    print(f"[gpt4o] Progress saved to cache ({cache_path.name}).")
 
 
 def _load_cache_pages(cache_path: Path) -> tuple[list[dict], int, list[dict]]:
@@ -949,7 +1111,7 @@ def _update_cache_boundaries(documents: list[dict], cache_path: Path) -> None:
         data["boundary_documents"] = documents
         with open(cache_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-        print(f"[gpt4o] Boundary decisions saved to cache → {cache_path}")
+        print(f"[gpt4o] Document boundaries saved to cache.")
     except Exception as e:
         print(f"[gpt4o] Warning: could not update cache boundaries: {e}")
 
@@ -962,7 +1124,7 @@ def _update_cache_emails(emails_by_doc: dict, cache_path: Path) -> None:
         data["emails_by_doc"] = emails_by_doc
         with open(cache_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-        print(f"[gpt4o] Email extraction saved to cache → {cache_path}")
+        print(f"[gpt4o] Email extraction results saved to cache.")
     except Exception as e:
         print(f"[gpt4o] Warning: could not update cache emails: {e}")
 
@@ -1031,7 +1193,7 @@ def _ocr_stamp_fallback(page_data: list[dict]) -> None:
             recovered += 1
 
     if recovered:
-        print(f"[gpt4o] OCR stamp fallback: recovered {recovered}/{len(null_pages)} missing stamps.")
+        print(f"[gpt4o] Recovered {recovered}/{len(null_pages)} missing stamp codes via OCR.")
 
 
 # ── Main pipeline ─────────────────────────────────────────────────────────────
@@ -1072,7 +1234,7 @@ def load_pdf_vlm(
     client = OpenAI(api_key=api_key)
 
     # ── Convert PDF to images ────────────────────────────────────────────────
-    print(f"[gpt4o] Converting PDF to images at {_RENDER_DPI} DPI...")
+    print(f"[gpt4o] Converting PDF pages to images...")
     from pdf2image import convert_from_path
     images: list[Image.Image] = convert_from_path(str(pdf_path), dpi=_RENDER_DPI)
 
@@ -1091,20 +1253,18 @@ def load_pdf_vlm(
         page_offset = 0
 
     total = len(images)
-    print(f"[gpt4o] Analysing {total} pages with {OPENAI_MODEL} (detail=high, workers={_MAX_WORKERS})...")
+    print(f"[gpt4o] Step 2/4 — Reading all {total} pages with GPT-4o vision ({_MAX_WORKERS} pages at a time)...")
 
     # ── Raster stamp survey (before GPT-4o, free) ───────────────────────────
-    print(f"[gpt4o] Raster stamp survey: scanning {total} pages...")
+    print(f"[gpt4o] Step 1/4 — Pre-scanning {total} pages for document stamps (quick, no API cost)...")
     raster_survey = _raster_stamp_survey(images, page_offset)
     if raster_survey["has_stamps"]:
         lo, hi = raster_survey["range"]
-        print(f"[gpt4o] Raster survey: stamped dossier — {raster_survey['distinct_count']} codes "
-              f"({lo}–{hi}), {raster_survey['coverage']:.0%} coverage, "
-              f"{len(raster_survey['jumps'])} jump(s) detected.")
+        print(f"[gpt4o] Stamps found on {raster_survey['coverage']:.0%} of pages "
+              f"— {raster_survey['distinct_count']} document codes ({lo}–{hi}).")
     else:
-        print(f"[gpt4o] Raster survey: no consistent stamps "
-              f"({raster_survey['coverage']:.0%} coverage, "
-              f"{raster_survey['distinct_count']} distinct value(s)).")
+        print(f"[gpt4o] No consistent stamps found "
+              f"({raster_survey['coverage']:.0%} of pages had a candidate, but below threshold).")
 
     # ── Pass 0: pilot run to profile stamp format ────────────────────────────
     # Only skip the GPT-4o pilot when raster coverage is near-zero (<= 5%).
@@ -1119,7 +1279,7 @@ def load_pdf_vlm(
     if raster_confident_no_stamps:
         profile       = {"stamp_format": "none", "notes": "raster survey confirmed no stamps"}
         pilot_results = {}
-        print("[gpt4o] Pass 0 skipped (raster: near-zero coverage, no DocNr labels, stampless dossier).")
+        print("[gpt4o] Stamp sampling skipped — pre-scan confirmed this dossier has no stamps.")
     else:
         profile, pilot_results = _profile_dossier(images, client)
 
@@ -1145,7 +1305,7 @@ def load_pdf_vlm(
         for future in as_completed(futures):
             i, result = future.result()
             completed += 1
-            print(f"[gpt4o] Page {completed}/{total} done (pdf page {i + 1 + page_offset})")
+            print(f"[gpt4o] Page {completed}/{total} read.")
             raw_results[i] = result
 
     page_data: list[dict] = []
@@ -1428,12 +1588,13 @@ def _extract_emails_full_doc(code: str, text: str, client) -> list[dict]:
                     {"role": "system", "content": _EMAIL_EXTRACT_SYSTEM},
                     {"role": "user",   "content": prompt},
                 ],
+                timeout=90.0,            # prevent silent hang on slow/long responses
             )
             choice = response.choices[0]
             if choice.finish_reason == "length":
                 # Response was truncated — JSON will be invalid; no point retrying
                 # with the same input. Fall back to per-page assembly.
-                print(f"  [gpt4o-email] {code}: output truncated even at max tokens — falling back")
+                print(f"  [gpt4o-email] Doc {code}: email thread too long for single pass — using page-by-page fallback.")
                 return []
             data = json.loads(choice.message.content or "{}")
             raw  = data.get("emails") or []
@@ -1450,12 +1611,12 @@ def _extract_emails_full_doc(code: str, text: str, client) -> list[dict]:
                     "attachments": em.get("attachments") or [],
                     "text":        em.get("body")        or "",
                 })
-            print(f"  [gpt4o-email] {code}: {len(result)} email(s) via full-doc extraction")
+            print(f"  [gpt4o-email] Doc {code}: found {len(result)} email(s).")
             return result
         except json.JSONDecodeError as e:
-            print(f"  [gpt4o-email] {code}: JSON error (attempt {attempt + 1}): {e}")
+            print(f"  [gpt4o-email] Doc {code}: unexpected response format (attempt {attempt + 1}): {e}")
         except Exception as e:
-            print(f"  [gpt4o-email] {code}: API error (attempt {attempt + 1}): {str(e)[:120]}")
+            print(f"  [gpt4o-email] Doc {code}: API error (attempt {attempt + 1}): {str(e)[:120]}")
             if attempt < _MAX_RETRIES - 1:
                 time.sleep(2 ** attempt)
 
@@ -1663,20 +1824,20 @@ def _finalise_pipeline(
     has_reliable_stamps = coverage >= _STAMP_THRESHOLD
 
     if has_reliable_stamps:
-        print(f"[gpt4o] Stamps detected on {coverage:.0%} of pages — using stamp forward-fill.")
+        print(f"[gpt4o] Step 3/4 — Assigning documents by stamp codes ({coverage:.0%} of pages stamped).")
         docs_raw = _build_docs_forward_fill(page_data)
         method   = "gpt4o-stamp"
     elif boundary_docs is not None:
         # Cached LLM boundary decisions from a previous pass-2 run
-        print(f"[gpt4o] No reliable stamps ({coverage:.0%}) — using cached LLM boundaries.")
+        print(f"[gpt4o] Step 3/4 — Assigning documents using saved boundary decisions (no stamps found).")
         docs_raw = _build_docs_from_boundaries(page_data, boundary_docs)
         method   = "gpt4o-2pass"
     elif client is not None:
-        print(f"[gpt4o] No reliable stamps ({coverage:.0%}) — running pass 2 (LLM boundary detection)...")
+        print(f"[gpt4o] Step 3/4 — No stamps found ({coverage:.0%}) — asking AI to find document boundaries...")
         inv_hint  = _extract_inventarislijst_hint(page_data)
         if inv_hint:
             n_docs = sum(1 for l in inv_hint.splitlines() if l.startswith("  ["))
-            print(f"[gpt4o] Inventarislijst hint: {n_docs} document(s) — injecting into pass 2.")
+            print(f"[gpt4o] Found an inventory table listing {n_docs} document(s) — using it to guide boundary detection.")
         summary   = _build_page_summary(page_data)
         documents = _call_boundary_pass(summary, len(page_data), client, inv_hint=inv_hint)
         if documents:
@@ -1685,14 +1846,23 @@ def _finalise_pipeline(
             if cache_path:
                 _update_cache_boundaries(documents, cache_path)
         else:
-            print("[gpt4o] Pass 2 failed — falling back to VLM boundary signals.")
+            print("[gpt4o] Boundary detection failed — falling back to per-page signals.")
             docs_raw = _build_docs_boundary(page_data)
             method   = "gpt4o-boundary"
     else:
         # No client, no cached boundaries, no stamps
-        print("[gpt4o] No stamps and no API client — using VLM boundary signals only.")
+        print("[gpt4o] No stamps and no API client — assigning documents using per-page signals only.")
         docs_raw = _build_docs_boundary(page_data)
         method   = "gpt4o-boundary"
+
+    n_email_docs = sum(
+        1 for d in docs_raw.values()
+        if next((c for c in d["categories"] if c != "Other"), "Other") == "E-mail"
+    )
+    if n_email_docs and client is not None:
+        print(f"[gpt4o] Step 4/4 — Extracting email threads from {n_email_docs} email document(s)...")
+    elif not n_email_docs:
+        print(f"[gpt4o] Step 4/4 — No email documents found, skipping email extraction.")
 
     docs: dict[str, dict] = {}
     for code, d in docs_raw.items():
@@ -1718,6 +1888,7 @@ def _finalise_pipeline(
         # Fall back to per-page assembly if extraction fails or client is unavailable.
         if category == "E-mail":
             if client is not None:
+                print(f"  [gpt4o-email] Doc {code}: extracting email thread...")
                 structured_emails = _extract_emails_full_doc(code, annotated, client)
                 if not structured_emails:
                     structured_emails = _build_emails_from_pages(code, d.get("email_pages", []))
@@ -1758,7 +1929,7 @@ def _finalise_pipeline(
             _update_cache_emails(emails_by_doc, cache_path)
 
     total = len(page_data)
-    print(f"[gpt4o] Done — {len(docs)} documents from {total} pages.")
+    print(f"[gpt4o] Done! Found {len(docs)} documents across {total} pages.")
     return docs
 
 
