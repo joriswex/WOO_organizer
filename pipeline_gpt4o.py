@@ -30,8 +30,8 @@ from PIL import Image
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-OPENAI_MODEL    = "gpt-4o"
-_BOUNDARY_MODEL = "gpt-4o-mini"   # text-only boundary pass — no vision needed, much cheaper
+OPENAI_MODEL    = "gpt-4o-2024-11-20"       # pinned snapshot for reproducibility
+_BOUNDARY_MODEL = "gpt-4o-mini-2024-07-18"  # text-only boundary pass — no vision needed, much cheaper
 _RENDER_DPI     = 200
 _MAX_IMG_PX     = 1568      # GPT-4o "high" detail works best ≤ 2048px; 1568 is optimal tile size
 _MAX_RETRIES    = 3

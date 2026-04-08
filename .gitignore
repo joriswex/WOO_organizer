@@ -7,6 +7,7 @@ __pycache__/
 # Generated outputs
 *.html
 *_cache*.json
+*.docx
 
 # Environment
 .env
