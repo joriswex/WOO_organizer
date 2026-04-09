@@ -1375,7 +1375,8 @@ def load_pdf_vlm(
     if cache_path:
         save_cache(page_data, cache_path, dossier_profile=profile)
 
-    return _finalise_pipeline(page_data, client=client, cache_path=cache_path)
+    return _finalise_pipeline(page_data, client=client, cache_path=cache_path,
+                              stamp_format=profile.get("stamp_format"))
 
 
 def _build_emails_from_pages(doc_code: str, email_pages: list[dict]) -> list[dict]:
@@ -1810,18 +1811,23 @@ def _finalise_pipeline(
     client=None,
     cache_path: Path | None = None,
     boundary_docs: list[dict] | None = None,
+    stamp_format: str | None = None,
 ) -> dict[str, dict]:
     """Stage 2 + 3: assign doc codes and build the final docs dict.
 
     Priority:
-      1. Stamp forward-fill — when stamps cover >= _STAMP_THRESHOLD of pages.
+      1. Stamp forward-fill — when stamps cover >= threshold of pages.
          Reliable and cheap; no LLM needed.
       2. LLM pass-2 boundary detection — when stamps are absent/sparse.
          Uses cached boundary_docs if available, else calls the API.
       3. VLM is_new_document signal — when no client and no stamps.
     """
+    # DocNr-format stamps appear on the first page of each document only, so
+    # coverage is structurally bounded by 1/avg_doc_length — a lower threshold
+    # is needed to avoid incorrectly routing these dossiers to pass-2.
+    threshold = 0.15 if stamp_format == "docnr" else _STAMP_THRESHOLD
     coverage = _stamp_coverage(page_data)
-    has_reliable_stamps = coverage >= _STAMP_THRESHOLD
+    has_reliable_stamps = coverage >= threshold
 
     if has_reliable_stamps:
         print(f"[gpt4o] Step 3/4 — Assigning documents by stamp codes ({coverage:.0%} of pages stamped).")
@@ -1829,11 +1835,11 @@ def _finalise_pipeline(
         method   = "gpt4o-stamp"
     elif boundary_docs is not None:
         # Cached LLM boundary decisions from a previous pass-2 run
-        print(f"[gpt4o] Step 3/4 — Assigning documents using saved boundary decisions (no stamps found).")
+        print(f"[gpt4o] Step 3/4 — Assigning documents using saved boundary decisions (stamps sparse/absent).")
         docs_raw = _build_docs_from_boundaries(page_data, boundary_docs)
         method   = "gpt4o-2pass"
     elif client is not None:
-        print(f"[gpt4o] Step 3/4 — No stamps found ({coverage:.0%}) — asking AI to find document boundaries...")
+        print(f"[gpt4o] Step 3/4 — Stamp coverage {coverage:.0%} below threshold ({threshold:.0%}) — asking AI to find document boundaries...")
         inv_hint  = _extract_inventarislijst_hint(page_data)
         if inv_hint:
             n_docs = sum(1 for l in inv_hint.splitlines() if l.startswith("  ["))

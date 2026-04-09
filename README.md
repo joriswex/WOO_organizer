@@ -220,7 +220,7 @@ Both Dutch (`Van`, `Aan`, `Onderwerp`, `Verzonden`, `CC`) and English header fie
 | `text_sorting.py` | Date extraction and chronological sorting |
 | `requirements.txt` | Python dependencies |
 | `annotate.py` | Browser-based annotation tool for ground-truth labelling and pipeline comparison (development) |
-| `evaluate_pipelines.py` | Offline evaluation script — compares OCR vs GPT-4o on boundary detection and type classification (development) |
+| `evaluate_pipelines.py` | Offline evaluation script — compares OCR vs GPT-4o on boundary detection (page-level F1 + Panoptic Quality), type classification, and descriptive statistics; exports results to Word (.docx) (development) |
 
 ---
 
