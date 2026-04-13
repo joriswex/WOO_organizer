@@ -2053,7 +2053,7 @@
   .pipeline-pdf-item.selected { border-color: var(--woo-dark); background: rgba(56,5,4,0.025); }
   .pipeline-pdf-radio {
     width: 13px; height: 13px;
-    border-radius: 50%;
+    border-radius: 2px;
     border: 2px solid var(--woo-border);
     flex-shrink: 0;
     transition: all 0.15s;
@@ -2066,11 +2066,11 @@
   .pipeline-pdf-item.selected .pipeline-pdf-radio::after {
     content: '';
     position: absolute;
-    top: 50%; left: 50%;
-    transform: translate(-50%, -50%);
-    width: 5px; height: 5px;
-    background: white;
-    border-radius: 50%;
+    top: 2px; left: 3px;
+    width: 5px; height: 3px;
+    border-left: 2px solid white;
+    border-bottom: 2px solid white;
+    transform: rotate(-45deg);
   }
   .pipeline-pdf-title { flex: 1; color: var(--woo-dark); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .pipeline-pdf-pages { font-family: var(--woo-mono); font-size: 10px; color: var(--text-dimmer); white-space: nowrap; }
@@ -2295,22 +2295,40 @@
   .doc-browser-left {
     display: flex; flex-direction: column;
     border-right: 1px solid var(--woo-border);
-    overflow: hidden; background: var(--woo-white);
+    overflow-y: auto; background: var(--woo-white);
   }
   .doc-browser-list-header {
     padding: 9px 12px 7px;
     font-size: 10px; font-weight: 600; text-transform: uppercase;
     letter-spacing: 0.08em; color: var(--text-dimmer);
-    border-bottom: 1px solid var(--woo-border); flex-shrink: 0;
+    border-bottom: 1px solid var(--woo-border);
+    position: sticky; top: 0; z-index: 1; background: var(--woo-white);
+    flex-shrink: 0;
   }
-  .doc-browser-items { flex: 1; overflow-y: auto; padding: 5px; }
+  .doc-browser-items { flex-shrink: 0; padding: 5px; }
   .doc-browser-item {
+    display: flex; align-items: flex-start; gap: 8px;
     padding: 9px 10px; border-radius: var(--woo-radius-sm);
     cursor: pointer; margin-bottom: 3px;
     border: 1.5px solid transparent; transition: all 0.15s;
   }
   .doc-browser-item:hover { background: var(--woo-bg); border-color: var(--woo-border); }
   .doc-browser-item.selected { background: rgba(56,5,4,0.04); border-color: var(--woo-dark); }
+  .doc-browser-item-check {
+    width: 13px; height: 13px; flex-shrink: 0; margin-top: 1px;
+    border-radius: 2px; border: 2px solid var(--woo-border);
+    position: relative; transition: all 0.15s;
+  }
+  .doc-browser-item.selected .doc-browser-item-check {
+    border-color: var(--woo-dark); background: var(--woo-dark);
+  }
+  .doc-browser-item.selected .doc-browser-item-check::after {
+    content: ''; position: absolute;
+    top: 2px; left: 3px; width: 5px; height: 3px;
+    border-left: 2px solid white; border-bottom: 2px solid white;
+    transform: rotate(-45deg);
+  }
+  .doc-browser-item-body { flex: 1; min-width: 0; }
   .doc-browser-item-title {
     font-size: 12px; font-weight: 500; color: var(--woo-dark);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 3px;
@@ -2324,7 +2342,7 @@
   .doc-browser-item-pages { font-size: 10px; font-family: var(--woo-mono); color: var(--text-dimmer); }
   .doc-browser-pipeline {
     border-top: 1px solid var(--woo-border); padding: 12px;
-    flex-shrink: 1; min-height: 0; overflow-y: auto; background: var(--woo-white);
+    flex-shrink: 0; background: var(--woo-white);
   }
   .doc-browser-pipeline-label {
     font-size: 10px; font-weight: 600; text-transform: uppercase;
@@ -2493,9 +2511,33 @@
       </div>
     </div>
     <div class="results-list" id="resultsList">
-      <div class="empty-state">
-        <div class="big-char">§</div>
-        <p>Zoek Woo-dossiers<br>via de balk hierboven</p>
+      <div class="empty-state" style="justify-content:flex-start;align-items:stretch;padding:16px;gap:0">
+        <div style="font-size:10px;color:var(--text-dimmer);font-family:var(--woo-mono);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px">Dossier laden via PID</div>
+        <a href="https://woozm.nl" target="_blank"
+           style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:var(--woo-dark);color:white;border-radius:6px;text-decoration:none;font-family:var(--woo-font);font-size:12px;font-weight:600;margin-bottom:10px">
+          <span>🔍 Zoek op WooZM.nl</span>
+          <span style="opacity:.7">↗</span>
+        </a>
+        <div style="font-family:var(--woo-mono);font-size:10px;color:var(--text-dimmer);margin-bottom:5px">Plak PID (uit URL of dossierkaart):</div>
+        <div style="display:flex;gap:6px;margin-bottom:14px">
+          <input id="pidInput" type="text" placeholder="nl.mnre1013.2i.2024.65"
+            style="flex:1;font-family:var(--woo-mono);font-size:11px;padding:8px 10px;border:1.5px solid var(--woo-border);border-radius:4px;background:var(--woo-bg);color:var(--woo-text);outline:none"
+            onfocus="this.style.borderColor='var(--woo-dark)'"
+            onblur="this.style.borderColor='var(--woo-border)'"
+            onkeydown="if(event.key==='Enter')loadFromPid()">
+          <button onclick="loadFromPid()"
+            style="background:var(--woo-dark);color:white;border:none;border-radius:4px;padding:8px 14px;font-family:var(--woo-font);font-size:12px;font-weight:600;cursor:pointer">
+            Laden →
+          </button>
+        </div>
+        <div style="border-top:1px solid var(--woo-border);padding-top:10px">
+          <div style="font-family:var(--woo-mono);font-size:10px;color:var(--text-dimmer);margin-bottom:6px">Of laad casestudie:</div>
+          <div class="result-item" onclick="loadCaseStudy()" style="cursor:pointer">
+            <div class="result-type-badge badge-besluit">Woo-besluit</div>
+            <div class="result-title">Besluit op Woo-verzoek AVVN-resoluties Israël–Palestijnse Gebieden</div>
+            <div class="result-meta"><span>📅 2024-05-27</span><span>📄 146p</span><span>🏛 Min. BZ</span></div>
+          </div>
+        </div>
       </div>
     </div>
     <div class="pagination" id="pagination" style="display:none"></div>
@@ -2758,6 +2800,11 @@ async function doSearch() {
   hideAutocomplete();
   const q = input.value.trim();
   if (!q) return;
+  // Detect PID pattern (nl.*) → load directly without search
+  if (/^nl\./i.test(q)) {
+    _confirmAndRun(() => _showOnlinePipelineSelector({ pid: q, title: q }));
+    return;
+  }
   state.query = q;
   state.page = 1;
   fetchResults();
@@ -3272,16 +3319,18 @@ function showWelcome() {
 }
 
 function loadCaseStudy() {
-  const item = {
-    pid: 'nl.mnre1013.2i.2024.65',
+  const pid = 'nl.mnre1013.2i.2024.65';
+  state.activeResult = {
+    pid,
     title: 'Besluit op Woo-verzoek AVVN-resoluties conflict Israël–Palestijnse Gebieden',
     type: 'Woo-verzoek en -besluit',
     publisher: 'Ministerie Van Buitenlandse Zaken',
     date: '2024-05-27',
     pages: 146,
   };
-  state.activeResult = item;
-  _confirmAndRun(() => _showOnlinePipelineSelector(item));
+  document.getElementById('viewerToolbar').style.display = 'flex';
+  document.getElementById('noticeStrip').style.display = 'flex';
+  buildDossierView(pid, getDemoData(pid));
 }
 
 async function loadDossierByPid(pid) {
@@ -7453,7 +7502,8 @@ let _pendingPid       = null;   // PID for online dossiers
 let _pendingPdfUrls   = [];     // [{url, title, pages}] fetched from infobox
 let _pendingFile      = null;   // File object for uploads
 let _selectedPipeline = 'api';  // 'api' | 'ocr' | 'gpt4o'
-let _selectedPdfUrl   = null;   // chosen PDF URL (online dossiers)
+let _selectedPdfUrl   = null;   // chosen PDF URL — doc browser (single-select)
+let _selectedPdfUrls  = new Set(); // chosen PDF URLs — pipeline selector (multi-select)
 let _pipelineApiKey   = '';     // OpenAI key entered in pipeline selector
 let _pageRangeStart   = null;   // first page (1-indexed, null = all)
 let _pageRangeEnd     = null;   // last page  (1-indexed, null = all)
@@ -7475,6 +7525,7 @@ async function _showOnlinePipelineSelector(item) {
   _pendingFile      = null;
   _selectedPipeline = 'api';
   _selectedPdfUrl   = null;
+  _selectedPdfUrls  = new Set();
   _pageRangeStart   = null;
   _pageRangeEnd     = null;
   _invEnabled       = false;
@@ -7542,6 +7593,7 @@ function _showUploadPipelineSelector(file) {
   _pendingPdfUrls   = [];
   _selectedPipeline = 'ocr';   // sensible default for uploads
   _selectedPdfUrl   = null;
+  _selectedPdfUrls  = new Set();
   _pageRangeStart   = null;
   _pageRangeEnd     = null;
   _invEnabled       = false;
@@ -7636,7 +7688,7 @@ function _renderPipelineSelector({ mode, title }) {
       </div>
 
       ${!isUpload ? `
-      <div class="pipeline-pdf-section" id="pdfPickerSection">
+      <div class="pipeline-pdf-section visible" id="pdfPickerSection">
         <div class="pipeline-pdf-section-label">PDF kiezen</div>
         <div class="pipeline-pdf-loading" id="pdfPickerLoading">
           <div style="width:10px;height:10px;border:1.5px solid var(--woo-border);border-top-color:var(--woo-accent);border-radius:50%;animation:spin 0.7s linear infinite;flex-shrink:0"></div>
@@ -7876,10 +7928,6 @@ function _selectPipelineOption(el) {
   const wrap = document.getElementById('pipelineApiKeyWrap');
   if (wrap) wrap.style.display = _selectedPipeline === 'gpt4o' ? 'block' : 'none';
 
-  // Show/hide PDF picker (only for online dossiers)
-  const section = document.getElementById('pdfPickerSection');
-  if (section) section.classList.toggle('visible', _selectedPipeline !== 'api');
-
   const rangeSection = document.getElementById('pageRangeSection');
   if (rangeSection) rangeSection.classList.toggle('visible', _selectedPipeline !== 'api');
 }
@@ -7938,7 +7986,7 @@ function _updatePdfPicker() {
   }
 
   list.innerHTML = _pendingPdfUrls.map((pdf, i) => `
-    <div class="pipeline-pdf-item${i === 0 ? ' selected' : ''}"
+    <div class="pipeline-pdf-item"
          onclick="_selectPdfItem(this, ${i})">
       <div class="pipeline-pdf-radio"></div>
       <div class="pipeline-pdf-title" title="${escHtml(pdf.title)}">${escHtml(pdf.title)}</div>
@@ -7946,13 +7994,17 @@ function _updatePdfPicker() {
     </div>
   `).join('');
 
-  _selectedPdfUrl = _pendingPdfUrls[0]?.url || null;
+  _selectedPdfUrls = new Set();
 }
 
 function _selectPdfItem(el, idx) {
-  document.querySelectorAll('.pipeline-pdf-item').forEach(i => i.classList.remove('selected'));
-  el.classList.add('selected');
-  _selectedPdfUrl = _pendingPdfUrls[idx]?.url || null;
+  const url = _pendingPdfUrls[idx]?.url;
+  if (!url) return;
+  if (el.classList.toggle('selected')) {
+    _selectedPdfUrls.add(url);
+  } else {
+    _selectedPdfUrls.delete(url);
+  }
 }
 
 
@@ -7971,11 +8023,12 @@ function _startSelectedPipeline() {
   }
 
   const rangeOpts = { pageStart: _pageRangeStart || null, pageEnd: _pageRangeEnd || null };
+  const selectedUrls = _selectedPdfUrls.size > 0 ? [..._selectedPdfUrls] : (_selectedPdfUrl ? [_selectedPdfUrl] : []);
 
   // API default: if a PDF is available, run OCR automatically; otherwise fall back to text API
   if (_selectedPipeline === 'api') {
-    if (_selectedPdfUrl) {
-      _runServerPipeline({ pipeline: 'ocr', url: _selectedPdfUrl, apiKey: _pipelineApiKey, pid: _pendingPid, ...rangeOpts });
+    if (selectedUrls.length > 0) {
+      _runServerPipeline({ pipeline: 'ocr', urls: selectedUrls, apiKey: _pipelineApiKey, pid: _pendingPid, ...rangeOpts });
     } else if (_pendingFile) {
       _runServerPipeline({ pipeline: 'ocr', file: _pendingFile, apiKey: _pipelineApiKey, ...rangeOpts });
     } else if (_pendingPid) {
@@ -7986,8 +8039,8 @@ function _startSelectedPipeline() {
 
   if (_pendingFile) {
     _runServerPipeline({ pipeline: _selectedPipeline, file: _pendingFile, apiKey: _pipelineApiKey, ...rangeOpts });
-  } else if (_selectedPdfUrl) {
-    _runServerPipeline({ pipeline: _selectedPipeline, url: _selectedPdfUrl, apiKey: _pipelineApiKey, pid: _pendingPid, ...rangeOpts });
+  } else if (selectedUrls.length > 0) {
+    _runServerPipeline({ pipeline: _selectedPipeline, urls: selectedUrls, apiKey: _pipelineApiKey, pid: _pendingPid, ...rangeOpts });
   } else {
     alert('Kies eerst een PDF-bestand om te verwerken.');
     return;
@@ -8016,17 +8069,20 @@ function _startSelectedPipeline() {
 // Server pipeline — POST /api/analyse with SSE stream
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function _runServerPipeline({ pipeline, url, file, apiKey, pid, pageStart, pageEnd }) {
+async function _runServerPipeline({ pipeline, urls, url, file, apiKey, pid, pageStart, pageEnd }) {
   const content = document.getElementById('viewerContent');
   const logLines = [];
 
+  // urls (multi-select) takes priority over url (single, doc-browser)
+  const urlList = urls?.length ? urls : (url ? [url] : []);
+
   // Store PDF source so doc previews can show the right page later
-  if (url)  state.pdfSource = { type: 'url',  url };
+  if (urlList.length > 0) state.pdfSource = { type: 'url', url: urlList[0] };
   if (file) state.pdfSource = { type: 'file', blobUrl: URL.createObjectURL(file) };
 
   const form = new FormData();
   form.append('pipeline', pipeline);
-  if (url)       form.append('url',        url);
+  for (const u of urlList) form.append('url', u);
   if (apiKey)    form.append('api_key',    apiKey);
   if (file)      form.append('file',       file);
   if (pageStart) form.append('page_start', pageStart);
@@ -8189,12 +8245,15 @@ function _renderDocumentBrowser() {
             ${files.length === 0
               ? `<div style="padding:16px 10px;font-size:11px;font-family:var(--woo-mono);color:var(--text-dimmer)">Geen PDF-bestanden gevonden.</div>`
               : files.map((f, i) => `
-                <div class="doc-browser-item${i === 0 ? ' selected' : ''}"
+                <div class="doc-browser-item"
                      onclick="_selectDocInBrowser(this,${i})" data-idx="${i}">
-                  <div class="doc-browser-item-title" title="${escHtml(f.title)}">${escHtml(f.title)}</div>
-                  <div class="doc-browser-item-meta">
-                    ${f.type ? `<span class="doc-browser-item-type">${escHtml(f.type)}</span>` : ''}
-                    ${f.pages ? `<span class="doc-browser-item-pages">${f.pages} pag.</span>` : ''}
+                  <div class="doc-browser-item-check"></div>
+                  <div class="doc-browser-item-body">
+                    <div class="doc-browser-item-title" title="${escHtml(f.title)}">${escHtml(f.title)}</div>
+                    <div class="doc-browser-item-meta">
+                      ${f.type ? `<span class="doc-browser-item-type">${escHtml(f.type)}</span>` : ''}
+                      ${f.pages ? `<span class="doc-browser-item-pages">${f.pages} pag.</span>` : ''}
+                    </div>
                   </div>
                 </div>`).join('')}
             <label id="docBrowserUploadItem" class="doc-browser-item"
@@ -8312,26 +8371,35 @@ function _renderDocumentBrowser() {
       </div>
     </div>`;
 
+  _selectedPdfUrls = new Set();
   if (files.length > 0) {
-    _selectedPdfUrl = files[0].url;
-    _previewPdfInBrowser(files[0].url);
+    _previewPdfInBrowser(files[0].url);  // preview first for orientation, but don't check it
   }
 }
 
 function _selectDocInBrowser(el, idx) {
-  document.querySelectorAll('.doc-browser-item').forEach(i => i.classList.remove('selected'));
-  el.classList.add('selected');
-  _pendingFile    = null;
-  _selectedPdfUrl = _pendingPdfUrls[idx]?.url || null;
-  if (_selectedPdfUrl) _previewPdfInBrowser(_selectedPdfUrl);
+  const url = _pendingPdfUrls[idx]?.url;
+  if (!url) return;
+  _pendingFile = null;
+  // Deselect upload item if active
+  document.getElementById('docBrowserUploadItem')?.classList.remove('selected');
+  // Toggle this item
+  if (el.classList.toggle('selected')) {
+    _selectedPdfUrls.add(url);
+  } else {
+    _selectedPdfUrls.delete(url);
+  }
+  // Always preview the clicked file so user can inspect it
+  _previewPdfInBrowser(url);
 }
 
 function _selectUploadInBrowser(file) {
   if (!file) return;
-  _pendingFile    = file;
-  _selectedPdfUrl = null;
+  _pendingFile     = file;
+  _selectedPdfUrl  = null;
+  _selectedPdfUrls = new Set();
   // Visually mark as selected
-  document.querySelectorAll('.doc-browser-item').forEach(i => i.classList.remove('selected'));
+  document.querySelectorAll('#docBrowserItems .doc-browser-item').forEach(i => i.classList.remove('selected'));
   document.getElementById('docBrowserUploadItem')?.classList.add('selected');
   // Preview the uploaded file directly (blob URL, no proxy needed)
   const blobUrl = URL.createObjectURL(file);
