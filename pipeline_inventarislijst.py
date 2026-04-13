@@ -10,6 +10,7 @@ import base64
 import io
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from PIL import Image
@@ -81,26 +82,26 @@ def extract_inventarislijst(
 
     client = OpenAI(api_key=api_key)
 
-    print(f"[inventarislijst] Converting PDF to images at {_RENDER_DPI} DPI...")
-    all_images: list[Image.Image] = convert_from_path(str(pdf_path), dpi=_RENDER_DPI)
+    # Render only the needed pages — avoid decoding the whole PDF when a range is given
+    first_page = page_range[0] if page_range else 1
+    last_page  = page_range[1] if page_range else None
+    print(f"[inventarislijst] Converting PDF to images at {_RENDER_DPI} DPI"
+          f" (pages {first_page}–{last_page or 'end'})...")
+    kwargs: dict = {"dpi": _RENDER_DPI, "first_page": first_page}
+    if last_page:
+        kwargs["last_page"] = last_page
+    images: list[Image.Image] = convert_from_path(str(pdf_path), **kwargs)
 
-    if page_range:
-        start  = max(1, page_range[0])
-        end    = min(len(all_images), page_range[1])
-        images = all_images[start - 1 : end]
-    else:
-        images = all_images
+    print(f"[inventarislijst] Analysing {len(images)} page(s) with {_MODEL} (concurrent)...")
 
-    print(f"[inventarislijst] Analysing {len(images)} page(s) with {_MODEL}...")
-
-    all_items: list[dict] = []
-    for i, img in enumerate(images):
+    def _analyse_page(args: tuple[int, Image.Image]) -> tuple[int, list[dict]]:
+        i, img = args
         b64 = _encode_page(img)
         for attempt in range(_MAX_RETRIES):
             try:
                 response = client.chat.completions.create(
                     model=_MODEL,
-                    max_tokens=4096,
+                    max_tokens=16384,
                     temperature=0,
                     response_format={"type": "json_object"},
                     messages=[
@@ -123,14 +124,26 @@ def extract_inventarislijst(
                 data  = json.loads(response.choices[0].message.content or "{}")
                 items = data.get("items") or []
                 print(f"[inventarislijst] Pagina {i + 1}: {len(items)} rij(en) gevonden")
-                all_items.extend(items)
-                break
+                return i, items
             except json.JSONDecodeError as e:
                 print(f"  [inventarislijst] p{i+1}: JSON parse error (attempt {attempt+1}): {e}")
             except Exception as e:
                 print(f"  [inventarislijst] p{i+1}: API error (attempt {attempt+1}): {str(e)[:100]}")
                 if attempt < _MAX_RETRIES - 1:
                     time.sleep(2 ** attempt)
+        return i, []
+
+    # Run all pages concurrently then reassemble in order
+    page_results: dict[int, list[dict]] = {}
+    with ThreadPoolExecutor(max_workers=min(len(images), 10)) as executor:
+        futures = {executor.submit(_analyse_page, (i, img)): i for i, img in enumerate(images)}
+        for future in as_completed(futures):
+            i, items = future.result()
+            page_results[i] = items
+
+    all_items: list[dict] = []
+    for i in range(len(images)):
+        all_items.extend(page_results.get(i, []))
 
     # Deduplicate by code — same document can appear on multiple table pages
     seen:   set[str]   = set()

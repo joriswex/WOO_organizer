@@ -87,7 +87,9 @@ async def proxy(url: str = Query(..., description="Full URL to proxy")):
         raise HTTPException(status_code=400, detail="Only https URLs are allowed")
 
     async def _stream():
-        async with httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
+        # Large government PDFs can be slow — short connect, generous read timeout
+        _timeout = httpx.Timeout(connect=15, read=120, write=30, pool=10)
+        async with httpx.AsyncClient(follow_redirects=True, timeout=_timeout) as client:
             async with client.stream("GET", url, headers=HEADERS) as r:
                 async for chunk in r.aiter_bytes(chunk_size=65536):
                     yield chunk
@@ -842,19 +844,19 @@ async def _pipeline_with_cleanup(
 
 @app.post("/api/analyse")
 async def analyse(
-    pipeline:   str       = Form(..., description="'ocr' or 'gpt4o'"),
-    url:        Optional[str] = Form(None, description="PDF URL (for online dossiers)"),
-    api_key:    Optional[str] = Form(None, description="OpenAI API key (gpt4o only)"),
+    pipeline:   str            = Form(..., description="'ocr' or 'gpt4o'"),
+    url:        list[str]      = Form(default=[], description="PDF URL(s) — repeat field for multiple"),
+    api_key:    Optional[str]  = Form(None, description="OpenAI API key (gpt4o only)"),
     file:       Optional[UploadFile] = File(None, description="Uploaded PDF file"),
-    page_start: Optional[int] = Form(None, description="First page to process (1-indexed, inclusive)"),
-    page_end:   Optional[int] = Form(None, description="Last page to process (1-indexed, inclusive)"),
+    page_start: Optional[int]  = Form(None, description="First page to process (1-indexed, inclusive)"),
+    page_end:   Optional[int]  = Form(None, description="Last page to process (1-indexed, inclusive)"),
 ):
     """
     Run the OCR or GPT-4o pipeline on a PDF and stream progress + results via SSE.
 
     Accepts either:
       - multipart field 'file' (uploaded PDF), or
-      - form field 'url'       (PDF downloaded via proxy)
+      - form field 'url'       (one or more PDF URLs; multiple are merged before processing)
 
     Returns text/event-stream with JSON events:
       {"type": "progress", "msg": "...", "pct": 0-100 | null}
@@ -873,13 +875,32 @@ async def analyse(
     elif url:
         try:
             async with httpx.AsyncClient(follow_redirects=True, timeout=60) as client:
-                r = await client.get(url, headers=HEADERS)
-            if not r.is_success:
-                raise HTTPException(
-                    status_code=502,
-                    detail=f"Kon PDF niet ophalen: HTTP {r.status_code}",
-                )
-            pdf_bytes = r.content
+                if len(url) == 1:
+                    r = await client.get(url[0], headers=HEADERS)
+                    if not r.is_success:
+                        raise HTTPException(
+                            status_code=502,
+                            detail=f"Kon PDF niet ophalen: HTTP {r.status_code}",
+                        )
+                    pdf_bytes = r.content
+                else:
+                    # Download all PDFs and merge with pypdf
+                    import io
+                    from pypdf import PdfReader, PdfWriter
+                    writer = PdfWriter()
+                    for u in url:
+                        r = await client.get(u, headers=HEADERS)
+                        if not r.is_success:
+                            raise HTTPException(
+                                status_code=502,
+                                detail=f"Kon PDF niet ophalen ({u}): HTTP {r.status_code}",
+                            )
+                        reader = PdfReader(io.BytesIO(r.content))
+                        for page in reader.pages:
+                            writer.add_page(page)
+                    buf = io.BytesIO()
+                    writer.write(buf)
+                    pdf_bytes = buf.getvalue()
         except httpx.RequestError as exc:
             raise HTTPException(status_code=502, detail=f"PDF ophalen mislukt: {exc}")
     else:

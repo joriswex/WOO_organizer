@@ -1089,18 +1089,19 @@ def save_cache(page_data: list[dict], cache_path: Path,
     print(f"[gpt4o] Progress saved to cache ({cache_path.name}).")
 
 
-def _load_cache_pages(cache_path: Path) -> tuple[list[dict], int, list[dict]]:
-    """Load page metadata from JSON cache. Returns (pages_without_images, dpi, boundary_docs)."""
+def _load_cache_pages(cache_path: Path) -> tuple[list[dict], int, list[dict], str | None]:
+    """Load page metadata from JSON cache. Returns (pages_without_images, dpi, boundary_docs, stamp_format)."""
     with open(cache_path, encoding="utf-8") as f:
         data = json.load(f)
-    dpi      = data.get("dpi", _RENDER_DPI)
-    pages    = data["pages"]
-    boundary = data.get("boundary_documents") or []
+    dpi          = data.get("dpi", _RENDER_DPI)
+    pages        = data["pages"]
+    boundary     = data.get("boundary_documents") or []
+    stamp_format = (data.get("dossier_profile") or {}).get("stamp_format")
     # Re-normalise category in case cache was written before the fix
     for p in pages:
         p["category"] = _normalise_category(str(p.get("category") or "Other"))
         p["doc_subtype"] = _normalise_doc_subtype(p.get("doc_subtype"), p["category"])
-    return pages, dpi, boundary
+    return pages, dpi, boundary, stamp_format
 
 
 def _update_cache_boundaries(documents: list[dict], cache_path: Path) -> None:
@@ -1142,7 +1143,7 @@ def docs_from_cache(cache_path: Path, pdf_path: Path) -> dict[str, dict]:
         Same dict[str, dict] as load_pdf_vlm().
     """
     print(f"[gpt4o] Loading cache from {cache_path} ...")
-    pages_meta, dpi, boundary_docs = _load_cache_pages(cache_path)
+    pages_meta, dpi, boundary_docs, stamp_format = _load_cache_pages(cache_path)
     total = len(pages_meta)
 
     print(f"[gpt4o] Re-rendering {total} page images from PDF at {dpi} DPI...")
@@ -1156,7 +1157,8 @@ def docs_from_cache(cache_path: Path, pdf_path: Path) -> dict[str, dict]:
         img = all_images[idx] if idx < len(all_images) else all_images[-1]
         page_data.append({**p, "image": img})
 
-    return _finalise_pipeline(page_data, boundary_docs=boundary_docs or None)
+    return _finalise_pipeline(page_data, boundary_docs=boundary_docs or None,
+                              stamp_format=stamp_format)
 
 
 # ── OCR stamp fallback ───────────────────────────────────────────────────────
@@ -1870,7 +1872,8 @@ def _finalise_pipeline(
     elif not n_email_docs:
         print(f"[gpt4o] Step 4/4 — No email documents found, skipping email extraction.")
 
-    docs: dict[str, dict] = {}
+    # ── Phase A: pre-compute all non-API metadata (fast, no I/O) ────────────────
+    doc_meta: dict[str, dict] = {}
     for code, d in docs_raw.items():
         full_text       = "\n\n".join(d["texts"])
         annotated       = _annotate_text(full_text)
@@ -1878,50 +1881,78 @@ def _finalise_pipeline(
 
         # First non-"Other" page category wins: email headers only appear on the
         # first page, so majority vote would wrongly demote multi-page emails.
-        category = next((c for c in d["categories"] if c != "Other"), "Other")
+        category    = next((c for c in d["categories"] if c != "Other"), "Other")
         doc_subtype = next((s for s in d.get("doc_subtypes", []) if s and s != "other"), None)
         if not doc_subtype:
             doc_subtype = _CATEGORY_TO_SUBTYPE.get(category, "other")
 
-        # Chat: use most common chat name across pages
         chat_names    = d.get("chat_names") or []
         chat_name     = Counter(chat_names).most_common(1)[0][0] if chat_names else None
-        chat_messages = d.get("chat_messages") or []
+        doc_date      = next((v for v in d.get("doc_dates",   []) if v), None)
+        doc_sender    = next((v for v in d.get("doc_senders", []) if v), None)
 
-        # Build structured emails for E-mail documents.
-        # Prefer the full-document GPT-4o-mini pass (sees the whole thread at once,
-        # handles Dutch dates, attachments, reply chains correctly).
-        # Fall back to per-page assembly if extraction fails or client is unavailable.
+        doc_meta[code] = {
+            "d":              d,
+            "full_text":      full_text,
+            "annotated":      annotated,
+            "redaction_codes": redaction_codes,
+            "category":       category,
+            "doc_subtype":    doc_subtype,
+            "chat_name":      chat_name,
+            "chat_messages":  d.get("chat_messages") or [],
+            "doc_date":       doc_date,
+            "doc_sender":     doc_sender,
+        }
+
+    # ── Phase B: extract emails concurrently for all E-mail docs ─────────────
+    email_results: dict[str, list] = {}
+    email_codes = [
+        code for code, m in doc_meta.items()
+        if m["category"] == "E-mail" and client is not None
+    ]
+
+    def _extract_email_worker(code: str) -> tuple[str, list]:
+        print(f"  [gpt4o-email] Doc {code}: extracting email thread...")
+        return code, _extract_emails_full_doc(code, doc_meta[code]["annotated"], client)
+
+    with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as executor:
+        futures = {executor.submit(_extract_email_worker, code): code for code in email_codes}
+        for future in as_completed(futures):
+            code, result = future.result()
+            email_results[code] = result
+
+    # ── Phase C: assemble final docs dict ────────────────────────────────────
+    docs: dict[str, dict] = {}
+    for code, m in doc_meta.items():
+        d        = m["d"]
+        category = m["category"]
+
+        # Build structured emails: prefer concurrent GPT-4o-mini result,
+        # fall back to per-page assembly when extraction failed or no client.
         if category == "E-mail":
             if client is not None:
-                print(f"  [gpt4o-email] Doc {code}: extracting email thread...")
-                structured_emails = _extract_emails_full_doc(code, annotated, client)
-                if not structured_emails:
-                    structured_emails = _build_emails_from_pages(code, d.get("email_pages", []))
+                structured_emails = email_results.get(code) or \
+                    _build_emails_from_pages(code, d.get("email_pages", []))
             else:
                 structured_emails = _build_emails_from_pages(code, d.get("email_pages", []))
         else:
             structured_emails = []
-
-        # First non-null doc_date / doc_sender across all pages of this document
-        doc_date   = next((v for v in d.get("doc_dates", [])   if v), None)
-        doc_sender = next((v for v in d.get("doc_senders", []) if v), None)
 
         docs[code] = {
             "doc_code":         code,
             "pages":            d["pages"],
             "pdf_pages":        d.get("pdf_pages") or [],
             "page_nums_in_doc": d["page_nums_in_doc"],
-            "text":             full_text,
-            "annotated_text":   annotated,
-            "redaction_codes":  redaction_codes,
+            "text":             m["full_text"],
+            "annotated_text":   m["annotated"],
+            "redaction_codes":  m["redaction_codes"],
             "category":         category,
-            "doc_subtype":      doc_subtype,
+            "doc_subtype":      m["doc_subtype"],
             "method":           method,
-            "doc_date":         doc_date,
-            "doc_sender":       doc_sender,
-            "chat_name":        chat_name,
-            "chat_messages":    chat_messages,
+            "doc_date":         m["doc_date"],
+            "doc_sender":       m["doc_sender"],
+            "chat_name":        m["chat_name"],
+            "chat_messages":    m["chat_messages"],
             "emails":           structured_emails,
         }
 
