@@ -487,6 +487,25 @@
     flex: 1;
     overflow-y: auto;
     padding: 24px 24px 80px 24px;
+    min-width: 0;
+  }
+
+  #viewerRowArea {
+    flex: 1;
+    display: flex;
+    flex-direction: row;
+    overflow: hidden;
+    min-height: 0;
+  }
+
+  #pdfSidePanel {
+    width: 48%;
+    border-left: 1px solid var(--woo-border);
+    background: var(--woo-white);
+    flex-shrink: 0;
+    display: none;
+    flex-direction: column;
+    overflow: hidden;
   }
   .viewer-content::-webkit-scrollbar { width: 4px; }
   .viewer-content::-webkit-scrollbar-thumb { background: var(--woo-border); border-radius: 2px; }
@@ -2560,7 +2579,7 @@
         <div class="view-tabs">
           <button class="view-tab active" id="tabEmails" onclick="setViewTab('emails')">E-mails</button>
           <button class="view-tab" id="tabChats" onclick="setViewTab('chats')">Chats</button>
-          <button class="view-tab" id="tabOverig" onclick="setViewTab('overig')">Overig</button>
+          <button class="view-tab" id="tabOverig" onclick="setViewTab('overig')">Overige documenten</button>
           <button class="view-tab" id="tabTimeline" onclick="setViewTab('timeline')">Tijdlijn</button>
           <button class="view-tab" id="tabSummary" onclick="setViewTab('summary')">✦ Samenvatting</button>
           <button class="view-tab" id="tabSearch" onclick="setViewTab('search')">Zoeken</button>
@@ -2573,30 +2592,33 @@
     <div class="notice-strip" id="noticeStrip" style="display:none">
       ⚠ Live preview — documenten worden geladen via pid.wooverheid.nl
     </div>
-    <div class="viewer-content" id="viewerContent">
-      <div class="welcome-screen">
-        <div class="welcome-inner">
-          <div class="case-study-badge"> WOO Organizer · Van archief naar inzicht</div>
-          <div class="welcome-title">WOO-documenten leesbaar</div>
-          <p class="welcome-sub">
-            In Nederland verplicht de Wet open overheid (Woo) de overheid om informatie openbaar te maken op aanvraag van Woo-verzoeken. In de praktijk worden dossiers gepubliceerd als statische PDF-bestanden met juridisch jargon, zwartgelakte passages en forensische exportformaten. Dit maakt de documenten openbaar, maar moeilijk toegankelijk voor journalisten, onderzoekers en burgers zonder specialistische kennis.
+    <div id="viewerRowArea">
+      <div class="viewer-content" id="viewerContent">
+        <div class="welcome-screen">
+          <div class="welcome-inner">
+            <div class="case-study-badge"> WOO Organizer · Van archief naar inzicht</div>
+            <div class="welcome-title">WOO-documenten leesbaar</div>
+            <p class="welcome-sub">
+              In Nederland verplicht de Wet open overheid (Woo) de overheid om informatie openbaar te maken op aanvraag van Woo-verzoeken. In de praktijk worden dossiers gepubliceerd als statische PDF-bestanden met juridisch jargon, zwartgelakte passages en forensische exportformaten. Dit maakt de documenten openbaar, maar moeilijk toegankelijk voor journalisten, onderzoekers en burgers zonder specialistische kennis.
 Met de Woo Organizer wordt dat toegankelijker.
 Doorzoek elk Woo-dossier met AI. Bekijk SMS-berichten, e-mails en chats in een herkenbare interface. Analyseer redacties, betrokken personen, data en de chronologie van een dossier zonder handmatig door honderden pagina's te hoeven zoeken.<br>
-            .
-          </p>
-          <div class="welcome-upload-cta" onclick="document.getElementById('pdfInput').click()">
-            <div class="upload-zone-label">
-              <strong>↑ Upload PDF</strong><br>
-              Analyseer Woo documenten met AI. Sleep een bestand hierheen of klik om te selecteren.
+              .
+            </p>
+            <div class="welcome-upload-cta" onclick="document.getElementById('pdfInput').click()">
+              <div class="upload-zone-label">
+                <strong>↑ Upload PDF</strong><br>
+                Analyseer Woo documenten met AI. Sleep een bestand hierheen of klik om te selecteren.
+              </div>
             </div>
-          </div>
-          <div class="welcome-case" onclick="loadCaseStudy()">
-            <div class="welcome-case-label">▶ Laad casestudie</div>
-            <div class="welcome-case-title">Besluit op Woo-verzoek totstandkoming Nederlandse positiebepaling bij AVVN-resoluties over conflict Israël–Palestijnse Gebieden</div>
-            <div class="welcome-case-meta">Ministerie van Buitenlandse Zaken · 2024-05-27 · 3 documenten · 146 pagina's</div>
+            <div class="welcome-case" onclick="loadCaseStudy()">
+              <div class="welcome-case-label">▶ Laad casestudie</div>
+              <div class="welcome-case-title">Besluit op Woo-verzoek totstandkoming Nederlandse positiebepaling bij AVVN-resoluties over conflict Israël–Palestijnse Gebieden</div>
+              <div class="welcome-case-meta">Ministerie van Buitenlandse Zaken · 2024-05-27 · 3 documenten · 146 pagina's</div>
+            </div>
           </div>
         </div>
       </div>
+      <div id="pdfSidePanel"></div>
     </div>
   </div>
 
@@ -3750,6 +3772,8 @@ function updateAnalysis(data) {
 // ─────────────────────────────────────────────
 
 function setViewTab(tab) {
+  _prevViewTab = null;   // clear back-navigation state on direct tab switch
+  _closePdfSidePanel();  // close side-by-side PDF panel when switching views
   state.viewTab = tab;
   document.querySelectorAll('.view-tab').forEach(t => t.classList.remove('active'));
   const activeTabBtn = document.getElementById('tab' + tab.charAt(0).toUpperCase() + tab.slice(1));
@@ -4514,11 +4538,14 @@ function isLikelyDirectPdfUrl(url) {
 }
 
 function openDocTextPreview(item) {
+  _navPush();
   const container  = document.getElementById('viewerContent');
   const dateDisp   = item.date ? formatDisplayDate(item.date) : '—';
-  const currentTab = state.viewTab || 'timeline';
-  const backLabel  = currentTab === 'search' ? '‹ Zoekresultaten' : currentTab === 'overig' ? '‹ Ga terug' : '‹ Tijdlijn';
-  const backFn     = currentTab === 'search' ? `setViewTab('search')` : currentTab === 'overig' ? `setViewTab('overig')` : `setViewTab('timeline')`;
+  const backLabel  = _prevViewTab === 'search'  ? '‹ Zoekresultaten'
+    : _prevViewTab === 'emails'  ? '‹ E-mails'
+    : _prevViewTab === 'overig'  ? '‹ Overige documenten'
+    : '‹ Tijdlijn';
+  const backFn     = '_navBack()';
 
   // Resolve PDF URL — three sources in priority order:
   // 1. item.pdfUrl  (search result documents from WOO API)
@@ -5071,25 +5098,24 @@ function openIphoneMail(idx) {
   const email = emails[idx];
   if (!email) return;
 
-  // Capture scroll position before leaving timeline
-  const sourceTab = state.viewTab;
-  if (sourceTab === 'timeline') {
+  // Capture scroll position before leaving timeline, then push nav history
+  if (state.viewTab === 'timeline') {
     const scroller = document.querySelector('.timeline-h-scroll');
     _savedTimelineScroll = scroller ? scroller.scrollLeft : 0;
   }
+  _navPush();
 
   const container = document.getElementById('viewerContent');
   const docCode   = (email.id || '').split('.')[0];
   const tlItem    = (state.timelineItems || []).find(t => t.id === docCode);
   const hasPdf    = !!(state.pdfSource && tlItem?.pdf_page_start);
 
-  // ── Back button: always goes to emails tab (fix: was renderEmailView which didn't update state.viewTab)
-  const backLabel = sourceTab === 'timeline' ? '‹ Tijdlijn' : sourceTab === 'search' ? '‹ Zoekresultaten' : '‹ Alle e-mails';
-  const backFn    = sourceTab === 'timeline'
-    ? '_backToTimeline()'
-    : sourceTab === 'search'
-    ? 'setViewTab(\'search\')'
-    : 'setViewTab(\'emails\')';
+  // ── Back button: returns to wherever the user came from
+  const backLabel = _prevViewTab === 'timeline' ? '‹ Tijdlijn'
+    : _prevViewTab === 'search' ? '‹ Zoekresultaten'
+    : _prevViewTab === 'overig' ? '‹ Overige documenten'
+    : '‹ Alle e-mails';
+  const backFn = '_navBack()';
 
   // ── Gather thread: root + all replies, sorted original-first then chronological
   const rootId = email.__threadDepth === 0 ? email.id : (email.__threadParentId || email.id);
@@ -6135,6 +6161,7 @@ function _renderInDocResultCard(result) {
 }
 
 function _openEmailFromSearch(idx) {
+  _prevViewTab = null;   // clear stale history; openIphoneMail will push 'search'
   state.viewTab = 'search';
   if (!_sortedEmails || !_sortedEmails.length) {
     _sortedEmails = _buildThreadedEmailList(state.emails);
@@ -6159,6 +6186,7 @@ function _openChatFromSearch(sourceDocId) {
 }
 
 function _openOverigFromSearch(id) {
+  _prevViewTab = null;   // clear stale history; openDocTextPreview will push 'search'
   state.viewTab = 'search';
   const item = state.timelineItems.find(t => t.id === id);
   if (!item) return;
@@ -7497,6 +7525,8 @@ function formatUploadedDocBody(text) {
 // ─────────────────────────────────────────────────────────────────────────────
 // PIPELINE SELECTOR — state
 // ─────────────────────────────────────────────────────────────────────────────
+
+let _prevViewTab      = null;   // previous tab before drilling into a detail view (back button)
 
 let _pendingPid       = null;   // PID for online dossiers
 let _pendingPdfUrls   = [];     // [{url, title, pages}] fetched from infobox
@@ -8890,16 +8920,77 @@ function _saveDateEdit() {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Navigation history (back button)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function _navPush() {
+  _prevViewTab = state.viewTab;
+}
+
+function _navBack() {
+  const prev = _prevViewTab;
+  _prevViewTab = null;
+  if (!prev || prev === 'timeline') _backToTimeline();
+  else setViewTab(prev);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Side-by-side PDF panel
+// ─────────────────────────────────────────────────────────────────────────────
+
+function _openPdfSidePanel(pdfUrl, pageNum) {
+  const panel = document.getElementById('pdfSidePanel');
+  if (!panel) return;
+  const frameId = 'pdf-side-frame';
+  panel.style.display = 'flex';
+  panel.style.flexDirection = 'column';
+  panel.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:7px 12px;border-bottom:1px solid var(--woo-border);background:var(--woo-bg);flex-shrink:0">
+      <span style="font-family:var(--woo-mono);font-size:10px;color:var(--text-dimmer);text-transform:uppercase;letter-spacing:.06em">WOO-dossier · Pagina ${escHtml(String(pageNum))}</span>
+      <button onclick="_closePdfSidePanel()" style="background:none;border:none;cursor:pointer;padding:2px 6px;font-size:13px;color:var(--text-dimmer);line-height:1" title="Sluit PDF-panel">✕</button>
+    </div>
+    <div style="flex:1;min-height:0;overflow:hidden">
+      <iframe id="${escHtml(frameId)}"
+        src="${escHtml(pdfUrl)}#page=${pageNum}"
+        data-pdf-url="${escHtml(pdfUrl)}"
+        data-pdf-page="${escHtml(String(pageNum))}"
+        onload="handleDocPreviewIframeLoad('${escHtml(frameId)}')"
+        onerror="handleDocPreviewIframeError('${escHtml(frameId)}')"
+        style="width:100%;height:100%;border:none;display:block"></iframe>
+    </div>
+  `;
+}
+
+function _closePdfSidePanel() {
+  const panel = document.getElementById('pdfSidePanel');
+  if (panel) panel.style.display = 'none';
+}
+
 function _showInWooDossier(docCode, emailPdfPage) {
   const item = (state.timelineItems || []).find(t => t.id === docCode);
   if (!item) return;
-  state.overigSelectedId = item.id;
-  if (state.viewTab !== 'overig') setViewTab('overig');
-  // If we know the exact page where this email starts, override the doc's page
-  const itemWithPage = (emailPdfPage != null)
-    ? { ...item, pdf_page_start: emailPdfPage }
-    : item;
-  openDocTextPreview(itemWithPage);
+
+  // Resolve PDF URL from state.pdfSource
+  let pdfUrl = null;
+  const pdfPage = (emailPdfPage != null) ? emailPdfPage : (parseInt(item.pdf_page_start, 10) || 1);
+  const src = state.pdfSource;
+  if (src) {
+    if (src.type === 'url' && src.url)  pdfUrl = `/proxy?url=${encodeURIComponent(src.url)}`;
+    else if (src.type === 'server')     pdfUrl = `/api/session_pdf`;
+    else if (src.blobUrl)               pdfUrl = src.blobUrl;
+  }
+
+  if (pdfUrl) {
+    // Open side-by-side: keep email view on left, PDF on right
+    _openPdfSidePanel(pdfUrl, pdfPage);
+  } else {
+    // Fallback: navigate to doc preview in overig tab
+    state.overigSelectedId = item.id;
+    if (state.viewTab !== 'overig') setViewTab('overig');
+    const itemWithPage = emailPdfPage != null ? { ...item, pdf_page_start: emailPdfPage } : item;
+    openDocTextPreview(itemWithPage);
+  }
 }
 
 function _deleteDoc(id) {
