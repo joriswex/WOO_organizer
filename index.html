@@ -987,6 +987,298 @@
   .welcome-case-meta { font-family: var(--woo-mono); font-size: 11px; color: var(--text-dimmer); margin-top: 6px; }
   .case-study-badge { display: inline-block; background: var(--woo-tag-bg); color: var(--woo-tag-text); font-family: var(--woo-font); font-size: 11px; font-weight: 600; padding: 4px 12px; border-radius: var(--woo-radius-pill); border: 1px solid var(--woo-tag-border); margin-bottom: 20px; }
 
+  /* ── HOME SCREEN (full-page Google-style start) ── */
+  #homeScreen {
+    position: fixed;
+    inset: 0;
+    background: var(--woo-bg);
+    z-index: 200;
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+  }
+  #homeScreen.hidden { display: none; }
+
+  .home-hero {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 80px 24px 40px;
+    text-align: center;
+  }
+  .home-logo {
+    font-family: var(--woo-font);
+    font-size: 48px;
+    font-weight: 800;
+    letter-spacing: -0.04em;
+    line-height: 1;
+    margin-bottom: 6px;
+  }
+  .home-logo-woo { color: var(--woo-dark); }
+  .home-logo-lens { color: var(--woo-accent); }
+  .home-tagline {
+    font-family: var(--woo-font);
+    font-size: 14px;
+    color: var(--text-dimmer);
+    margin-bottom: 36px;
+    letter-spacing: 0.01em;
+  }
+  .home-search-wrap {
+    width: 100%;
+    max-width: 560px;
+    position: relative;
+    display: flex;
+    align-items: center;
+    border: 1.5px solid var(--woo-border);
+    border-radius: var(--woo-radius-pill);
+    overflow: visible;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+    transition: box-shadow 0.15s, border-color 0.15s;
+    background: var(--woo-white);
+  }
+  .home-search-wrap:focus-within {
+    border-color: var(--woo-dark);
+    box-shadow: 0 4px 20px rgba(0,0,0,0.12);
+  }
+  .home-search-input {
+    flex: 1;
+    border: none;
+    outline: none;
+    padding: 14px 18px;
+    font-size: 16px;
+    font-family: var(--woo-font);
+    background: transparent;
+    color: var(--woo-text);
+    border-radius: var(--woo-radius-pill);
+  }
+  .home-search-input::placeholder { color: var(--text-dimmer); }
+  .home-search-btn {
+    flex-shrink: 0;
+    margin: 6px;
+    padding: 8px 20px;
+    background: var(--woo-dark);
+    color: #fff;
+    border: none;
+    border-radius: var(--woo-radius-pill);
+    font-family: var(--woo-font);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    transition: background 0.15s;
+  }
+  .home-search-btn:hover { background: var(--woo-accent); }
+  .home-autocomplete {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0; right: 0;
+    background: var(--woo-white);
+    border: 1.5px solid var(--woo-border);
+    border-radius: var(--woo-radius-md);
+    box-shadow: var(--woo-shadow-md);
+    display: none;
+    z-index: 300;
+    overflow: hidden;
+  }
+  .home-autocomplete.show { display: block; }
+  .home-ac-item {
+    padding: 10px 16px;
+    font-size: 13px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--woo-text);
+    font-family: var(--woo-font);
+  }
+  .home-ac-item:hover { background: var(--woo-bg); }
+  .home-ac-pid {
+    font-family: var(--woo-mono);
+    font-size: 10px;
+    color: var(--text-dimmer);
+    margin-left: auto;
+  }
+
+  .home-body {
+    width: 100%;
+    max-width: 680px;
+    margin: 0 auto;
+    padding: 0 24px 60px;
+  }
+  .home-section-label {
+    font-family: var(--woo-mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-dimmer);
+    margin: 28px 0 10px;
+    font-weight: 600;
+  }
+
+  /* PID input row */
+  .home-pid-row {
+    display: flex;
+    gap: 8px;
+  }
+  .home-pid-input {
+    flex: 1;
+    font-family: var(--woo-mono);
+    font-size: 12px;
+    padding: 10px 12px;
+    border: 1.5px solid var(--woo-border);
+    border-radius: var(--woo-radius-md);
+    background: var(--woo-white);
+    color: var(--woo-text);
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  .home-pid-input:focus { border-color: var(--woo-dark); }
+  .home-pid-btn {
+    background: var(--woo-dark);
+    color: #fff;
+    border: none;
+    border-radius: var(--woo-radius-md);
+    padding: 10px 16px;
+    font-family: var(--woo-font);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  /* Upload card */
+  .home-upload-card {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    background: var(--woo-white);
+    border: 1.5px dashed var(--woo-border);
+    border-radius: var(--woo-radius-md);
+    padding: 16px 18px;
+    cursor: pointer;
+    transition: border-color 0.15s, box-shadow 0.15s;
+    box-shadow: var(--woo-shadow-sm);
+  }
+  .home-upload-card:hover { border-color: var(--woo-dark); box-shadow: var(--woo-shadow-md); }
+  .home-upload-icon {
+    font-size: 22px;
+    flex-shrink: 0;
+    line-height: 1;
+  }
+  .home-upload-text-main {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--woo-text);
+    margin-bottom: 2px;
+  }
+  .home-upload-text-sub {
+    font-size: 11px;
+    color: var(--text-dimmer);
+    font-family: var(--woo-mono);
+    line-height: 1.5;
+  }
+
+  /* Demo case card */
+  .home-demo-card {
+    background: var(--woo-white);
+    border: 1.5px solid var(--woo-border);
+    border-radius: var(--woo-radius-md);
+    padding: 16px 18px;
+    cursor: pointer;
+    transition: all 0.2s;
+    box-shadow: var(--woo-shadow-sm);
+    text-align: left;
+  }
+  .home-demo-card:hover { border-color: var(--woo-dark); box-shadow: var(--woo-shadow-md); }
+  .home-demo-tag {
+    display: inline-block;
+    font-family: var(--woo-mono);
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    padding: 2px 7px;
+    border-radius: 4px;
+    background: #fff3cd;
+    color: #856404;
+    border: 1px solid #ffe08a;
+    margin-bottom: 8px;
+    font-weight: 600;
+  }
+  .home-demo-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--woo-text);
+    line-height: 1.4;
+    margin-bottom: 4px;
+  }
+  .home-demo-meta {
+    font-family: var(--woo-mono);
+    font-size: 11px;
+    color: var(--text-dimmer);
+  }
+  .home-demo-notice {
+    font-size: 11px;
+    color: var(--text-dimmer);
+    font-family: var(--woo-mono);
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--woo-border);
+    line-height: 1.5;
+  }
+
+  /* Home search results */
+  .home-results-area { margin-top: 4px; }
+  .home-result-meta-bar {
+    font-family: var(--woo-mono);
+    font-size: 11px;
+    color: var(--text-dimmer);
+    margin-bottom: 14px;
+  }
+  .home-result-item {
+    padding: 14px 0;
+    border-bottom: 1px solid var(--woo-border);
+    cursor: pointer;
+    transition: background 0.1s;
+  }
+  .home-result-item:first-child { border-top: 1px solid var(--woo-border); }
+  .home-result-item:hover { background: rgba(0,0,0,0.02); }
+  .home-result-url {
+    font-family: var(--woo-mono);
+    font-size: 10px;
+    color: var(--text-dimmer);
+    margin-bottom: 3px;
+  }
+  .home-result-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--woo-text-link);
+    margin-bottom: 4px;
+    line-height: 1.3;
+  }
+  .home-result-item:hover .home-result-title { color: var(--woo-text-link-hover); text-decoration: underline; }
+  .home-result-desc {
+    font-size: 12px;
+    color: var(--woo-text-muted);
+    line-height: 1.5;
+  }
+  .home-result-badges {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-top: 6px;
+  }
+  .home-pagination {
+    display: flex;
+    gap: 4px;
+    margin-top: 20px;
+    justify-content: center;
+  }
+
   /* ── SCROLLBAR ── */
   ::-webkit-scrollbar { width: 4px; height: 4px; }
   ::-webkit-scrollbar-track { background: transparent; }
@@ -2508,11 +2800,64 @@
   <div class="topbar-meta" id="searchMeta"></div>
 </div>
 
+<!-- HOME SCREEN (full-page start; hidden once a dossier is open) -->
+<div id="homeScreen">
+  <div class="home-hero">
+    <div class="home-logo"><span class="home-logo-woo">WOO</span><span class="home-logo-lens">Lens</span></div>
+    <div class="home-tagline">Doorzoek Woo-dossiers · Van archief naar inzicht</div>
+    <div class="home-search-wrap" id="homeSearchWrap">
+      <input class="home-search-input" id="homeSearchInput" type="text"
+             placeholder="Zoek een WOO-dossier op onderwerp, organisatie of trefwoord…"
+             autocomplete="off"
+             oninput="_homeSearchInput(this.value)"
+             onkeydown="if(event.key==='Enter')_homeDoSearch()">
+      <button class="home-search-btn" onclick="_homeDoSearch()">
+        <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+        Zoeken
+      </button>
+      <div class="home-autocomplete" id="homeAutocomplete"></div>
+    </div>
+  </div>
+
+  <div class="home-body">
+    <div id="homeResultsArea" style="display:none">
+      <!-- filled by _homeShowResults -->
+    </div>
+    <div id="homeStartContent">
+      <div class="home-section-label">Dossier laden via PID</div>
+      <div class="home-pid-row">
+        <input class="home-pid-input" id="homePidInput" type="text"
+               placeholder="nl.mnre1013.2i.2024.65"
+               onkeydown="if(event.key==='Enter')_homeLoadPid()">
+        <button class="home-pid-btn" onclick="_homeLoadPid()">Laden →</button>
+      </div>
+
+      <div class="home-section-label">PDF of analyse importeren</div>
+      <div class="home-upload-card" onclick="_homeUploadClick()">
+        <div class="home-upload-icon">↑</div>
+        <div>
+          <div class="home-upload-text-main">Upload PDF-dossier of importeer analyse</div>
+          <div class="home-upload-text-sub">Kies een PDF van een Woo-dossier · of een JSON-bestand van een eerdere analyse</div>
+        </div>
+      </div>
+      <input type="file" id="homeFileInput" accept=".pdf,.json" style="display:none" onchange="_homeFileChosen(this)">
+
+      <div class="home-section-label">Demo casestudie</div>
+      <div class="home-demo-card" onclick="loadCaseStudy()">
+        <div class="home-demo-tag">Demo — geen echt dossier</div>
+        <div class="home-demo-title">Besluit op Woo-verzoek totstandkoming Nederlandse positiebepaling bij AVVN-resoluties over conflict Israël–Palestijnse Gebieden</div>
+        <div class="home-demo-meta">Ministerie van Buitenlandse Zaken · 2024-05-27 · 3 documenten · 146 pagina's</div>
+        <div class="home-demo-notice">⚠ Dit is een demonstratieversie met vooraf geladen data — niet representatief voor alle Woo-dossiers.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- MAIN -->
 <div class="main">
 
-  <!-- COL 1: SEARCH RESULTS -->
-  <div class="panel-results">
+  <!-- COL 1: SEARCH RESULTS (hidden on initial load; shown after WooZM search via sidebar) -->
+  <div class="panel-results" style="display:none">
     <div class="panel-header">
       <div class="panel-title">Dossiers</div>
       <div class="result-count" id="resultCount">—</div>
@@ -2593,31 +2938,7 @@
       ⚠ Live preview — documenten worden geladen via pid.wooverheid.nl
     </div>
     <div id="viewerRowArea">
-      <div class="viewer-content" id="viewerContent">
-        <div class="welcome-screen">
-          <div class="welcome-inner">
-            <div class="case-study-badge"> WOO Organizer · Van archief naar inzicht</div>
-            <div class="welcome-title">WOO-documenten leesbaar</div>
-            <p class="welcome-sub">
-              In Nederland verplicht de Wet open overheid (Woo) de overheid om informatie openbaar te maken op aanvraag van Woo-verzoeken. In de praktijk worden dossiers gepubliceerd als statische PDF-bestanden met juridisch jargon, zwartgelakte passages en forensische exportformaten. Dit maakt de documenten openbaar, maar moeilijk toegankelijk voor journalisten, onderzoekers en burgers zonder specialistische kennis.
-Met de Woo Organizer wordt dat toegankelijker.
-Doorzoek elk Woo-dossier met AI. Bekijk SMS-berichten, e-mails en chats in een herkenbare interface. Analyseer redacties, betrokken personen, data en de chronologie van een dossier zonder handmatig door honderden pagina's te hoeven zoeken.<br>
-              .
-            </p>
-            <div class="welcome-upload-cta" onclick="document.getElementById('pdfInput').click()">
-              <div class="upload-zone-label">
-                <strong>↑ Upload PDF</strong><br>
-                Analyseer Woo documenten met AI. Sleep een bestand hierheen of klik om te selecteren.
-              </div>
-            </div>
-            <div class="welcome-case" onclick="loadCaseStudy()">
-              <div class="welcome-case-label">▶ Laad casestudie</div>
-              <div class="welcome-case-title">Besluit op Woo-verzoek totstandkoming Nederlandse positiebepaling bij AVVN-resoluties over conflict Israël–Palestijnse Gebieden</div>
-              <div class="welcome-case-meta">Ministerie van Buitenlandse Zaken · 2024-05-27 · 3 documenten · 146 pagina's</div>
-            </div>
-          </div>
-        </div>
-      </div>
+      <div class="viewer-content" id="viewerContent"></div>
       <div id="pdfSidePanel"></div>
     </div>
   </div>
@@ -2812,6 +3133,9 @@ function hideAutocomplete() {
 
 document.addEventListener('click', e => {
   if (!e.target.closest('.search-wrap')) hideAutocomplete();
+  if (!e.target.closest('.home-search-wrap')) {
+    document.getElementById('homeAutocomplete')?.classList.remove('show');
+  }
 });
 
 function handleAcSelect(val, type) {
@@ -2826,6 +3150,181 @@ function handleAcSelect(val, type) {
 
 function _hasDossierLoaded() {
   return (state.emails.length + (state.chats||[]).length + getOverigDocs().length + (state.timelineItems||[]).length) > 0;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HOME SCREEN
+// ─────────────────────────────────────────────────────────────────────────────
+
+function _showHomeScreen() {
+  const hs = document.getElementById('homeScreen');
+  if (hs) hs.classList.remove('hidden');
+}
+
+function _hideHomeScreen() {
+  const hs = document.getElementById('homeScreen');
+  if (hs) hs.classList.add('hidden');
+}
+
+const _homeSearchDebounce = debounce(async (q) => {
+  const ac = document.getElementById('homeAutocomplete');
+  if (!ac) return;
+  if (!q || q.length < 2) { ac.classList.remove('show'); return; }
+  if (/^nl\./i.test(q)) {
+    ac.innerHTML = `<div class="home-ac-item" onclick="_homeSelectPid('${escHtml(q)}')">📋 Open PID: ${escHtml(q)}<span class="home-ac-pid">direct</span></div>`;
+    ac.classList.add('show');
+    return;
+  }
+  ac.innerHTML = `<div class="home-ac-item" onclick="_homeDoSearch()">🔍 Zoek naar "${escHtml(q)}"</div>`;
+  ac.classList.add('show');
+}, 250);
+
+function _homeSearchInput(val) {
+  _homeSearchDebounce(val);
+}
+
+function _homeSelectPid(pid) {
+  document.getElementById('homeAutocomplete').classList.remove('show');
+  _confirmAndRun(() => {
+    _hideHomeScreen();
+    _showOnlinePipelineSelector({ pid, title: pid });
+  });
+}
+
+async function _homeDoSearch() {
+  const q = (document.getElementById('homeSearchInput')?.value || '').trim();
+  document.getElementById('homeAutocomplete')?.classList.remove('show');
+  if (!q) return;
+  if (/^nl\./i.test(q)) { _homeSelectPid(q); return; }
+
+  const area     = document.getElementById('homeResultsArea');
+  const startDiv = document.getElementById('homeStartContent');
+  if (area)     area.style.display = 'block';
+  if (startDiv) startDiv.style.display = 'none';
+  area.innerHTML = `<div style="padding:20px 0;text-align:center;font-family:var(--woo-mono);font-size:12px;color:var(--text-dimmer)">Zoeken…</div>`;
+
+  // Run the same WooZM search as the sidebar
+  try {
+    const r = await fetch(`/search?q=${encodeURIComponent(q)}&page=1`, { signal: AbortSignal.timeout(10000) });
+    if (r.ok) {
+      const data = await r.json();
+      const items = parseWoozJson(data);
+      _homeRenderResults(q, items, data.total_hits || items.length, 1);
+      return;
+    }
+  } catch {}
+  // Fallback: show PID hint
+  area.innerHTML = `
+    <div style="padding:20px 0;color:var(--text-dimmer);font-family:var(--woo-font);font-size:13px;line-height:1.6">
+      Geen verbinding met WooZM. Plak een PID hieronder of probeer opnieuw.
+    </div>`;
+}
+
+function _homeRenderResults(q, items, total, page) {
+  const area = document.getElementById('homeResultsArea');
+  if (!area) return;
+
+  if (!items.length) {
+    area.innerHTML = `
+      <div style="padding:20px 0;color:var(--text-dimmer);font-family:var(--woo-font);font-size:13px">
+        Geen Woo-dossiers gevonden voor <strong style="color:var(--woo-dark)">${escHtml(q)}</strong>.
+      </div>`;
+    return;
+  }
+
+  const totalPages = Math.min(Math.ceil(total / 10), 10);
+  const pagHtml = totalPages > 1
+    ? `<div class="home-pagination">${Array.from({length: totalPages}, (_, i) => i + 1).map(p =>
+        `<button class="page-btn ${p === page ? 'active' : ''}" onclick="_homeGoPage(${p},'${escHtml(q)}')">${p}</button>`
+      ).join('')}</div>`
+    : '';
+
+  area.innerHTML = `
+    <div class="home-result-meta-bar">Ongeveer ${total} resultaten voor <strong style="color:var(--woo-dark)">${escHtml(q)}</strong></div>
+    <div class="home-results-area">
+      ${items.map((item, idx) => `
+        <div class="home-result-item" onclick="_homeSelectResult(${idx})">
+          <div class="home-result-url">woozm.nl › ${escHtml(item.pid || '')}</div>
+          <div class="home-result-title">${escHtml(item.title || 'Ongetiteld')}</div>
+          <div class="home-result-desc">${escHtml(item.publisher || '')}${item.date ? ` · ${escHtml(item.date)}` : ''}${item.pages ? ` · ${item.pages} documenten` : ''}</div>
+          <div class="home-result-badges">
+            <span class="result-type-badge ${getBadgeClass(item.type)}">${escHtml(item.type || 'Document')}</span>
+          </div>
+        </div>
+      `).join('')}
+    </div>
+    ${pagHtml}
+    <div style="text-align:center;margin-top:20px">
+      <button onclick="_homeBackToStart()" style="background:none;border:none;cursor:pointer;font-family:var(--woo-mono);font-size:11px;color:var(--text-dimmer);text-decoration:underline">‹ Terug</button>
+    </div>
+  `;
+  // Store items for click handler
+  window._homeResultItems = items;
+}
+
+function _homeGoPage(p, q) {
+  const area = document.getElementById('homeResultsArea');
+  if (area) area.innerHTML = `<div style="padding:20px 0;text-align:center;font-family:var(--woo-mono);font-size:12px;color:var(--text-dimmer)">Laden…</div>`;
+  fetch(`/search?q=${encodeURIComponent(q)}&page=${p}`, { signal: AbortSignal.timeout(10000) })
+    .then(r => r.json())
+    .then(data => { _homeRenderResults(q, parseWoozJson(data), data.total_hits || 0, p); })
+    .catch(() => {});
+}
+
+function _homeSelectResult(idx) {
+  const item = (window._homeResultItems || [])[idx];
+  if (!item) return;
+  state.activeResult = item;
+  _confirmAndRun(() => {
+    _hideHomeScreen();
+    _showOnlinePipelineSelector(item);
+  });
+}
+
+function _homeBackToStart() {
+  const area     = document.getElementById('homeResultsArea');
+  const startDiv = document.getElementById('homeStartContent');
+  if (area)     { area.style.display = 'none'; area.innerHTML = ''; }
+  if (startDiv) startDiv.style.display = 'block';
+  const inp = document.getElementById('homeSearchInput');
+  if (inp) { inp.value = ''; inp.focus(); }
+}
+
+function _homeLoadPid() {
+  const val = (document.getElementById('homePidInput')?.value || '').trim();
+  if (!val) return;
+  _confirmAndRun(() => {
+    _hideHomeScreen();
+    _showOnlinePipelineSelector({ pid: val, title: val });
+  });
+}
+
+function _homeUploadClick() {
+  document.getElementById('homeFileInput')?.click();
+}
+
+function _homeFileChosen(input) {
+  const file = input.files[0];
+  if (!file) return;
+  input.value = '';
+  _hideHomeScreen();
+  if (file.name.toLowerCase().endsWith('.json')) {
+    // treat as import
+    const reader = new FileReader();
+    reader.onload = e => {
+      try {
+        const payload = JSON.parse(e.target.result);
+        _importAnalysisPayload(payload);
+      } catch {
+        alert('Kan dit JSON-bestand niet lezen. Zorg dat het een geëxporteerd WOOLens-analysebestand is.');
+        _showHomeScreen();
+      }
+    };
+    reader.readAsText(file);
+  } else {
+    // treat as PDF
+    _showUploadPipelineSelector(file);
+  }
 }
 
 async function doSearch() {
@@ -3303,10 +3802,7 @@ function selectResult(idx) {
 // ─────────────────────────────────────────────
 
 function showWelcome() {
-  const content = document.getElementById('viewerContent');
-  if (!content) return;
-
-  // Reset active dossier context so the app truly returns to the start state.
+  // Reset active dossier context
   state.activeResult = null;
   state.currentDossier = null;
   state.viewTab = 'emails';
@@ -3323,8 +3819,9 @@ function showWelcome() {
   document.getElementById('noticeStrip').style.display = 'none';
   const panel = document.getElementById('docNavPanel');
   if (panel) panel.style.display = 'none';
+  // Hide sidebar — home screen takes over start state
   const pr = document.querySelector('.panel-results');
-  if (pr) pr.style.display = '';
+  if (pr) pr.style.display = 'none';
   const toolbarPid = document.getElementById('toolbarPid');
   if (toolbarPid) toolbarPid.textContent = '';
 
@@ -3332,29 +3829,11 @@ function showWelcome() {
   const tabEmails = document.getElementById('tabEmails');
   if (tabEmails) tabEmails.classList.add('active');
 
-  content.innerHTML = `
-    <div class="welcome-screen">
-      <div class="welcome-inner">
-        <div class="case-study-badge">AI for Open Government · Casestudie</div>
-        <div class="welcome-title">Woo-documenten leesbaar gemaakt</div>
-        <p class="welcome-sub">
-          Zoek elk Woo-dossier. Bekijk e-mails in iPhone-stijl,<br>
-          verken de documenttijdlijn, en analyseer entiteiten & redacties.
-        </p>
-        <div class="welcome-upload-cta" onclick="document.getElementById('pdfInput').click()">
-          <div class="upload-zone-label">
-            <strong>↑ Upload PDF</strong><br>
-            Analyseer Woo documenten met AI. Sleep een bestand hierheen of klik om te selecteren.
-          </div>
-        </div>
-        <div class="welcome-case" onclick="loadCaseStudy()">
-          <div class="welcome-case-label">▶ Laad casestudie</div>
-          <div class="welcome-case-title">Besluit op Woo-verzoek totstandkoming Nederlandse positiebepaling bij AVVN-resoluties over conflict Israël–Palestijnse Gebieden</div>
-          <div class="welcome-case-meta">Ministerie van Buitenlandse Zaken · 2024-05-27 · 3 documenten · 146 pagina's</div>
-        </div>
-      </div>
-    </div>
-  `;
+  // Reset home screen to start view and show it
+  _homeBackToStart();
+  _showHomeScreen();
+  _updateSearchPlaceholder();
+  setTimeout(() => document.getElementById('homeSearchInput')?.focus(), 50);
 }
 
 function loadCaseStudy() {
@@ -3367,6 +3846,7 @@ function loadCaseStudy() {
     date: '2024-05-27',
     pages: 146,
   };
+  _hideHomeScreen();
   document.getElementById('viewerToolbar').style.display = 'flex';
   document.getElementById('noticeStrip').style.display = 'flex';
   buildDossierView(pid, getDemoData(pid));
@@ -3654,6 +4134,7 @@ function _updateSearchPlaceholder() {
 }
 
 function buildDossierView(pid, data) {
+  _hideHomeScreen();
   // Restore analysis panel hidden by document browser
   const _ap = document.getElementById('analysisPanel');
   if (_ap) _ap.style.display = '';
@@ -7575,6 +8056,7 @@ let _invDossierUrl    = null;  // URL of a dossier PDF chosen as inventarislijst
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function _showOnlinePipelineSelector(item) {
+  _hideHomeScreen();
   _pendingPid       = item.pid;
   _pendingPdfUrls   = [];
   _pendingFile      = null;
@@ -7643,6 +8125,7 @@ async function _showOnlinePipelineSelector(item) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function _showUploadPipelineSelector(file) {
+  _hideHomeScreen();
   _pendingFile      = file;
   _pendingPid       = null;
   _pendingPdfUrls   = [];
@@ -8537,6 +9020,7 @@ async function _previewPdfInBrowser(url) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function _applyPipelineResult(data, pid, file) {
+  _hideHomeScreen();
   // Restore panels that were hidden for the document browser
   document.getElementById('viewerToolbar').style.display = 'flex';
   const noticeStrip = document.getElementById('noticeStrip');
@@ -9061,6 +9545,13 @@ function _exportAnalysis() {
   URL.revokeObjectURL(a.href);
 }
 
+function _importAnalysisPayload(data, name) {
+  if (!data.timeline && !data.emails && !data.chats) {
+    throw new Error('Geen geldige analysedata (verwacht "timeline", "emails" of "chats" veld)');
+  }
+  _applyPipelineResult(data, null, { name: name || 'Analyse' });
+}
+
 function _importAnalysis(input) {
   const file = input.files[0];
   if (!file) return;
@@ -9068,10 +9559,7 @@ function _importAnalysis(input) {
   reader.onload = e => {
     try {
       const data = JSON.parse(e.target.result);
-      if (!data.timeline && !data.emails && !data.chats) {
-        throw new Error('Geen geldige analysedata (verwacht "timeline", "emails" of "chats" veld)');
-      }
-      _applyPipelineResult(data, null, { name: file.name.replace(/\.json$/i, '') });
+      _importAnalysisPayload(data, file.name.replace(/\.json$/i, ''));
     } catch (err) {
       alert('Import mislukt: ' + err.message);
     }
