@@ -155,11 +155,21 @@ async def infobox(pid: str = Query(...)):
 # ── /search?q=XXX&page=N ─────────────────────────────────────────────────────
 
 @app.get("/search")
-async def search(q: str = Query(...), page: int = Query(1)):
+async def search(
+    q: str = Query(...),
+    page: int = Query(1),
+    type: Optional[str] = Query(None),
+    year: Optional[str] = Query(None),
+    publisher: Optional[str] = Query(None),
+):
+    params: dict = {"q": q, "page": page, "json": "true"}
+    if type:      params["type"]      = type
+    if year:      params["year"]      = year
+    if publisher: params["publisher"] = publisher
     async with httpx.AsyncClient(follow_redirects=True, timeout=15) as client:
         r = await client.get(
             "https://woozm.nl/search",
-            params={"q": q, "page": page, "json": "true"},
+            params=params,
             headers=HEADERS,
         )
     if not r.is_success:

@@ -1279,6 +1279,113 @@
     justify-content: center;
   }
 
+  /* ── HOME FILTER BAR ── */
+  .home-filter-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--woo-border);
+  }
+  .home-filter-label {
+    font-family: var(--woo-mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: .07em;
+    color: var(--text-dimmer);
+    font-weight: 600;
+    flex-shrink: 0;
+    margin-right: 2px;
+  }
+  .home-filter-group {
+    position: relative;
+    display: inline-flex;
+  }
+  .home-filter-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 5px 10px;
+    border: 1.5px solid var(--woo-border);
+    border-radius: var(--woo-radius-pill);
+    background: var(--woo-white);
+    font-family: var(--woo-mono);
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--woo-text-muted);
+    cursor: pointer;
+    transition: border-color .15s, color .15s, background .15s;
+    white-space: nowrap;
+  }
+  .home-filter-btn:hover { border-color: var(--woo-dark); color: var(--woo-dark); }
+  .home-filter-btn.active {
+    border-color: var(--woo-dark);
+    background: var(--woo-dark);
+    color: #fff;
+  }
+  .home-filter-btn .filter-caret { font-size: 8px; opacity: .6; }
+  .home-filter-dropdown {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    min-width: 220px;
+    max-width: 280px;
+    background: var(--woo-white);
+    border: 1.5px solid var(--woo-border);
+    border-radius: var(--woo-radius-md);
+    box-shadow: var(--woo-shadow-md);
+    z-index: 500;
+    overflow: hidden;
+    display: none;
+  }
+  .home-filter-dropdown.open { display: block; }
+  .home-filter-dropdown-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    font-family: var(--woo-font);
+    font-size: 12px;
+    cursor: pointer;
+    transition: background .1s;
+    gap: 8px;
+  }
+  .home-filter-dropdown-item:hover { background: var(--woo-bg); }
+  .home-filter-dropdown-item.selected { font-weight: 600; color: var(--woo-dark); }
+  .home-filter-dropdown-item.selected::before { content: '✓ '; }
+  .home-filter-count {
+    font-family: var(--woo-mono);
+    font-size: 10px;
+    color: var(--text-dimmer);
+    flex-shrink: 0;
+  }
+  .home-active-filter-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 8px;
+    border-radius: var(--woo-radius-pill);
+    background: var(--woo-dark);
+    color: #fff;
+    font-family: var(--woo-mono);
+    font-size: 11px;
+    font-weight: 500;
+    cursor: default;
+  }
+  .home-active-filter-pill button {
+    background: none;
+    border: none;
+    color: rgba(255,255,255,.7);
+    cursor: pointer;
+    padding: 0;
+    font-size: 12px;
+    line-height: 1;
+    margin-left: 2px;
+  }
+  .home-active-filter-pill button:hover { color: #fff; }
+
   /* ── LANG TOGGLE ── */
   .lang-toggle {
     flex-shrink: 0;
@@ -3372,11 +3479,64 @@ function _homeSelectPid(pid) {
   });
 }
 
+// ── Filter state ──────────────────────────────────────────────────────────────
+let _homeFilters    = {};   // { type, year, publisher } — server-side filters
+let _homeLastFacets = [];   // raw facets from last API response
+let _homeLastQ      = '';   // last searched query (for paginating + re-filtering)
+
+function _homeFilterParams() {
+  const p = new URLSearchParams();
+  if (_homeFilters.type)      p.set('type', _homeFilters.type);
+  if (_homeFilters.year)      p.set('year', _homeFilters.year);
+  if (_homeFilters.publisher) p.set('publisher', _homeFilters.publisher);
+  return p.toString() ? '&' + p.toString() : '';
+}
+
+function _homeApplyFilter(key, value, label) {
+  if (_homeFilters[key] === value) {
+    delete _homeFilters[key];          // toggle off
+  } else {
+    _homeFilters[key] = value;
+    _homeFilters[key + '_label'] = label;
+  }
+  _homeCloseAllDropdowns();
+  _homeFetch(_homeLastQ, 1);
+}
+
+function _homeRemoveFilter(key) {
+  delete _homeFilters[key];
+  delete _homeFilters[key + '_label'];
+  _homeFetch(_homeLastQ, 1);
+}
+
+function _homeCloseAllDropdowns() {
+  document.querySelectorAll('.home-filter-dropdown').forEach(d => d.classList.remove('open'));
+}
+
+function _homeToggleDropdown(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const wasOpen = el.classList.contains('open');
+  _homeCloseAllDropdowns();
+  if (!wasOpen) el.classList.add('open');
+}
+
+document.addEventListener('click', e => {
+  if (!e.target.closest('.home-filter-group')) _homeCloseAllDropdowns();
+});
+
 async function _homeDoSearch() {
   const q = (document.getElementById('homeSearchInput')?.value || '').trim();
   document.getElementById('homeAutocomplete')?.classList.remove('show');
   if (!q) return;
   if (/^nl\./i.test(q)) { _homeSelectPid(q); return; }
+  _homeFilters = {};    // reset filters on new search
+  _homeFetch(q, 1);
+}
+
+async function _homeFetch(q, page) {
+  if (!q) return;
+  _homeLastQ = q;
 
   const area     = document.getElementById('homeResultsArea');
   const startDiv = document.getElementById('homeStartContent');
@@ -3384,31 +3544,133 @@ async function _homeDoSearch() {
   if (startDiv) startDiv.style.display = 'none';
   area.innerHTML = `<div style="padding:20px 0;text-align:center;font-family:var(--woo-mono);font-size:12px;color:var(--text-dimmer)">Zoeken…</div>`;
 
-  // Run the same WooZM search as the sidebar
   try {
-    const r = await fetch(`/search?q=${encodeURIComponent(q)}&page=1`, { signal: AbortSignal.timeout(10000) });
+    const url = `/search?q=${encodeURIComponent(q)}&page=${page}${_homeFilterParams()}`;
+    const r = await fetch(url, { signal: AbortSignal.timeout(10000) });
     if (r.ok) {
       const data = await r.json();
-      const items = parseWoozJson(data);
-      _homeRenderResults(q, items, data.total_hits || items.length, 1);
+      _homeLastFacets = data.facets || [];
+      _homeRenderResults(q, parseWoozJson(data), data.total_hits || 0, page);
       return;
     }
   } catch {}
-  // Fallback: show PID hint
   area.innerHTML = `
     <div style="padding:20px 0;color:var(--text-dimmer);font-family:var(--woo-font);font-size:13px;line-height:1.6">
       Geen verbinding met WooZM. Plak een PID hieronder of probeer opnieuw.
     </div>`;
 }
 
+// ── Facet helpers ──────────────────────────────────────────────────────────────
+
+function _homeFacetItems(facetIdx, limit = 10) {
+  const f = _homeLastFacets[facetIdx];
+  if (!f) return [];
+  return Object.entries(f)
+    .map(([key, v]) => ({ key, name: String(v.facet_name || key), count: v.value || 0 }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, limit);
+}
+
+function _homeFilterBar() {
+  // Active filter pills
+  const activePills = Object.entries(_homeFilters)
+    .filter(([k]) => !k.endsWith('_label'))
+    .map(([key, val]) => {
+      const label = _homeFilters[key + '_label'] || val;
+      return `<span class="home-active-filter-pill">${escHtml(label)}<button onclick="_homeRemoveFilter('${escHtml(key)}')" title="Verwijder filter">✕</button></span>`;
+    }).join('');
+
+  // Year dropdown — facet[1], top 8 most recent
+  const years = _homeFacetItems(1, 20)
+    .filter(y => y.key >= '2000' && y.key <= '2100')
+    .sort((a, b) => b.key - a.key)
+    .slice(0, 8);
+  const yearActive = !!_homeFilters.year;
+  const yearLabel  = yearActive ? `📅 ${_homeFilters.year_label || _homeFilters.year}` : '📅 Jaar';
+  const yearItems  = years.map(y =>
+    `<div class="home-filter-dropdown-item ${_homeFilters.year === y.key ? 'selected' : ''}"
+          onclick="_homeApplyFilter('year','${escHtml(y.key)}','${escHtml(y.name)}')">
+      <span>${escHtml(y.name)}</span>
+      <span class="home-filter-count">${y.count.toLocaleString()}</span>
+    </div>`
+  ).join('');
+
+  // Type dropdown — facet[2], top 10 by count but label shortened
+  const typeShorten = name => name.replace(/^(\d+\w*)\s*[-–]\s*/, '').replace('verzoek en -besluit', 'en -besluit');
+  const types = _homeFacetItems(2, 10);
+  const typeActive = !!_homeFilters.type;
+  const typeLabel  = typeActive ? `📋 ${typeShorten(_homeFilters.type_label || _homeFilters.type)}` : '📋 Type';
+  const typeItems  = types.map(ty =>
+    `<div class="home-filter-dropdown-item ${_homeFilters.type === ty.key ? 'selected' : ''}"
+          onclick="_homeApplyFilter('type','${escHtml(ty.key)}','${escHtml(ty.name)}')">
+      <span title="${escHtml(ty.name)}">${escHtml(typeShorten(ty.name))}</span>
+      <span class="home-filter-count">${ty.count.toLocaleString()}</span>
+    </div>`
+  ).join('');
+
+  // Publisher category — facet[3] — informational row of pills (no server-side filter)
+  const cats = _homeFacetItems(3, 8);
+  const catPills = cats.length
+    ? `<div style="display:flex;flex-wrap:wrap;gap:5px;align-items:center;margin-top:8px;padding-top:8px;border-top:1px solid var(--woo-border)">
+        <span style="font-family:var(--woo-mono);font-size:10px;color:var(--text-dimmer);letter-spacing:.05em;text-transform:uppercase;font-weight:600;flex-shrink:0">Organisatietype:</span>
+        ${cats.map(c => `<span style="display:inline-flex;align-items:center;gap:4px;font-family:var(--woo-mono);font-size:10px;padding:2px 8px;border-radius:12px;background:var(--woo-bg);border:1px solid var(--woo-border);color:var(--woo-text-muted)" title="${escHtml(c.count.toLocaleString())} resultaten">${escHtml(c.name)} <span style="opacity:.6">${c.count.toLocaleString()}</span></span>`).join('')}
+      </div>`
+    : '';
+
+  // Publisher dropdown — facet[0], top 10
+  const pubs = _homeFacetItems(0, 10);
+  const pubActive = !!_homeFilters.publisher;
+  const pubLabel  = pubActive ? `🏛 ${_homeFilters.publisher_label || _homeFilters.publisher}` : '🏛 Organisatie';
+  const pubItems  = pubs.map(pub =>
+    `<div class="home-filter-dropdown-item ${_homeFilters.publisher === pub.key ? 'selected' : ''}"
+          onclick="_homeApplyFilter('publisher','${escHtml(pub.key)}','${escHtml(pub.name)}')">
+      <span title="${escHtml(pub.name)}" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:160px">${escHtml(pub.name)}</span>
+      <span class="home-filter-count">${pub.count.toLocaleString()}</span>
+    </div>`
+  ).join('');
+
+  return `
+    <div class="home-filter-bar">
+      <span class="home-filter-label">Filteren:</span>
+      ${activePills}
+
+      <div class="home-filter-group">
+        <button class="home-filter-btn ${yearActive ? 'active' : ''}" onclick="_homeToggleDropdown('hfd-year')">${escHtml(yearLabel)} <span class="filter-caret">▾</span></button>
+        <div class="home-filter-dropdown" id="hfd-year">
+          ${yearItems || '<div class="home-filter-dropdown-item" style="color:var(--text-dimmer)">Geen data</div>'}
+        </div>
+      </div>
+
+      <div class="home-filter-group">
+        <button class="home-filter-btn ${typeActive ? 'active' : ''}" onclick="_homeToggleDropdown('hfd-type')">${escHtml(typeLabel)} <span class="filter-caret">▾</span></button>
+        <div class="home-filter-dropdown" id="hfd-type">
+          ${typeItems || '<div class="home-filter-dropdown-item" style="color:var(--text-dimmer)">Geen data</div>'}
+        </div>
+      </div>
+
+      <div class="home-filter-group">
+        <button class="home-filter-btn ${pubActive ? 'active' : ''}" onclick="_homeToggleDropdown('hfd-pub')">${escHtml(pubLabel)} <span class="filter-caret">▾</span></button>
+        <div class="home-filter-dropdown" id="hfd-pub">
+          ${pubItems || '<div class="home-filter-dropdown-item" style="color:var(--text-dimmer)">Geen data</div>'}
+        </div>
+      </div>
+    </div>
+    ${catPills}
+  `;
+}
+
 function _homeRenderResults(q, items, total, page) {
   const area = document.getElementById('homeResultsArea');
   if (!area) return;
 
+  const filterBar = _homeLastFacets.length ? _homeFilterBar() : '';
+
   if (!items.length) {
     area.innerHTML = `
+      ${filterBar}
       <div style="padding:20px 0;color:var(--text-dimmer);font-family:var(--woo-font);font-size:13px">
-        Geen Woo-dossiers gevonden voor <strong style="color:var(--woo-dark)">${escHtml(q)}</strong>.
+        Geen Woo-dossiers gevonden voor <strong style="color:var(--woo-dark)">${escHtml(q)}</strong>
+        ${Object.keys(_homeFilters).filter(k => !k.endsWith('_label')).length ? '— probeer filters te verwijderen.' : '.'}
       </div>`;
     return;
   }
@@ -3416,22 +3678,25 @@ function _homeRenderResults(q, items, total, page) {
   const totalPages = Math.min(Math.ceil(total / 10), 10);
   const pagHtml = totalPages > 1
     ? `<div class="home-pagination">${Array.from({length: totalPages}, (_, i) => i + 1).map(p =>
-        `<button class="page-btn ${p === page ? 'active' : ''}" onclick="_homeGoPage(${p},'${escHtml(q)}')">${p}</button>`
+        `<button class="page-btn ${p === page ? 'active' : ''}" onclick="_homeGoPage(${p})">${p}</button>`
       ).join('')}</div>`
     : '';
 
+  const pillStyle = 'display:inline-flex;align-items:center;gap:3px;font-family:var(--woo-mono);font-size:10px;padding:2px 7px;border-radius:4px;background:var(--woo-bg);border:1px solid var(--woo-border);color:var(--woo-text-muted)';
+
   area.innerHTML = `
-    <div class="home-result-meta-bar">Ongeveer ${total} resultaten voor <strong style="color:var(--woo-dark)">${escHtml(q)}</strong></div>
-    <div class="home-results-area">
+    ${filterBar}
+    <div class="home-result-meta-bar">Ongeveer ${total.toLocaleString()} resultaten voor <strong style="color:var(--woo-dark)">${escHtml(q)}</strong></div>
+    <div>
       ${items.map((item, idx) => `
         <div class="home-result-item" onclick="_homeSelectResult(${idx})">
           <div class="home-result-url">woozm.nl › ${escHtml(item.pid || '')}</div>
           <div class="home-result-title">${escHtml(item.title || 'Ongetiteld')}</div>
           <div class="home-result-badges" style="margin-top:6px">
             <span class="result-type-badge ${getBadgeClass(item.type)}">${escHtml(item.type || 'Document')}</span>
-            ${item.date ? `<span style="display:inline-flex;align-items:center;gap:3px;font-family:var(--woo-mono);font-size:10px;padding:2px 7px;border-radius:4px;background:var(--woo-bg);border:1px solid var(--woo-border);color:var(--woo-text-muted)">📅 ${escHtml(item.date)}</span>` : ''}
-            ${item.publisher ? `<span style="display:inline-flex;align-items:center;gap:3px;font-family:var(--woo-mono);font-size:10px;padding:2px 7px;border-radius:4px;background:var(--woo-bg);border:1px solid var(--woo-border);color:var(--woo-text-muted)">🏛 ${escHtml(item.publisher)}</span>` : ''}
-            ${item.pages ? `<span style="display:inline-flex;align-items:center;gap:3px;font-family:var(--woo-mono);font-size:10px;padding:2px 7px;border-radius:4px;background:var(--woo-bg);border:1px solid var(--woo-border);color:var(--woo-text-muted)">📄 ${item.pages} doc.</span>` : ''}
+            ${item.date     ? `<span style="${pillStyle}">📅 ${escHtml(item.date)}</span>` : ''}
+            ${item.publisher ? `<span style="${pillStyle}">🏛 ${escHtml(item.publisher)}</span>` : ''}
+            ${item.pages    ? `<span style="${pillStyle}">📄 ${item.pages} doc.</span>` : ''}
           </div>
         </div>
       `).join('')}
@@ -3441,17 +3706,11 @@ function _homeRenderResults(q, items, total, page) {
       <button onclick="_homeBackToStart()" style="background:none;border:none;cursor:pointer;font-family:var(--woo-mono);font-size:11px;color:var(--text-dimmer);text-decoration:underline">‹ Terug</button>
     </div>
   `;
-  // Store items for click handler
   window._homeResultItems = items;
 }
 
-function _homeGoPage(p, q) {
-  const area = document.getElementById('homeResultsArea');
-  if (area) area.innerHTML = `<div style="padding:20px 0;text-align:center;font-family:var(--woo-mono);font-size:12px;color:var(--text-dimmer)">Laden…</div>`;
-  fetch(`/search?q=${encodeURIComponent(q)}&page=${p}`, { signal: AbortSignal.timeout(10000) })
-    .then(r => r.json())
-    .then(data => { _homeRenderResults(q, parseWoozJson(data), data.total_hits || 0, p); })
-    .catch(() => {});
+function _homeGoPage(p) {
+  _homeFetch(_homeLastQ, p);
 }
 
 function _homeSelectResult(idx) {
