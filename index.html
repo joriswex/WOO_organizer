@@ -1279,6 +1279,23 @@
     justify-content: center;
   }
 
+  /* ── LANG TOGGLE ── */
+  .lang-toggle {
+    flex-shrink: 0;
+    padding: 5px 11px;
+    border: 1.5px solid var(--woo-border);
+    border-radius: var(--woo-radius-pill);
+    background: var(--woo-white);
+    color: var(--woo-text-muted);
+    font-family: var(--woo-mono);
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
+    letter-spacing: 0.06em;
+    transition: border-color 0.15s, color 0.15s;
+  }
+  .lang-toggle:hover { border-color: var(--woo-dark); color: var(--woo-dark); }
+
   /* ── SCROLLBAR ── */
   ::-webkit-scrollbar { width: 4px; height: 4px; }
   ::-webkit-scrollbar-track { background: transparent; }
@@ -2798,22 +2815,24 @@
     <div class="autocomplete" id="autocomplete"></div>
   </div>
   <div class="topbar-meta" id="searchMeta"></div>
+  <button class="lang-toggle" id="langToggleBtn" onclick="_toggleLang()">EN</button>
 </div>
 
 <!-- HOME SCREEN (full-page start; hidden once a dossier is open) -->
 <div id="homeScreen">
   <div class="home-hero">
     <div class="home-logo"><span class="home-logo-woo">WOO</span><span class="home-logo-lens">Lens</span></div>
-    <div class="home-tagline">Doorzoek Woo-dossiers · Van archief naar inzicht</div>
+    <div class="home-tagline" data-i18n="home_tagline">Doorzoek Woo-dossiers · Van archief naar inzicht</div>
     <div class="home-search-wrap" id="homeSearchWrap">
       <input class="home-search-input" id="homeSearchInput" type="text"
              placeholder="Zoek een WOO-dossier op onderwerp, organisatie of trefwoord…"
+             data-i18n-placeholder="home_search_placeholder"
              autocomplete="off"
              oninput="_homeSearchInput(this.value)"
              onkeydown="if(event.key==='Enter')_homeDoSearch()">
       <button class="home-search-btn" onclick="_homeDoSearch()">
         <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-        Zoeken
+        <span data-i18n="home_search_btn">Zoeken</span>
       </button>
       <div class="home-autocomplete" id="homeAutocomplete"></div>
     </div>
@@ -2824,30 +2843,31 @@
       <!-- filled by _homeShowResults -->
     </div>
     <div id="homeStartContent">
-      <div class="home-section-label">Dossier laden via PID</div>
+      <div class="home-section-label" data-i18n="home_section_pid">Dossier laden via PID</div>
       <div class="home-pid-row">
         <input class="home-pid-input" id="homePidInput" type="text"
                placeholder="nl.mnre1013.2i.2024.65"
+               data-i18n-placeholder="home_pid_placeholder"
                onkeydown="if(event.key==='Enter')_homeLoadPid()">
-        <button class="home-pid-btn" onclick="_homeLoadPid()">Laden →</button>
+        <button class="home-pid-btn" onclick="_homeLoadPid()" data-i18n="home_pid_btn">Laden →</button>
       </div>
 
-      <div class="home-section-label">PDF of analyse importeren</div>
+      <div class="home-section-label" data-i18n="home_section_upload">PDF of analyse importeren</div>
       <div class="home-upload-card" onclick="_homeUploadClick()">
         <div class="home-upload-icon">↑</div>
         <div>
-          <div class="home-upload-text-main">Upload PDF-dossier of importeer analyse</div>
-          <div class="home-upload-text-sub">Kies een PDF van een Woo-dossier · of een JSON-bestand van een eerdere analyse</div>
+          <div class="home-upload-text-main" data-i18n="home_upload_main">Upload PDF-dossier of importeer analyse</div>
+          <div class="home-upload-text-sub" data-i18n="home_upload_sub">Kies een PDF van een Woo-dossier · of een JSON-bestand van een eerdere analyse</div>
         </div>
       </div>
       <input type="file" id="homeFileInput" accept=".pdf,.json" style="display:none" onchange="_homeFileChosen(this)">
 
-      <div class="home-section-label">Demo casestudie</div>
+      <div class="home-section-label" data-i18n="home_section_demo">Demo casestudie</div>
       <div class="home-demo-card" onclick="loadCaseStudy()">
-        <div class="home-demo-tag">Demo — geen echt dossier</div>
-        <div class="home-demo-title">Besluit op Woo-verzoek totstandkoming Nederlandse positiebepaling bij AVVN-resoluties over conflict Israël–Palestijnse Gebieden</div>
-        <div class="home-demo-meta">Ministerie van Buitenlandse Zaken · 2024-05-27 · 3 documenten · 146 pagina's</div>
-        <div class="home-demo-notice">⚠ Dit is een demonstratieversie met vooraf geladen data — niet representatief voor alle Woo-dossiers.</div>
+        <div class="home-demo-tag" data-i18n="home_demo_tag">Demo — geen echt dossier</div>
+        <div class="home-demo-title" data-i18n="home_demo_title">Besluit op Woo-verzoek totstandkoming Nederlandse positiebepaling bij AVVN-resoluties over conflict Israël–Palestijnse Gebieden</div>
+        <div class="home-demo-meta" data-i18n="home_demo_meta">Ministerie van Buitenlandse Zaken · 2024-05-27 · 3 documenten · 146 pagina's</div>
+        <div class="home-demo-notice" data-i18n="home_demo_notice">⚠ Dit is een demonstratieversie met vooraf geladen data — niet representatief voor alle Woo-dossiers.</div>
       </div>
     </div>
   </div>
@@ -2910,7 +2930,7 @@
   <!-- COL 2: DOCUMENT TIMELINE (PDF nav) -->
   <div class="panel-doc-nav" id="docNavPanel" style="display:none">
     <div class="panel-header">
-      <div class="panel-title">Documenten</div>
+      <div class="panel-title" data-i18n="panel_documents">Documenten</div>
       <div class="result-count" id="docNavCount">—</div>
     </div>
     <div class="doc-nav-list" id="docNavList"></div>
@@ -2922,19 +2942,19 @@
       <div class="viewer-toolbar-main">
         <div class="toolbar-pid" id="toolbarPid"></div>
         <div class="view-tabs">
-          <button class="view-tab active" id="tabEmails" onclick="setViewTab('emails')">E-mails</button>
-          <button class="view-tab" id="tabChats" onclick="setViewTab('chats')">Chats</button>
-          <button class="view-tab" id="tabOverig" onclick="setViewTab('overig')">Overige documenten</button>
-          <button class="view-tab" id="tabTimeline" onclick="setViewTab('timeline')">Tijdlijn</button>
-          <button class="view-tab" id="tabSummary" onclick="setViewTab('summary')">✦ Samenvatting</button>
-          <button class="view-tab" id="tabSearch" onclick="setViewTab('search')">Zoeken</button>
+          <button class="view-tab active" id="tabEmails" onclick="setViewTab('emails')" data-i18n="tab_emails">E-mails</button>
+          <button class="view-tab" id="tabChats" onclick="setViewTab('chats')" data-i18n="tab_chats">Chats</button>
+          <button class="view-tab" id="tabOverig" onclick="setViewTab('overig')" data-i18n="tab_overig">Overige documenten</button>
+          <button class="view-tab" id="tabTimeline" onclick="setViewTab('timeline')" data-i18n="tab_timeline">Tijdlijn</button>
+          <button class="view-tab" id="tabSummary" onclick="setViewTab('summary')" data-i18n="tab_summary">✦ Samenvatting</button>
+          <button class="view-tab" id="tabSearch" onclick="setViewTab('search')" data-i18n="tab_search">Zoeken</button>
         </div>
       </div>
       <div class="toolbar-actions">
-        <button class="icon-btn" onclick="openSource()">↗ Bron</button>
+        <button class="icon-btn" onclick="openSource()" data-i18n="btn_source">↗ Bron</button>
       </div>
     </div>
-    <div class="notice-strip" id="noticeStrip" style="display:none">
+    <div class="notice-strip" id="noticeStrip" style="display:none" data-i18n="notice_live">
       ⚠ Live preview — documenten worden geladen via pid.wooverheid.nl
     </div>
     <div id="viewerRowArea">
@@ -2946,17 +2966,17 @@
   <!-- COL 4: ANALYSIS -->
   <div class="panel-analysis" id="analysisPanel">
     <div class="panel-header analysis-panel-header" style="flex-shrink:0">
-      <div class="panel-title analysis-panel-title">Analyse</div>
+      <div class="panel-title analysis-panel-title" data-i18n="analysis_title">Analyse</div>
     </div>
 
     <!-- Export / Import row -->
     <div style="padding:8px 14px;border-bottom:1px solid var(--woo-border);flex-shrink:0">
       <div style="display:flex;gap:6px;">
         <button onclick="_exportAnalysis()" title="Download analyse als JSON"
-                style="flex:1;font-family:var(--woo-mono);font-size:10px;padding:5px 6px;border:1px solid var(--woo-border);border-radius:4px;background:var(--woo-bg);cursor:pointer;color:var(--woo-text)">↓ Export</button>
+                style="flex:1;font-family:var(--woo-mono);font-size:10px;padding:5px 6px;border:1px solid var(--woo-border);border-radius:4px;background:var(--woo-bg);cursor:pointer;color:var(--woo-text)" data-i18n="btn_export">↓ Export</button>
         <label title="Importeer eerder geëxporteerde analyse"
                style="flex:1;font-family:var(--woo-mono);font-size:10px;padding:5px 6px;border:1px solid var(--woo-border);border-radius:4px;background:var(--woo-bg);cursor:pointer;color:var(--woo-text);text-align:center;display:flex;align-items:center;justify-content:center">
-          ↑ Import
+          <span data-i18n="btn_import">↑ Import</span>
           <input type="file" accept=".json" style="display:none" onchange="_importAnalysis(this)">
         </label>
       </div>
@@ -2968,15 +2988,15 @@
 
     <div class="analysis-section">
       <div class="analysis-section-header" onclick="toggleSection(this)">
-        <div class="analysis-section-title">Statistieken</div>
+        <div class="analysis-section-title" data-i18n="section_stats">Statistieken</div>
         <span class="analysis-section-caret">▾</span>
       </div>
       <div class="analysis-section-body" id="statsSection">
-        <div class="stat-row"><span class="stat-label">E-mails</span><span class="stat-value" id="statEmails">—</span></div>
-        <div class="stat-row"><span class="stat-label">Documenten</span><span class="stat-value" id="statDocs">—</span></div>
-        <div class="stat-row"><span class="stat-label">Pagina's</span><span class="stat-value" id="statPages">—</span></div>
+        <div class="stat-row"><span class="stat-label" data-i18n="stat_emails">E-mails</span><span class="stat-value" id="statEmails">—</span></div>
+        <div class="stat-row"><span class="stat-label" data-i18n="stat_docs">Documenten</span><span class="stat-value" id="statDocs">—</span></div>
+        <div class="stat-row"><span class="stat-label" data-i18n="stat_pages">Pagina's</span><span class="stat-value" id="statPages">—</span></div>
         <div class="stat-row" style="flex-direction:column; align-items:flex-start; gap:6px">
-          <span class="stat-label">Redactiegraad</span>
+          <span class="stat-label" data-i18n="stat_redaction">Redactiegraad</span>
           <div class="redaction-bar" style="width:100%">
             <div class="redaction-fill" id="redactionFill" style="width:0%"></div>
           </div>
@@ -2988,7 +3008,7 @@
 
     <div class="analysis-section" id="invAnalysisSection" style="display:none">
       <div class="analysis-section-header" onclick="toggleSection(this)">
-        <div class="analysis-section-title">Inventarislijst</div>
+        <div class="analysis-section-title" data-i18n="section_inventory">Inventarislijst</div>
         <span class="analysis-section-caret">▾</span>
       </div>
       <div class="analysis-section-body" id="invResultSection">
@@ -2998,7 +3018,7 @@
 
     <div class="analysis-section">
       <div class="analysis-section-header" onclick="toggleSection(this)">
-        <div class="analysis-section-title">Personen</div>
+        <div class="analysis-section-title" data-i18n="section_persons">Personen</div>
         <span class="analysis-section-caret">▾</span>
       </div>
       <div class="analysis-section-body" id="entitiesPersons">
@@ -3008,7 +3028,7 @@
 
     <div class="analysis-section">
       <div class="analysis-section-header" onclick="toggleSection(this)">
-        <div class="analysis-section-title">Organisaties</div>
+        <div class="analysis-section-title" data-i18n="section_orgs">Organisaties</div>
         <span class="analysis-section-caret">▾</span>
       </div>
       <div class="analysis-section-body" id="entitiesOrgs">
@@ -3018,7 +3038,7 @@
 
     <div class="analysis-section">
       <div class="analysis-section-header" onclick="toggleSection(this)">
-        <div class="analysis-section-title">Bronlinks</div>
+        <div class="analysis-section-title" data-i18n="section_sources">Bronlinks</div>
         <span class="analysis-section-caret">▾</span>
       </div>
       <div class="analysis-section-body" id="sourceLinks">
@@ -3028,15 +3048,15 @@
 
     <div class="analysis-section" style="flex-shrink:0">
       <div class="analysis-section-header" onclick="toggleSection(this)">
-        <div class="analysis-section-title">AI Samenvatting</div>
+        <div class="analysis-section-title" data-i18n="section_ai_summary">AI Samenvatting</div>
         <span class="analysis-section-caret">▾</span>
       </div>
       <div class="analysis-section-body">
-        <div style="font-family:var(--woo-mono);font-size:11px;color:var(--text-dimmer);line-height:1.7;margin-bottom:10px">
+        <div style="font-family:var(--woo-mono);font-size:11px;color:var(--text-dimmer);line-height:1.7;margin-bottom:10px" data-i18n="ai_summary_desc">
           Genereer een analyse van dit dossier met OpenAI (GPT-4o).
         </div>
         <button class="summary-generate-btn" id="sidebarSumBtn" onclick="generateSummary()" style="margin-bottom:0;padding:9px 14px;font-size:11px">
-          <span class="summary-spark">✦</span> Genereer samenvatting
+          <span class="summary-spark">✦</span> <span data-i18n="btn_generate_summary">Genereer samenvatting</span>
         </button>
       </div>
     </div>
@@ -3044,7 +3064,7 @@
     </div><!-- end scrollable body -->
 
     <div style="padding:12px 14px;border-top:1px solid var(--woo-border);flex-shrink:0;background:var(--woo-bg)">
-      <div style="font-family:var(--woo-mono);font-size:9px;font-weight:600;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-dimmer);margin-bottom:6px">OpenAI sleutel (samenvatting)</div>
+      <div style="font-family:var(--woo-mono);font-size:9px;font-weight:600;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-dimmer);margin-bottom:6px" data-i18n="openai_key_label">OpenAI sleutel (samenvatting)</div>
       <input type="password" id="summaryApiKeyInput" placeholder="sk-…"
              style="width:100%;padding:6px 8px;font-family:var(--woo-mono);font-size:11px;border:1.5px solid var(--woo-border);border-radius:4px;color:var(--woo-dark);background:var(--woo-white);outline:none;margin-bottom:8px"
              oninput="OPENAI_API_KEY = this.value || null" />
@@ -3059,6 +3079,167 @@
 </div>
 
 <script>
+// ─────────────────────────────────────────────────────────────────────────────
+// INTERNATIONALISATION
+// ─────────────────────────────────────────────────────────────────────────────
+
+let _lang = 'nl';
+
+const _i18n = {
+  nl: {
+    // Tabs
+    tab_emails: 'E-mails', tab_chats: 'Chats', tab_overig: 'Overige documenten',
+    tab_timeline: 'Tijdlijn', tab_summary: '✦ Samenvatting', tab_search: 'Zoeken',
+    // Toolbar
+    btn_source: '↗ Bron',
+    notice_live: '⚠ Live preview — documenten worden geladen via pid.wooverheid.nl',
+    // Analysis panel
+    analysis_title: 'Analyse',
+    section_stats: 'Statistieken', section_inventory: 'Inventarislijst',
+    section_persons: 'Personen', section_orgs: 'Organisaties',
+    section_sources: 'Bronlinks', section_ai_summary: 'AI Samenvatting',
+    stat_emails: 'E-mails', stat_docs: 'Documenten', stat_pages: "Pagina's", stat_redaction: 'Redactiegraad',
+    btn_generate_summary: 'Genereer samenvatting',
+    ai_summary_desc: 'Genereer een analyse van dit dossier met OpenAI (GPT-4o).',
+    btn_export: '↓ Export', btn_import: '↑ Import',
+    openai_key_label: 'OpenAI sleutel (samenvatting)',
+    // Home screen
+    home_tagline: 'Doorzoek Woo-dossiers · Van archief naar inzicht',
+    home_search_placeholder: 'Zoek een WOO-dossier op onderwerp, organisatie of trefwoord…',
+    home_search_btn: 'Zoeken',
+    home_section_pid: 'Dossier laden via PID',
+    home_pid_placeholder: 'nl.mnre1013.2i.2024.65',
+    home_pid_btn: 'Laden →',
+    home_section_upload: 'PDF of analyse importeren',
+    home_upload_main: 'Upload PDF-dossier of importeer analyse',
+    home_upload_sub: 'Kies een PDF van een Woo-dossier · of een JSON-bestand van een eerdere analyse',
+    home_section_demo: 'Demo casestudie',
+    home_demo_tag: 'Demo — geen echt dossier',
+    home_demo_title: 'Besluit op Woo-verzoek totstandkoming Nederlandse positiebepaling bij AVVN-resoluties over conflict Israël–Palestijnse Gebieden',
+    home_demo_meta: "Ministerie van Buitenlandse Zaken · 2024-05-27 · 3 documenten · 146 pagina's",
+    home_demo_notice: '⚠ Dit is een demonstratieversie met vooraf geladen data — niet representatief voor alle Woo-dossiers.',
+    // Navigation — back buttons
+    back_emails: '‹ Alle e-mails', back_timeline: '‹ Tijdlijn',
+    back_search: '‹ Zoekresultaten', back_overig: '‹ Overige documenten',
+    // Email metadata labels
+    meta_from: 'Van', meta_to: 'Aan', meta_cc: 'CC', meta_date: 'Datum', meta_ref: 'Ref',
+    meta_attachments: 'Bijlagen',
+    // Doc preview metadata
+    doc_type: 'Type', doc_sender: 'Afzender',
+    // Action buttons
+    btn_show_in_dossier: '📄 Toon in WOO-dossier',
+    btn_delete: '✕ Verwijder',
+    btn_open_original: '↗ Open origineel',
+    // Search
+    search_placeholder_dossier: 'Zoek in dossier…',
+    search_placeholder_woozm: 'Zoek een WOO-dossier..',
+    in_doc_search_placeholder: 'Zoek in e-mails, chats en documenten…',
+    in_doc_results_suffix: 'resultaten',
+    // Empty states
+    empty_no_emails: 'Er zijn geen e-mails gevonden in dit WOO dossier.',
+    empty_no_chats: 'Er zijn geen chats gevonden in dit WOO dossier.',
+    empty_no_overig: 'Er zijn geen overige documenten gevonden in dit WOO dossier.',
+    empty_analyse_first: 'Analyseer eerst een dossier om hierin te kunnen zoeken.',
+    empty_type_to_search: 'Typ een zoekterm om te zoeken in e-mails, chats en documenten.',
+    // Panel headers
+    panel_documents: 'Documenten',
+    panel_dossiers: 'Dossiers',
+  },
+  en: {
+    // Tabs
+    tab_emails: 'Emails', tab_chats: 'Chats', tab_overig: 'Other documents',
+    tab_timeline: 'Timeline', tab_summary: '✦ Summary', tab_search: 'Search',
+    // Toolbar
+    btn_source: '↗ Source',
+    notice_live: '⚠ Live preview — documents are loaded via pid.wooverheid.nl',
+    // Analysis panel
+    analysis_title: 'Analysis',
+    section_stats: 'Statistics', section_inventory: 'Inventory list',
+    section_persons: 'Persons', section_orgs: 'Organisations',
+    section_sources: 'Source links', section_ai_summary: 'AI Summary',
+    stat_emails: 'Emails', stat_docs: 'Documents', stat_pages: 'Pages', stat_redaction: 'Redaction rate',
+    btn_generate_summary: 'Generate summary',
+    ai_summary_desc: 'Generate an analysis of this dossier with OpenAI (GPT-4o).',
+    btn_export: '↓ Export', btn_import: '↑ Import',
+    openai_key_label: 'OpenAI key (summary)',
+    // Home screen
+    home_tagline: 'Search WOO dossiers · From archive to insight',
+    home_search_placeholder: 'Search a WOO dossier by topic, organisation or keyword…',
+    home_search_btn: 'Search',
+    home_section_pid: 'Load dossier by PID',
+    home_pid_placeholder: 'nl.mnre1013.2i.2024.65',
+    home_pid_btn: 'Load →',
+    home_section_upload: 'Upload PDF or import analysis',
+    home_upload_main: 'Upload PDF dossier or import analysis',
+    home_upload_sub: 'Choose a PDF of a WOO dossier · or a JSON file of a previous analysis',
+    home_section_demo: 'Demo case study',
+    home_demo_tag: 'Demo — not a real dossier',
+    home_demo_title: 'Decision on WOO request on the Dutch position on UNGA resolutions regarding the conflict between Israel and the Palestinian Territories',
+    home_demo_meta: 'Ministry of Foreign Affairs · 2024-05-27 · 3 documents · 146 pages',
+    home_demo_notice: '⚠ This is a demonstration version with pre-loaded data — not representative of all WOO dossiers.',
+    // Navigation — back buttons
+    back_emails: '‹ All emails', back_timeline: '‹ Timeline',
+    back_search: '‹ Search results', back_overig: '‹ Other documents',
+    // Email metadata labels
+    meta_from: 'From', meta_to: 'To', meta_cc: 'CC', meta_date: 'Date', meta_ref: 'Ref',
+    meta_attachments: 'Attachments',
+    // Doc preview metadata
+    doc_type: 'Type', doc_sender: 'Sender',
+    // Action buttons
+    btn_show_in_dossier: '📄 Show in WOO dossier',
+    btn_delete: '✕ Remove',
+    btn_open_original: '↗ Open original',
+    // Search
+    search_placeholder_dossier: 'Search in dossier…',
+    search_placeholder_woozm: 'Search a WOO dossier..',
+    in_doc_search_placeholder: 'Search in emails, chats and documents…',
+    in_doc_results_suffix: 'results',
+    // Empty states
+    empty_no_emails: 'No emails found in this WOO dossier.',
+    empty_no_chats: 'No chats found in this WOO dossier.',
+    empty_no_overig: 'No other documents found in this WOO dossier.',
+    empty_analyse_first: 'Analyse a dossier first to be able to search within it.',
+    empty_type_to_search: 'Type a search term to search in emails, chats and documents.',
+    // Panel headers
+    panel_documents: 'Documents',
+    panel_dossiers: 'Dossiers',
+  }
+};
+
+function t(key) {
+  return (_i18n[_lang] && _i18n[_lang][key]) || (_i18n.nl[key]) || key;
+}
+
+function _toggleLang() {
+  _lang = _lang === 'nl' ? 'en' : 'nl';
+  _applyI18n();
+}
+
+function _applyI18n() {
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    el.textContent = t(el.dataset.i18n);
+  });
+  document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
+    el.placeholder = t(el.dataset.i18nPlaceholder);
+  });
+  const btn = document.getElementById('langToggleBtn');
+  if (btn) btn.textContent = _lang === 'nl' ? 'EN' : 'NL';
+  _updateSearchPlaceholder();
+  if (_hasDossierLoaded()) _rerenderCurrentView();
+}
+
+function _rerenderCurrentView() {
+  const content = document.getElementById('viewerContent');
+  if (!content) return;
+  const tab = state.viewTab;
+  if      (tab === 'emails')   renderEmailView(content);
+  else if (tab === 'chats')    renderChatsView(content);
+  else if (tab === 'overig')   renderOverigView(content);
+  else if (tab === 'timeline') renderTimelineView(content);
+  else if (tab === 'summary')  renderSummaryView(content);
+  else if (tab === 'search')   renderSearchView(content);
+}
+
 // ─────────────────────────────────────────────
 // STATE
 // ─────────────────────────────────────────────
@@ -4130,7 +4311,7 @@ function parseCasePageHtml(html, pid) {
 function _updateSearchPlaceholder() {
   const el = document.getElementById('mainSearch');
   if (!el) return;
-  el.placeholder = _hasDossierLoaded() ? 'Zoek in dossier…' : 'Zoek een WOO-dossier..';
+  el.placeholder = _hasDossierLoaded() ? t('search_placeholder_dossier') : t('search_placeholder_woozm');
 }
 
 function buildDossierView(pid, data) {
@@ -5046,10 +5227,10 @@ function openDocTextPreview(item) {
   _navPush();
   const container  = document.getElementById('viewerContent');
   const dateDisp   = item.date ? formatDisplayDate(item.date) : '—';
-  const backLabel  = _prevViewTab === 'search'  ? '‹ Zoekresultaten'
-    : _prevViewTab === 'emails'  ? '‹ E-mails'
-    : _prevViewTab === 'overig'  ? '‹ Overige documenten'
-    : '‹ Tijdlijn';
+  const backLabel  = _prevViewTab === 'search'  ? t('back_search')
+    : _prevViewTab === 'emails'  ? t('tab_emails')
+    : _prevViewTab === 'overig'  ? t('back_overig')
+    : t('back_timeline');
   const backFn     = '_navBack()';
 
   // Resolve PDF URL — three sources in priority order:
@@ -5112,17 +5293,17 @@ function openDocTextPreview(item) {
 
   const metaTable = `
     <table style="border-collapse:collapse;width:100%;font-size:12px;color:#444;margin-top:10px">
-      <tr><td style="padding:3px 10px 3px 0;font-weight:600;color:#888;white-space:nowrap">Type</td><td style="padding:3px 0;color:#1a1a1a">${escHtml(item.type || '—')}</td></tr>
-      ${item.sender ? `<tr><td style="padding:3px 10px 3px 0;font-weight:600;color:#888;white-space:nowrap">Afzender</td><td style="padding:3px 0;color:#1a1a1a">${formatLabelRedactions(item.sender)}</td></tr>` : ''}
-      <tr><td style="padding:3px 10px 3px 0;font-weight:600;color:#888;white-space:nowrap">Datum</td><td style="padding:3px 0;color:#1a1a1a">${escHtml(dateDisp)} <button onclick="_editDocDate('${escHtml(item.id)}')" title="Datum aanpassen" style="background:none;border:none;cursor:pointer;padding:0 0 0 3px;font-size:11px;color:var(--text-dimmer);vertical-align:middle;line-height:1">✎</button></td></tr>
-      <tr><td style="padding:3px 10px 3px 0;font-weight:600;color:#888;white-space:nowrap">Ref</td><td style="padding:3px 0;font-family:var(--woo-mono);font-size:10px;color:#888">${escHtml(item.id || '—')}</td></tr>
+      <tr><td style="padding:3px 10px 3px 0;font-weight:600;color:#888;white-space:nowrap">${t('doc_type')}</td><td style="padding:3px 0;color:#1a1a1a">${escHtml(item.type || '—')}</td></tr>
+      ${item.sender ? `<tr><td style="padding:3px 10px 3px 0;font-weight:600;color:#888;white-space:nowrap">${t('doc_sender')}</td><td style="padding:3px 0;color:#1a1a1a">${formatLabelRedactions(item.sender)}</td></tr>` : ''}
+      <tr><td style="padding:3px 10px 3px 0;font-weight:600;color:#888;white-space:nowrap">${t('meta_date')}</td><td style="padding:3px 0;color:#1a1a1a">${escHtml(dateDisp)} <button onclick="_editDocDate('${escHtml(item.id)}')" title="Datum aanpassen" style="background:none;border:none;cursor:pointer;padding:0 0 0 3px;font-size:11px;color:var(--text-dimmer);vertical-align:middle;line-height:1">✎</button></td></tr>
+      <tr><td style="padding:3px 10px 3px 0;font-weight:600;color:#888;white-space:nowrap">${t('meta_ref')}</td><td style="padding:3px 0;font-family:var(--woo-mono);font-size:10px;color:#888">${escHtml(item.id || '—')}</td></tr>
     </table>`;
 
   const sourceLink = sourceUrl
-    ? `<a href="${escHtml(sourceUrl)}" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:6px;margin-top:10px;padding:7px 10px;background:var(--blue);color:#fff;text-decoration:none;border-radius:6px;font-family:var(--woo-mono);font-size:10px;font-weight:600">↗ Open origineel</a>`
+    ? `<a href="${escHtml(sourceUrl)}" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:6px;margin-top:10px;padding:7px 10px;background:var(--blue);color:#fff;text-decoration:none;border-radius:6px;font-family:var(--woo-mono);font-size:10px;font-weight:600">${t('btn_open_original')}</a>`
     : '';
   const overigActStyle = 'display:inline-flex;align-items:center;gap:4px;margin-top:10px;padding:6px 12px;border-radius:6px;border:1px solid var(--woo-border);background:var(--woo-white);font-size:11px;cursor:pointer;font-family:var(--woo-sans)';
-  const deleteBtn = `<button style="${overigActStyle};color:#c0392b;border-color:#e8c2c2;margin-left:${sourceUrl ? '8px' : '0'}" onclick="_deleteDoc('${escHtml(item.id)}')" title="Verwijder document uit analyse">✕ Verwijder</button>`;
+  const deleteBtn = `<button style="${overigActStyle};color:#c0392b;border-color:#e8c2c2;margin-left:${sourceUrl ? '8px' : '0'}" onclick="_deleteDoc('${escHtml(item.id)}')" title="Verwijder document uit analyse">${t('btn_delete')}</button>`;
 
   // Body content
   let bodyContent;
@@ -5306,19 +5487,19 @@ function renderNoDataState(tabLabel) {
       ${tabLabel === 'E-mails' ? `
         <div style="background:var(--woo-bg);border:1px solid var(--woo-border);border-radius:8px;padding:20px;margin-bottom:16px">
           <div style="font-size:15px;color:var(--woo-dark);line-height:1.7;font-weight:600">
-            Er zijn geen e-mails gevonden in dit WOO dossier.
+            ${t('empty_no_emails')}
           </div>
         </div>
       ` : tabLabel === 'Chats' ? `
         <div style="background:var(--woo-bg);border:1px solid var(--woo-border);border-radius:8px;padding:20px;margin-bottom:16px">
           <div style="font-size:15px;color:var(--woo-dark);line-height:1.7;font-weight:600">
-            Er zijn geen chats gevonden in dit WOO dossier.
+            ${t('empty_no_chats')}
           </div>
         </div>
       ` : tabLabel === 'Overig' ? `
         <div style="background:var(--woo-bg);border:1px solid var(--woo-border);border-radius:8px;padding:20px;margin-bottom:16px">
           <div style="font-size:15px;color:var(--woo-dark);line-height:1.7;font-weight:600">
-            Er zijn geen overige documenten gevonden in dit WOO dossier.
+            ${t('empty_no_overig')}
           </div>
         </div>
       ` : `
@@ -5616,10 +5797,10 @@ function openIphoneMail(idx) {
   const hasPdf    = !!(state.pdfSource && tlItem?.pdf_page_start);
 
   // ── Back button: returns to wherever the user came from
-  const backLabel = _prevViewTab === 'timeline' ? '‹ Tijdlijn'
-    : _prevViewTab === 'search' ? '‹ Zoekresultaten'
-    : _prevViewTab === 'overig' ? '‹ Overige documenten'
-    : '‹ Alle e-mails';
+  const backLabel = _prevViewTab === 'timeline' ? t('back_timeline')
+    : _prevViewTab === 'search' ? t('back_search')
+    : _prevViewTab === 'overig' ? t('back_overig')
+    : t('back_emails');
   const backFn = '_navBack()';
 
   // ── Gather thread: root + all replies, sorted original-first then chronological
@@ -5689,17 +5870,17 @@ function _renderThreadMessageHtml(email, isRoot, docCode, hasPdf, actionBtnStyle
       <div class="iphone-detail-header" style="background:#fff">
         ${isRoot ? `<div class="iphone-detail-subject" style="color:#1a1a1a;font-size:16px;font-weight:700;line-height:1.35;margin-bottom:12px">${formatLabelRedactions(rawSubj || '(geen onderwerp)')}</div>` : ''}
         <table style="border-collapse:collapse;width:100%;font-size:12px;color:#444">
-          <tr><td style="padding:2px 10px 2px 0;font-weight:600;color:#888;white-space:nowrap;vertical-align:top">Van</td><td style="padding:2px 0;color:#1a1a1a">${senderHtml}</td></tr>
-          ${isRoot || email.to  ? `<tr><td style="padding:2px 10px 2px 0;font-weight:600;color:#888;white-space:nowrap;vertical-align:top">Aan</td><td style="padding:2px 0;color:#1a1a1a">${toHtml}</td></tr>` : ''}
-          ${(isRoot || email.cc) && email.cc ? `<tr><td style="padding:2px 10px 2px 0;font-weight:600;color:#888;white-space:nowrap;vertical-align:top">CC</td><td style="padding:2px 0;color:#1a1a1a">${ccHtml}</td></tr>` : ''}
-          <tr><td style="padding:2px 10px 2px 0;font-weight:600;color:#888;white-space:nowrap">Datum</td><td style="padding:2px 0;color:#1a1a1a">${escHtml(formattedDate)}${formattedTime ? ` ${escHtml(formattedTime)}` : ''}${isRoot ? ` <button onclick="_editDocDate('${escHtml(docCode)}')" title="Datum aanpassen" style="background:none;border:none;cursor:pointer;padding:0 0 0 3px;font-size:11px;color:var(--text-dimmer);vertical-align:middle;line-height:1">✎</button>` : ''}</td></tr>
-          ${isRoot ? `<tr><td style="padding:2px 10px 2px 0;font-weight:600;color:#888;white-space:nowrap">Ref</td><td style="padding:2px 0;font-family:var(--woo-mono);font-size:10px;color:#888">${escHtml(email.id || '—')}</td></tr>` : ''}
+          <tr><td style="padding:2px 10px 2px 0;font-weight:600;color:#888;white-space:nowrap;vertical-align:top">${t('meta_from')}</td><td style="padding:2px 0;color:#1a1a1a">${senderHtml}</td></tr>
+          ${isRoot || email.to  ? `<tr><td style="padding:2px 10px 2px 0;font-weight:600;color:#888;white-space:nowrap;vertical-align:top">${t('meta_to')}</td><td style="padding:2px 0;color:#1a1a1a">${toHtml}</td></tr>` : ''}
+          ${(isRoot || email.cc) && email.cc ? `<tr><td style="padding:2px 10px 2px 0;font-weight:600;color:#888;white-space:nowrap;vertical-align:top">${t('meta_cc')}</td><td style="padding:2px 0;color:#1a1a1a">${ccHtml}</td></tr>` : ''}
+          <tr><td style="padding:2px 10px 2px 0;font-weight:600;color:#888;white-space:nowrap">${t('meta_date')}</td><td style="padding:2px 0;color:#1a1a1a">${escHtml(formattedDate)}${formattedTime ? ` ${escHtml(formattedTime)}` : ''}${isRoot ? ` <button onclick="_editDocDate('${escHtml(docCode)}')" title="Datum aanpassen" style="background:none;border:none;cursor:pointer;padding:0 0 0 3px;font-size:11px;color:var(--text-dimmer);vertical-align:middle;line-height:1">✎</button>` : ''}</td></tr>
+          ${isRoot ? `<tr><td style="padding:2px 10px 2px 0;font-weight:600;color:#888;white-space:nowrap">${t('meta_ref')}</td><td style="padding:2px 0;font-family:var(--woo-mono);font-size:10px;color:#888">${escHtml(email.id || '—')}</td></tr>` : ''}
           ${isRoot ? renderAttachmentTags(email.text || '', email.attachments) : ''}
         </table>
         ${isRoot ? `
           <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:12px;padding-top:10px;border-top:1px solid var(--woo-border)">
-            ${hasPdf ? `<button style="${actionBtnStyle}" onclick="_showInWooDossier('${escHtml(docCode)}', ${email.pdf_page != null ? email.pdf_page : 'null'})" title="Ga naar de originele pagina in het PDF-dossier">📄 Toon in WOO-dossier</button>` : ''}
-            <button style="${actionBtnStyle};color:#c0392b;border-color:#e8c2c2" onclick="_deleteDoc('${escHtml(docCode)}')" title="Verwijder dit document uit de analyse">✕ Verwijder</button>
+            ${hasPdf ? `<button style="${actionBtnStyle}" onclick="_showInWooDossier('${escHtml(docCode)}', ${email.pdf_page != null ? email.pdf_page : 'null'})" title="Ga naar de originele pagina in het PDF-dossier">${t('btn_show_in_dossier')}</button>` : ''}
+            <button style="${actionBtnStyle};color:#c0392b;border-color:#e8c2c2" onclick="_deleteDoc('${escHtml(docCode)}')" title="Verwijder dit document uit de analyse">${t('btn_delete')}</button>
           </div>` : ''}
       </div>
       <div class="iphone-detail-body" id="${bodyId}">${bodyHtml}</div>
@@ -6519,10 +6700,10 @@ function renderSearchView(container) {
     <div class="in-doc-search-wrap">
       <div class="in-doc-search-input-row">
         <input class="in-doc-search-field" id="inDocSearchField" type="text"
-               placeholder="Zoek in e-mails, chats en documenten…"
+               placeholder="${t('in_doc_search_placeholder')}"
                value="${escHtml(q)}"
                oninput="_onInDocSearchInput(this.value)">
-        <div class="in-doc-search-count" id="inDocSearchCount">${q && results.length ? results.length + ' resultaten' : ''}</div>
+        <div class="in-doc-search-count" id="inDocSearchCount">${q && results.length ? results.length + ' ' + t('in_doc_results_suffix') : ''}</div>
       </div>
       <div class="in-doc-search-results" id="inDocSearchResults">
         ${_inDocResultsHtml(q, results, hasData)}
@@ -6535,8 +6716,8 @@ function renderSearchView(container) {
 }
 
 function _inDocResultsHtml(q, results, hasData) {
-  if (!hasData) return `<div class="empty-state"><div class="big-char">§</div><p>Analyseer eerst een dossier<br>om hierin te kunnen zoeken.</p></div>`;
-  if (!q) return `<div style="padding:32px 0;text-align:center;color:var(--text-dimmer);font-family:var(--woo-font);font-size:13px">Typ een zoekterm om te zoeken<br>in e-mails, chats en documenten.</div>`;
+  if (!hasData) return `<div class="empty-state"><div class="big-char">§</div><p>${t('empty_analyse_first')}</p></div>`;
+  if (!q) return `<div style="padding:32px 0;text-align:center;color:var(--text-dimmer);font-family:var(--woo-font);font-size:13px">${t('empty_type_to_search')}</div>`;
   if (!results.length) return `<div style="padding:32px 0;text-align:center;color:var(--text-dimmer);font-family:var(--woo-font);font-size:13px">Geen resultaten voor <em>${escHtml(q)}</em></div>`;
   return results.map(_renderInDocResultCard).join('');
 }
@@ -6548,7 +6729,7 @@ const _inDocSearchDebounce = debounce(q => {
   const countEl   = document.getElementById('inDocSearchCount');
   const hasData   = (state.emails.length + (state.chats||[]).length + getOverigDocs().length) > 0;
   if (resultsEl) resultsEl.innerHTML = _inDocResultsHtml(state.inDocSearchQuery, state.inDocSearchResults, hasData);
-  if (countEl)   countEl.textContent = q && state.inDocSearchResults.length ? state.inDocSearchResults.length + ' resultaten' : '';
+  if (countEl)   countEl.textContent = q && state.inDocSearchResults.length ? state.inDocSearchResults.length + ' ' + t('in_doc_results_suffix') : '';
 }, 200);
 
 function _onInDocSearchInput(val) { _inDocSearchDebounce(val); }
