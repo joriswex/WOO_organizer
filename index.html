@@ -2781,12 +2781,18 @@ input.addEventListener('input', debounce(async () => {
     showAutocomplete([{title: `Open PID: ${q}`, pid: q, type: 'direct'}]);
     return;
   }
-  // Show common suggestions
-  const suggestions = [
-    { title: `Zoek naar "${q}"`, pid: null, type: 'search' },
-    { title: `Zoek in e-mails: "${q}"`, pid: null, type: 'search-email' },
-  ];
-  showAutocomplete(suggestions);
+  if (_hasDossierLoaded()) {
+    // In-dossier suggestions: show live matches
+    const hits = runInDocSearch(q);
+    const label = hits.length ? `Zoek in dossier: "${q}" (${hits.length} resultaten)` : `Zoek in dossier: "${q}"`;
+    showAutocomplete([{ title: label, pid: null, type: 'search' }]);
+  } else {
+    // WooZM suggestions
+    const suggestions = [
+      { title: `Zoek WOO-dossiers: "${q}"`, pid: null, type: 'search' },
+    ];
+    showAutocomplete(suggestions);
+  }
 }, 300));
 
 function showAutocomplete(items) {
@@ -2818,6 +2824,10 @@ function handleAcSelect(val, type) {
   }
 }
 
+function _hasDossierLoaded() {
+  return (state.emails.length + (state.chats||[]).length + getOverigDocs().length + (state.timelineItems||[]).length) > 0;
+}
+
 async function doSearch() {
   hideAutocomplete();
   const q = input.value.trim();
@@ -2825,6 +2835,13 @@ async function doSearch() {
   // Detect PID pattern (nl.*) → load directly without search
   if (/^nl\./i.test(q)) {
     _confirmAndRun(() => _showOnlinePipelineSelector({ pid: q, title: q }));
+    return;
+  }
+  // If a dossier is open, search within it instead of WooZM
+  if (_hasDossierLoaded()) {
+    state.inDocSearchQuery   = q;
+    state.inDocSearchResults = runInDocSearch(q);
+    setViewTab('search');
     return;
   }
   state.query = q;
@@ -3630,6 +3647,12 @@ function parseCasePageHtml(html, pid) {
   return timeline.length > 0 ? { timeline } : null;
 }
 
+function _updateSearchPlaceholder() {
+  const el = document.getElementById('mainSearch');
+  if (!el) return;
+  el.placeholder = _hasDossierLoaded() ? 'Zoek in dossier…' : 'Zoek een WOO-dossier..';
+}
+
 function buildDossierView(pid, data) {
   // Restore analysis panel hidden by document browser
   const _ap = document.getElementById('analysisPanel');
@@ -3668,6 +3691,7 @@ function buildDossierView(pid, data) {
     ? 'emails'
     : (state.chats.length > 0 ? 'chats' : (getOverigDocs().length > 0 ? 'overig' : 'timeline'));
   setViewTab(defaultTab);
+  _updateSearchPlaceholder();
 }
 
 function buildEmailsFromData(data, pid) {
@@ -7002,6 +7026,7 @@ async function runPipeline(file) {
 
     // Show emails tab (or timeline if no emails found)
     setViewTab(uploadedEmails.length ? 'emails' : (uploadedChats.length ? 'chats' : 'timeline'));
+    _updateSearchPlaceholder();
 
   } catch (err) {
     content.innerHTML = `
@@ -8601,6 +8626,7 @@ function _applyPipelineResult(data, pid, file) {
 
   // ── Show best tab ─────────────────────────────────────────────────────────
   setViewTab(state.emails.length ? 'emails' : (state.chats.length ? 'chats' : 'timeline'));
+  _updateSearchPlaceholder();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
