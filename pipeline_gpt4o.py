@@ -1381,6 +1381,27 @@ def load_pdf_vlm(
                               stamp_format=profile.get("stamp_format"))
 
 
+def _backfill_email_pdf_pages(emails: list[dict], email_pages: list[dict]) -> None:
+    """
+    Attach pdf_page to emails produced by _extract_emails_full_doc (pass-3),
+    which sees only text and has no page info.
+
+    Strategy: walk email_pages in order; each entry with email_start=True is
+    the start of a new email. Match to the emails list positionally — pass-3
+    returns emails in the same order as the thread appears in the PDF.
+    """
+    start_pages = [p for p in email_pages if p.get("email_start") or (email_pages.index(p) == 0 and not any(q.get("email_start") for q in email_pages))]
+    # Simpler: collect pdf_page for every email_start page in order
+    start_pdf_pages = [p.get("pdf_page") for p in email_pages if p.get("email_start")]
+    if not start_pdf_pages:
+        # No email_start markers — use first page of the doc for all
+        first = next((p.get("pdf_page") for p in email_pages if p.get("pdf_page")), None)
+        start_pdf_pages = [first] * len(emails)
+    for i, email in enumerate(emails):
+        if "pdf_page" not in email or email["pdf_page"] is None:
+            email["pdf_page"] = start_pdf_pages[i] if i < len(start_pdf_pages) else start_pdf_pages[-1]
+
+
 def _build_emails_from_pages(doc_code: str, email_pages: list[dict]) -> list[dict]:
     """Assemble individual email dicts from per-page GPT-4o email metadata."""
     emails: list[dict] = []
@@ -1405,14 +1426,15 @@ def _build_emails_from_pages(doc_code: str, email_pages: list[dict]) -> list[dic
             email_idx += 1
             date_part, time_part = _split_email_datetime(p.get("email_date"))
             current = {
-                "id":      f"{doc_code}.{email_idx}",
-                "subject": p.get("email_subject"),
-                "sender":  p.get("email_from"),
-                "to":      p.get("email_to"),
-                "cc":      p.get("email_cc"),
-                "date":    date_part,
-                "time":    time_part,
-                "text":    p["text"],
+                "id":       f"{doc_code}.{email_idx}",
+                "subject":  p.get("email_subject"),
+                "sender":   p.get("email_from"),
+                "to":       p.get("email_to"),
+                "cc":       p.get("email_cc"),
+                "date":     date_part,
+                "time":     time_part,
+                "text":     p["text"],
+                "pdf_page": p.get("pdf_page"),  # PDF page where this email starts
             }
         else:
             current["text"] += "\n\n" + p["text"]
@@ -1933,6 +1955,9 @@ def _finalise_pipeline(
             if client is not None:
                 structured_emails = email_results.get(code) or \
                     _build_emails_from_pages(code, d.get("email_pages", []))
+                # Pass-3 emails have no pdf_page — backfill from email_pages
+                if structured_emails and email_results.get(code):
+                    _backfill_email_pdf_pages(structured_emails, d.get("email_pages", []))
             else:
                 structured_emails = _build_emails_from_pages(code, d.get("email_pages", []))
         else:
@@ -2080,4 +2105,5 @@ def _append_page(docs_raw: dict, code: str, p: dict) -> None:
         "email_subject": p.get("email_subject"),
         "email_date":    p.get("email_date"),
         "text":          p["text"],
+        "pdf_page":      p.get("page_num"),   # absolute PDF page number for jump-to
     })

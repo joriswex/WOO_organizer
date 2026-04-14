@@ -5167,7 +5167,7 @@ function _renderThreadMessageHtml(email, isRoot, docCode, hasPdf, actionBtnStyle
         </table>
         ${isRoot ? `
           <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:12px;padding-top:10px;border-top:1px solid var(--woo-border)">
-            ${hasPdf ? `<button style="${actionBtnStyle}" onclick="_showInWooDossier('${escHtml(docCode)}')" title="Ga naar de originele pagina in het PDF-dossier">📄 Toon in WOO-dossier</button>` : ''}
+            ${hasPdf ? `<button style="${actionBtnStyle}" onclick="_showInWooDossier('${escHtml(docCode)}', ${email.pdf_page != null ? email.pdf_page : 'null'})" title="Ga naar de originele pagina in het PDF-dossier">📄 Toon in WOO-dossier</button>` : ''}
             <button style="${actionBtnStyle};color:#c0392b;border-color:#e8c2c2" onclick="_deleteDoc('${escHtml(docCode)}')" title="Verwijder dit document uit de analyse">✕ Verwijder</button>
           </div>` : ''}
       </div>
@@ -8890,12 +8890,16 @@ function _saveDateEdit() {
   }
 }
 
-function _showInWooDossier(docCode) {
+function _showInWooDossier(docCode, emailPdfPage) {
   const item = (state.timelineItems || []).find(t => t.id === docCode);
   if (!item) return;
   state.overigSelectedId = item.id;
   if (state.viewTab !== 'overig') setViewTab('overig');
-  openDocTextPreview(item);
+  // If we know the exact page where this email starts, override the doc's page
+  const itemWithPage = (emailPdfPage != null)
+    ? { ...item, pdf_page_start: emailPdfPage }
+    : item;
+  openDocTextPreview(itemWithPage);
 }
 
 function _deleteDoc(id) {

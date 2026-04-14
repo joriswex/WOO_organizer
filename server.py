@@ -695,6 +695,7 @@ def _pipeline_to_json(docs: dict, api_key: Optional[str] = None) -> dict:
                         "time":        email_time,
                         "attachments": em.get("attachments") or [],
                         "text":        em.get("text")        or "",
+                        "pdf_page":    em.get("pdf_page"),
                     })
             except Exception as exc:
                 print(f"[server] Warning: email processing failed for {code}: {exc}")
