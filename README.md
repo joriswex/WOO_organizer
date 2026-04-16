@@ -6,17 +6,23 @@ Converts Dutch WOO (*Wet Open Overheid*) disclosure PDFs into an interactive HTM
 
 ## Architecture overview
 
-The project consists of a FastAPI server (`server.py`) that serves the frontend (`index.html`) and exposes a single pipeline endpoint (`/api/analyse`). When a PDF is uploaded, the server runs either the OCR pipeline or the GPT-4o vision pipeline in a background thread and streams progress and results back to the browser via Server-Sent Events.
+The project consists of a FastAPI server (`server.py`) that serves the frontend (`index.html`) and exposes pipeline and search endpoints. When a PDF is uploaded, the server runs either the OCR pipeline or the GPT-4o vision pipeline in a background thread and streams progress and results back to the browser via Server-Sent Events.
 
 ```
 browser  ←→  server.py (FastAPI)
-                ├── GET  /                         → index.html
-                ├── GET  /proxy?url=…              → proxies WOO database requests
-                ├── GET  /api/session_pdf[_range]  → serves the last uploaded PDF
-                ���── POST /api/analyse              → runs pipeline, streams SSE
-                        ├── pipeline_ocr.py        (pipeline="ocr")
-                        └── pipeline_gpt4o.py      (pipeline="gpt4o")
-                                └── pipeline_inventarislijst.py  (Inventarislijst pages)
+                ├── GET  /                          → index.html
+                ├── GET  /proxy?url=…               → proxies PDF and WOO database requests
+                ├── GET  /search?q=…[&year=…&type=…&publisher=…]
+                │                                   → proxies WooZM full-text search
+                ├── GET  /infobox?pid=…             → fetches dossier metadata from pid.wooverheid.nl
+                ├── GET  /text?pid=…                → fetches document text from pid.wooverheid.nl
+                ├── GET  /api/session_pdf           → serves the last uploaded PDF
+                ├── GET  /api/session_pdf_range     → serves a page range of the session PDF
+                ├── POST /api/analyse               → runs pipeline, streams SSE progress + result
+                │       ├── pipeline_ocr.py         (pipeline="ocr")
+                │       └── pipeline_gpt4o.py       (pipeline="gpt4o")
+                │               └── pipeline_inventarislijst.py  (Inventarislijst pages)
+                └── POST /api/inventarislijst       → standalone inventory-table extraction
 ```
 
 ---
@@ -49,7 +55,11 @@ python server.py
 # or: uvicorn server:app --port 8000 --reload
 ```
 
-Open `http://localhost:8000` in a browser. Upload a WOO dossier PDF, choose a pipeline, and click Analyseer.
+Open `http://localhost:8000` in a browser.
+
+The home screen offers a Google-style search bar that queries the WooZM national WOO disclosure index. Search results support year, type, and publisher filters populated from live WooZM facets. From a search result you can load a dossier directly by PID, or upload a local PDF or a previously exported analysis JSON.
+
+Once a dossier is loaded, the top search bar switches to in-document full-text search. The sidebar shows a chronological timeline; clicking a document opens its content with optional side-by-side PDF view ("Toon in WOO-dossier"). The interface supports NL/EN language toggle in the top-right corner.
 
 The GPT-4o pipeline requires an OpenAI API key. This can be set as an environment variable (`OPENAI_API_KEY`) or entered directly in the UI.
 
@@ -211,8 +221,8 @@ Both Dutch (`Van`, `Aan`, `Onderwerp`, `Verzonden`, `CC`) and English header fie
 
 | File | Role |
 |---|---|
-| `server.py` | FastAPI server — serves the frontend, proxies WOO database requests, exposes `/api/analyse` SSE endpoint |
-| `index.html` | WOOLens frontend — single-file vanilla JS + CSS, no build step; uses PDF.js for in-browser page rendering |
+| `server.py` | FastAPI server — serves the frontend, proxies WOO/WooZM requests, exposes `/api/analyse` SSE endpoint, `/search`, `/infobox`, `/text`, and `/api/inventarislijst` |
+| `index.html` | WOOLens frontend — single-file vanilla JS + CSS, no build step; PDF.js for in-browser rendering; NL/EN language toggle |
 | `pipeline_ocr.py` | OCR pipeline: stamp detection, pdfplumber + Tesseract text extraction, document splitting |
 | `pipeline_gpt4o.py` | GPT-4o pipeline: three-pass vision extraction, boundary detection, email extraction, cache management |
 | `pipeline_inventarislijst.py` | GPT-4o-mini vision extraction of WOO inventory table rows |
@@ -265,6 +275,54 @@ Returns `text/event-stream` with JSON events:
 {"type": "done",     "emails": [...], "timeline": [...], "stats": {...}}
 {"type": "error",    "msg": "..."}
 ```
+
+---
+
+## `/search` endpoint reference
+
+```
+GET /search?q=<query>[&page=N][&year=YYYY][&type=<code>][&publisher=<orgcode>]
+```
+
+Proxies WooZM full-text search and returns the raw WooZM JSON response, which includes:
+
+```json
+{
+  "hits": [...],
+  "total_hits": 1234,
+  "facets": [
+    {"<orgcode>": <count>, ...},  // [0] publishers
+    {"<year>":    <count>, ...},  // [1] years
+    {"<type>":    <count>, ...},  // [2] document types
+    {"<cat>":     <count>, ...}   // [3] organisation categories
+  ]
+}
+```
+
+Filter parameters use WooZM internal codes — e.g. `publisher=gm0014` (not a display name), `type=2i`, `year=2023`.
+
+---
+
+## `/api/inventarislijst` endpoint reference
+
+```
+POST /api/inventarislijst
+Content-Type: multipart/form-data
+
+api_key:    <OpenAI key>           (required)
+file:       <PDF upload>           (option A — dedicated Inventarislijst PDF)
+pdf_url:    <PDF URL>              (option B — remote PDF, downloaded server-side)
+page_start: <int>                  (option C — page range within the session PDF)
+page_end:   <int>
+```
+
+Uses GPT-4o-mini vision to extract the document inventory table. Returns:
+
+```json
+{"items": [...], "total": N}
+```
+
+Each item: `{code, title, date, pages, decision, grounds}` — same schema as the inline inventarislijst extraction.
 
 ---
 
