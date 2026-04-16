@@ -1,0 +1,11 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+authors:
+- family-names: "Wechsler"
+  given-names: "Joris"
+title: "WOO_organizer"
+version: 1.0.0
+license: MIT
+doi: 10.5281/zenodo.19603382
+date-released: 2026-04-15
+url: "https://github.com/joriswex/WOO_organizer"
