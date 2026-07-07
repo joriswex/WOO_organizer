@@ -743,7 +743,7 @@ def _pipeline_to_json(docs: dict, api_key: Optional[str] = None) -> dict:
 
 # ── SSE pipeline runner ───────────────────────────────────────────────────────
 
-# Matches progress lines like "[gpt4o] Page 12/50 read." or
+# Matches progress lines like "[vlm] Page 12/50 read." or
 # "[data_import] Page 12/50 processed." to derive a real completion percentage.
 _PAGE_PROGRESS_RE = re.compile(r"[Pp]age\s+(\d+)\s*/\s*(\d+)")
 

@@ -3099,7 +3099,7 @@
           <input type="file" accept=".json" style="display:none" onchange="_importAnalysis(this)">
         </label>
       </div>
-      <div class="analysis-import-export-note">Sla je resultaten op in JSON file of laad een eerdere gpt4o analyse om API-verbruik te beperken.</div>
+      <div class="analysis-import-export-note">Sla je resultaten op in JSON file of laad een eerdere analyse om API-verbruik te beperken.</div>
     </div>
 
     <!-- scrollable body — all sections live here -->
@@ -7171,14 +7171,14 @@ function renderSummaryView(container) {
           <div style="text-align:center;padding:40px 20px">
             <div style="font-family:var(--serif);font-style:italic;font-size:36px;color:var(--border-bright);margin-bottom:12px">✦</div>
             <div style="font-family:var(--woo-mono);font-size:12px;color:var(--text-dimmer);line-height:1.8">
-              Klik op de knop hierboven om OpenAI<br>dit dossier te laten analyseren.
+              Klik op de knop hierboven om AI<br>dit dossier te laten analyseren.
             </div>
           </div>
         `}
       </div>
 
       <div class="summary-disclaimer">
-        ⚠ Deze samenvatting is gegenereerd door OpenAI (GPT-4o) op basis van de zichtbare documenttekst.
+        ⚠ Deze samenvatting is gegenereerd door ${_llmProvider === 'gemini' ? 'Google Gemini' : 'OpenAI (GPT-4o)'} op basis van de zichtbare documenttekst.
         Geredigeerde passages zijn niet beschikbaar voor de AI. Verifieer altijd via de bronlink.
       </div>
     </div>

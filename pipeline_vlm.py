@@ -266,7 +266,8 @@ EMAIL HEADER RULES (only when category = "Email"):
 _PROFILE_N_SAMPLES = 8    # pilot pages run through full pass-1 to determine stamp format
 
 
-def _profile_dossier(images: list, client, provider: str = "openai") -> tuple[dict, dict[int, dict]]:
+def _profile_dossier(images: list, client, provider: str = "openai",
+                      docnr_page_indices: list[int] | None = None) -> tuple[dict, dict[int, dict]]:
     """
     Pass 0: run a small pilot of real pass-1 calls on a spread of pages, then
     determine the stamp format from the returned doc_code values in Python.
@@ -278,6 +279,14 @@ def _profile_dossier(images: list, client, provider: str = "openai") -> tuple[di
     The pilot page results are returned so load_pdf_vlm() can slot them directly
     into the main pass-1 loop, avoiding double-processing of those pages.
 
+    Args:
+        docnr_page_indices: page indices the free raster pre-scan already found
+            carrying a DocNr-style label (see _raster_stamp_survey). A DocNr stamp
+            only appears on each document's first page, so on dossiers with long
+            documents the blind spread+cluster sample below can easily miss it
+            entirely — these known-good indices are seeded into the sample first
+            so the pilot's real vision-model calls land where the label actually is.
+
     Returns:
         profile       — dict: stamp_format, stamp_example, notes
         pilot_results — {page_index: raw_gpt4o_result} for reuse in the main loop
@@ -288,18 +297,36 @@ def _profile_dossier(images: list, client, provider: str = "openai") -> tuple[di
     if total <= n:
         indices = list(range(total))
     else:
+        # Reserve up to half the budget for known DocNr-label pages, evenly picked
+        # across the full list so different documents are sampled, not just the
+        # first few found.
+        seeded_idx: list[int] = []
+        if docnr_page_indices:
+            budget = max(1, n // 2)
+            if len(docnr_page_indices) <= budget:
+                seeded_idx = list(docnr_page_indices)
+            else:
+                step = (len(docnr_page_indices) - 1) / (budget - 1) if budget > 1 else 0
+                seeded_idx = [docnr_page_indices[round(i * step)] for i in range(budget)]
+
+        remaining = n - len(seeded_idx)
         # Evenly distributed + a cluster of 4 consecutive pages around 35% of the doc.
         # The cluster ensures adjacent pages are seen together so same-document code
         # repetition is visible even in dense dossiers with many short documents.
-        n_cluster     = min(4, n // 2)
-        n_spread      = n - n_cluster
+        n_cluster     = min(4, remaining // 2)
+        n_spread      = remaining - n_cluster
         cluster_start = max(0, round(total * 0.35) - n_cluster // 2)
         cluster_idx   = list(range(cluster_start, min(total, cluster_start + n_cluster)))
         step          = (total - 1) / max(n_spread - 1, 1)
         spread_idx    = [round(i * step) for i in range(n_spread)]
-        indices       = sorted(set(cluster_idx) | set(spread_idx))
+        indices       = sorted(set(seeded_idx) | set(cluster_idx) | set(spread_idx))
 
-    print(f"[gpt4o] Sampling {len(indices)} pages to detect stamp format...")
+    if docnr_page_indices:
+        n_seeded = len(set(indices) & set(docnr_page_indices))
+        print(f"[vlm] Sampling {len(indices)} pages to detect stamp format "
+              f"({n_seeded} from known DocNr label locations)...")
+    else:
+        print(f"[vlm] Sampling {len(indices)} pages to detect stamp format...")
 
     # Run pilot pages through the real pass-1 call (no hint yet — generic prompt)
     pilot_results: dict[int, dict] = {}
@@ -355,7 +382,7 @@ def _profile_dossier(images: list, client, provider: str = "openai") -> tuple[di
                      f"{len(set(valid))} distinct codes) — format inferred from digit length")
 
     ex_str = f" (e.g. '{example}')" if example else ""
-    print(f"[gpt4o] Stamp format detected: {fmt}{ex_str}")
+    print(f"[vlm] Stamp format detected: {fmt}{ex_str}")
     return {"stamp_format": fmt, "stamp_example": example, "notes": notes}, pilot_results
 
 
@@ -509,12 +536,18 @@ def _raster_stamp_survey(images: list, page_offset: int = 0) -> dict:
                 with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
                     for idx, corrected_code in ex.map(_rescan, pages_to_rescan):
                         raw[idx] = corrected_code   # None if stamp not at dominant loc
-                print(f"[gpt4o] Dominant stamp region: {dominant_region!r} "
+                print(f"[vlm] Dominant stamp region: {dominant_region!r} "
                       f"({top_count}/{total_hits} hits); "
                       f"re-scanned {len(pages_to_rescan)} page(s) restricted to that region.")
 
-    docnr_pages      = sum(docnr_flags)
-    has_docnr_labels = docnr_pages >= 2   # require ≥2 pages to avoid stray OCR hits
+    docnr_pages        = sum(docnr_flags)
+    has_docnr_labels   = docnr_pages >= 2   # require ≥2 pages to avoid stray OCR hits
+    # Exact page indices where a DocNr-style label was found — a DocNr stamp only
+    # appears on the first page of each document, so the pilot's blind spread+
+    # cluster sample can easily miss it entirely on dossiers with long documents.
+    # Passing these known-good indices lets the pilot spend its real vision-model
+    # calls where the label actually is, instead of guessing.
+    docnr_page_indices = [i for i, f in enumerate(docnr_flags) if f]
 
     valid_pages = [(i, c) for i, c in enumerate(raw) if c]
     coverage    = len(valid_pages) / n if n else 0.0
@@ -524,6 +557,7 @@ def _raster_stamp_survey(images: list, page_offset: int = 0) -> dict:
         return {
             "has_stamps":      False,
             "has_docnr_labels": has_docnr_labels,
+            "docnr_page_indices": docnr_page_indices,
             "coverage":        coverage,
             "codes":           raw,
             "distinct_count":  len(distinct),
@@ -549,6 +583,7 @@ def _raster_stamp_survey(images: list, page_offset: int = 0) -> dict:
         return {
             "has_stamps":       False,
             "has_docnr_labels": has_docnr_labels,
+            "docnr_page_indices": docnr_page_indices,
             "coverage":         coverage,
             "codes":            raw,
             "distinct_count":   len(distinct),
@@ -586,7 +621,7 @@ def _raster_stamp_survey(images: list, page_offset: int = 0) -> dict:
                 distinct2 = {c for _, c in valid2}
                 # Accept the fallback scan if it found ≥2 distinct repeating codes
                 if len(distinct2) >= 2 and len(valid2) > len(distinct2):
-                    print(f"[gpt4o] Page counter detected in {counter_region!r}; "
+                    print(f"[vlm] Page counter detected in {counter_region!r}; "
                           f"fallback scan (excluding that region) found "
                           f"{len(distinct2)} distinct stamp code(s) — using those.")
                     # Replace raw with fallback results and recompute derived values.
@@ -602,11 +637,12 @@ def _raster_stamp_survey(images: list, page_offset: int = 0) -> dict:
                     dominant_region = counter_region  # keep for location hint
                     # Fall through to jump detection with corrected codes.
                 else:
-                    print(f"[gpt4o] Page counter detected in {counter_region!r}; "
+                    print(f"[vlm] Page counter detected in {counter_region!r}; "
                           f"fallback scan found no stable stamps — flagging stampless.")
                     return {
                         "has_stamps":            False,
                         "has_docnr_labels":      has_docnr_labels,
+                        "docnr_page_indices": docnr_page_indices,
                         "coverage":              coverage,
                         "codes":                 [None] * n,
                         "distinct_count":        0,
@@ -619,6 +655,7 @@ def _raster_stamp_survey(images: list, page_offset: int = 0) -> dict:
                 return {
                     "has_stamps":            False,
                     "has_docnr_labels":      has_docnr_labels,
+                    "docnr_page_indices": docnr_page_indices,
                     "coverage":              coverage,
                     "codes":                 [None] * n,
                     "distinct_count":        0,
@@ -680,6 +717,7 @@ def _raster_stamp_survey(images: list, page_offset: int = 0) -> dict:
     return {
         "has_stamps":        True,
         "has_docnr_labels":  has_docnr_labels,
+        "docnr_page_indices": docnr_page_indices,
         "coverage":          coverage,
         "codes":             raw,
         "distinct_count":    len(distinct),
@@ -965,13 +1003,13 @@ def _call_gpt4o(image_b64: str, client, page_index: int, pdf_page_num: int,
             except json.JSONDecodeError:
                 try:
                     result = _repair_truncated_json(raw)
-                    print(f"  [gpt4o] p{page_index+1}: JSON repaired (trailing comma or truncation)")
+                    print(f"  [vlm] p{page_index+1}: JSON repaired (trailing comma or truncation)")
                     return result
                 except json.JSONDecodeError as e:
-                    print(f"  [gpt4o] p{page_index+1}: JSON parse error (attempt {attempt+1}): {e}")
+                    print(f"  [vlm] p{page_index+1}: JSON parse error (attempt {attempt+1}): {e}")
         except Exception as e:
             err = str(e)
-            print(f"  [gpt4o] p{page_index+1}: API error (attempt {attempt+1}): {err[:120]}")
+            print(f"  [vlm] p{page_index+1}: API error (attempt {attempt+1}): {err[:120]}")
             if attempt < _MAX_RETRIES - 1:
                 time.sleep(2 ** attempt)
 
@@ -1081,7 +1119,7 @@ def save_cache(page_data: list[dict], cache_path: Path,
         root["dossier_profile"] = dossier_profile
     with open(cache_path, "w", encoding="utf-8") as f:
         json.dump(root, f, ensure_ascii=False, indent=2)
-    print(f"[gpt4o] Progress saved to cache ({cache_path.name}).")
+    print(f"[vlm] Progress saved to cache ({cache_path.name}).")
 
 
 def _load_cache_pages(cache_path: Path) -> tuple[list[dict], int, list[dict], str | None]:
@@ -1107,9 +1145,9 @@ def _update_cache_boundaries(documents: list[dict], cache_path: Path) -> None:
         data["boundary_documents"] = documents
         with open(cache_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-        print(f"[gpt4o] Document boundaries saved to cache.")
+        print(f"[vlm] Document boundaries saved to cache.")
     except Exception as e:
-        print(f"[gpt4o] Warning: could not update cache boundaries: {e}")
+        print(f"[vlm] Warning: could not update cache boundaries: {e}")
 
 
 def _update_cache_emails(emails_by_doc: dict, cache_path: Path) -> None:
@@ -1120,9 +1158,9 @@ def _update_cache_emails(emails_by_doc: dict, cache_path: Path) -> None:
         data["emails_by_doc"] = emails_by_doc
         with open(cache_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-        print(f"[gpt4o] Email extraction results saved to cache.")
+        print(f"[vlm] Email extraction results saved to cache.")
     except Exception as e:
-        print(f"[gpt4o] Warning: could not update cache emails: {e}")
+        print(f"[vlm] Warning: could not update cache emails: {e}")
 
 
 def docs_from_cache(cache_path: Path, pdf_path: Path) -> dict[str, dict]:
@@ -1137,11 +1175,11 @@ def docs_from_cache(cache_path: Path, pdf_path: Path) -> dict[str, dict]:
     Returns:
         Same dict[str, dict] as load_pdf_vlm().
     """
-    print(f"[gpt4o] Loading cache from {cache_path} ...")
+    print(f"[vlm] Loading cache from {cache_path} ...")
     pages_meta, dpi, boundary_docs, stamp_format = _load_cache_pages(cache_path)
     total = len(pages_meta)
 
-    print(f"[gpt4o] Re-rendering {total} page images from PDF at {dpi} DPI...")
+    print(f"[vlm] Re-rendering {total} page images from PDF at {dpi} DPI...")
     from pdf2image import convert_from_path
     all_images: list[Image.Image] = convert_from_path(str(pdf_path), dpi=dpi)
 
@@ -1190,7 +1228,7 @@ def _ocr_stamp_fallback(page_data: list[dict]) -> None:
             recovered += 1
 
     if recovered:
-        print(f"[gpt4o] Recovered {recovered}/{len(null_pages)} missing stamp codes via OCR.")
+        print(f"[vlm] Recovered {recovered}/{len(null_pages)} missing stamp codes via OCR.")
 
 
 # ── Main pipeline ─────────────────────────────────────────────────────────────
@@ -1252,32 +1290,33 @@ def load_pdf_vlm(
         pr_start = max(1, page_range[0])
         pr_end   = min(total_pages, page_range[1])
         page_offset = pr_start - 1  # offset to get real PDF page numbers
-        print(f"[gpt4o] Converting pages {pr_start}–{pr_end} of {total_pages} total pages...")
+        print(f"[vlm] Converting pages {pr_start}–{pr_end} of {total_pages} total pages...")
         images: list[Image.Image] = convert_from_path(
             str(pdf_path), dpi=_RENDER_DPI, first_page=pr_start, last_page=pr_end
         )
     elif max_pages is not None:
         pr_end = min(max_pages, total_pages)
         page_offset = 0
-        print(f"[gpt4o] Test mode — converting first {pr_end} of {total_pages} pages...")
+        print(f"[vlm] Test mode — converting first {pr_end} of {total_pages} pages...")
         images = convert_from_path(str(pdf_path), dpi=_RENDER_DPI, first_page=1, last_page=pr_end)
     else:
         page_offset = 0
-        print(f"[gpt4o] Converting all {total_pages} pages to images...")
+        print(f"[vlm] Converting all {total_pages} pages to images...")
         images = convert_from_path(str(pdf_path), dpi=_RENDER_DPI)
 
     total = len(images)
-    print(f"[gpt4o] Step 2/4 — Reading all {total} pages with GPT-4o vision ({_MAX_WORKERS} pages at a time)...")
+    provider_label = "Gemini" if provider == "gemini" else "GPT-4o"
+    print(f"[vlm] Step 2/4 — Reading all {total} pages with {provider_label} vision ({_MAX_WORKERS} pages at a time)...")
 
-    # ── Raster stamp survey (before GPT-4o, free) ───────────────────────────
-    print(f"[gpt4o] Step 1/4 — Pre-scanning {total} pages for document stamps (quick, no API cost)...")
+    # ── Raster stamp survey (before any vision API call, free) ──────────────
+    print(f"[vlm] Step 1/4 — Pre-scanning {total} pages for document stamps (quick, no API cost)...")
     raster_survey = _raster_stamp_survey(images, page_offset)
     if raster_survey["has_stamps"]:
         lo, hi = raster_survey["range"]
-        print(f"[gpt4o] Stamps found on {raster_survey['coverage']:.0%} of pages "
+        print(f"[vlm] Stamps found on {raster_survey['coverage']:.0%} of pages "
               f"— {raster_survey['distinct_count']} document codes ({lo}–{hi}).")
     else:
-        print(f"[gpt4o] No consistent stamps found "
+        print(f"[vlm] No consistent stamps found "
               f"({raster_survey['coverage']:.0%} of pages had a candidate, but below threshold).")
 
     if cancel_event is not None and cancel_event.is_set():
@@ -1296,9 +1335,12 @@ def load_pdf_vlm(
     if raster_confident_no_stamps:
         profile       = {"stamp_format": "none", "notes": "raster survey confirmed no stamps"}
         pilot_results = {}
-        print("[gpt4o] Stamp sampling skipped — pre-scan confirmed this dossier has no stamps.")
+        print("[vlm] Stamp sampling skipped — pre-scan confirmed this dossier has no stamps.")
     else:
-        profile, pilot_results = _profile_dossier(images, client, provider=provider)
+        profile, pilot_results = _profile_dossier(
+            images, client, provider=provider,
+            docnr_page_indices=raster_survey.get("docnr_page_indices"),
+        )
 
     profile_hint = _profile_to_hint(profile)
     raster_hint  = _raster_survey_to_hint(raster_survey, page_offset)
@@ -1325,7 +1367,7 @@ def load_pdf_vlm(
                 raise PipelineCancelled(f"Geannuleerd na {completed}/{total} pagina's.")
             i, result = future.result()
             completed += 1
-            print(f"[gpt4o] Page {completed}/{total} read.")
+            print(f"[vlm] Page {completed}/{total} read.")
             raw_results[i] = result
 
     page_data: list[dict] = []
@@ -1396,7 +1438,7 @@ def load_pdf_vlm(
         save_cache(page_data, cache_path, dossier_profile=profile)
 
     return _finalise_pipeline(page_data, client=client, cache_path=cache_path,
-                              stamp_format=profile.get("stamp_format"))
+                              stamp_format=profile.get("stamp_format"), provider=provider)
 
 
 def _backfill_email_pdf_pages(emails: list[dict], email_pages: list[dict]) -> None:
@@ -1841,6 +1883,7 @@ def _finalise_pipeline(
     cache_path: Path | None = None,
     boundary_docs: list[dict] | None = None,
     stamp_format: str | None = None,
+    provider: str = "openai",
 ) -> dict[str, dict]:
     """Stage 2 + 3: assign doc codes and build the final docs dict.
 
@@ -1859,20 +1902,20 @@ def _finalise_pipeline(
     has_reliable_stamps = coverage >= threshold
 
     if has_reliable_stamps:
-        print(f"[gpt4o] Step 3/4 — Assigning documents by stamp codes ({coverage:.0%} of pages stamped).")
+        print(f"[vlm] Step 3/4 — Assigning documents by stamp codes ({coverage:.0%} of pages stamped).")
         docs_raw = _build_docs_forward_fill(page_data)
         method   = "gpt4o-stamp"
     elif boundary_docs is not None:
         # Cached LLM boundary decisions from a previous pass-2 run
-        print(f"[gpt4o] Step 3/4 — Assigning documents using saved boundary decisions (stamps sparse/absent).")
+        print(f"[vlm] Step 3/4 — Assigning documents using saved boundary decisions (stamps sparse/absent).")
         docs_raw = _build_docs_from_boundaries(page_data, boundary_docs)
         method   = "gpt4o-2pass"
     elif client is not None:
-        print(f"[gpt4o] Step 3/4 — Stamp coverage {coverage:.0%} below threshold ({threshold:.0%}) — asking AI to find document boundaries...")
+        print(f"[vlm] Step 3/4 — Stamp coverage {coverage:.0%} below threshold ({threshold:.0%}) — asking AI to find document boundaries...")
         inv_hint  = _extract_inventarislijst_hint(page_data)
         if inv_hint:
             n_docs = sum(1 for l in inv_hint.splitlines() if l.startswith("  ["))
-            print(f"[gpt4o] Found an inventory table listing {n_docs} document(s) — using it to guide boundary detection.")
+            print(f"[vlm] Found an inventory table listing {n_docs} document(s) — using it to guide boundary detection.")
         summary   = _build_page_summary(page_data)
         documents = _call_boundary_pass(summary, len(page_data), client, inv_hint=inv_hint, provider=provider)
         if documents:
@@ -1881,12 +1924,12 @@ def _finalise_pipeline(
             if cache_path:
                 _update_cache_boundaries(documents, cache_path)
         else:
-            print("[gpt4o] Boundary detection failed — falling back to per-page signals.")
+            print("[vlm] Boundary detection failed — falling back to per-page signals.")
             docs_raw = _build_docs_boundary(page_data)
             method   = "gpt4o-boundary"
     else:
         # No client, no cached boundaries, no stamps
-        print("[gpt4o] No stamps and no API client — assigning documents using per-page signals only.")
+        print("[vlm] No stamps and no API client — assigning documents using per-page signals only.")
         docs_raw = _build_docs_boundary(page_data)
         method   = "gpt4o-boundary"
 
@@ -1895,9 +1938,9 @@ def _finalise_pipeline(
         if next((c for c in d["categories"] if c != "Other"), "Other") == "E-mail"
     )
     if n_email_docs and client is not None:
-        print(f"[gpt4o] Step 4/4 — Extracting email threads from {n_email_docs} email document(s)...")
+        print(f"[vlm] Step 4/4 — Extracting email threads from {n_email_docs} email document(s)...")
     elif not n_email_docs:
-        print(f"[gpt4o] Step 4/4 — No email documents found, skipping email extraction.")
+        print(f"[vlm] Step 4/4 — No email documents found, skipping email extraction.")
 
     # ── Phase A: pre-compute all non-API metadata (fast, no I/O) ────────────────
     doc_meta: dict[str, dict] = {}
@@ -1996,7 +2039,7 @@ def _finalise_pipeline(
             _update_cache_emails(emails_by_doc, cache_path)
 
     total = len(page_data)
-    print(f"[gpt4o] Done! Found {len(docs)} documents across {total} pages.")
+    print(f"[vlm] Done! Found {len(docs)} documents across {total} pages.")
     return docs
 
 
