@@ -336,51 +336,65 @@ def _nonchat_summary_fallback(doc: dict) -> str:
     return short
 
 
-def _generate_nonchat_ai_summary(doc: dict, api_key: Optional[str], cache: dict[str, str]) -> str:
-    """Generate a concise AI sentence for non-email/non-chat documents."""
+def _generate_nonchat_ai_summary(
+    doc: dict,
+    api_key: Optional[str],
+    cache: dict[str, tuple[str, str]],
+    provider: str = "openai",
+) -> tuple[str, str]:
+    """Generate a title + one-sentence AI summary for non-email/non-chat documents.
+
+    Returns (title, summary). title is "" when the model found none — the caller
+    falls back to the regex-based _extract_title() heuristic in that case.
+    """
     text = (doc.get("annotated_text") or doc.get("text") or "").strip()
     snippet = re.sub(r"\s+", " ", text)[:4000]
     if not snippet:
-        return _nonchat_summary_fallback(doc)
+        return "", _nonchat_summary_fallback(doc)
 
-    digest_input = f"{doc.get('doc_subtype') or 'other'}::{snippet}"
+    digest_input = f"{provider}::{doc.get('doc_subtype') or 'other'}::{snippet}"
     digest = hashlib.sha1(digest_input.encode("utf-8", errors="ignore")).hexdigest()
     if digest in cache:
         return cache[digest]
 
     if not api_key:
-        summary = _nonchat_summary_fallback(doc)
-        cache[digest] = summary
-        return summary
+        result = ("", _nonchat_summary_fallback(doc))
+        cache[digest] = result
+        return result
 
     try:
-        from openai import OpenAI
-        client = OpenAI(api_key=api_key)
+        from llm_providers import call_llm, make_client
+        client = make_client(provider, api_key)
+        model = "gemini-2.5-flash" if provider == "gemini" else "gpt-4o"
         subtype_label = _display_type_label(doc.get("category", "Overig"), doc.get("doc_subtype") or "other")
         prompt = (
-            "Je krijgt tekst uit een Nederlands Woo-document. "
-            "Schrijf precies 1 korte zin (max 24 woorden) die samenvat wat zichtbaar is in dit document. "
-            "Noem geen geredigeerde personen. Geef alleen de zin, zonder labels.\n\n"
+            "Je krijgt tekst uit een Nederlands Woo-document (overheidsdocument). "
+            "Geef ALLEEN geldig JSON terug (geen markdown) met dit schema:\n"
+            '{"title": "<titel>", "summary": "<1 korte zin>"}\n\n'
+            "title: de officiële titel/het onderwerp van het document. Negeer documentstempels/codes "
+            "(bijv. 'Docnr19'), referentienummers, briefhoofd/ministerienaam, afdelingsnaam, "
+            "classificatielabels (TER BESLISSING/TER ONDERTEKENING/TER VOORBEREIDING/e.d.), en losse "
+            "velden als 'Aan:'/'Datum:'. Geef een lege string als er geen duidelijke titel te vinden is.\n"
+            "summary: max 24 woorden, vat samen wat zichtbaar is in dit document. Noem geen geredigeerde personen.\n\n"
             f"Documenttype: {subtype_label}\n"
             f"Tekst:\n{snippet}"
         )
-        resp = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0,
-        )
-        out = re.sub(r"\s+", " ", (resp.choices[0].message.content or "").strip())
-        if not out:
-            out = _nonchat_summary_fallback(doc)
-        if not out.endswith("."):
-            out += "."
-        cache[digest] = out
-        return out
+        raw_text, _ = call_llm(provider, client, model, "", prompt, max_tokens=300, json_mode=True)
+        data = json.loads(raw_text)
+        title = (data.get("title") or "").strip()[:150]
+        summary = re.sub(r"\s+", " ", (data.get("summary") or "").strip())
+        if not summary:
+            summary = _nonchat_summary_fallback(doc)
+        if not summary.endswith("."):
+            summary += "."
+        result = (title, summary)
+        cache[digest] = result
+        return result
     except Exception as exc:
-        print(f"[server] Non-chat summary generation failed: {exc}")
-        summary = _nonchat_summary_fallback(doc)
-        cache[digest] = summary
-        return summary
+        print(f"[server] Non-chat title/summary generation failed: {exc}")
+        result = ("", _nonchat_summary_fallback(doc))
+        cache[digest] = result
+        return result
 
 
 def _is_chat_category(category: str) -> bool:
@@ -425,7 +439,9 @@ def _chat_summary_fallback(doc: dict) -> str:
     return merged
 
 
-def _generate_chat_ai_summary(doc: dict, api_key: Optional[str], cache: dict[str, str]) -> str:
+def _generate_chat_ai_summary(
+    doc: dict, api_key: Optional[str], cache: dict[str, str], provider: str = "openai",
+) -> str:
     """Generate a one-sentence AI summary for one chat day/document."""
     msgs = doc.get("chat_messages") or []
     if not isinstance(msgs, list):
@@ -445,7 +461,7 @@ def _generate_chat_ai_summary(doc: dict, api_key: Optional[str], cache: dict[str
         return _chat_summary_fallback(doc)
 
     joined = "\n".join(lines)
-    digest = hashlib.sha1(joined.encode("utf-8", errors="ignore")).hexdigest()
+    digest = hashlib.sha1(f"{provider}::{joined}".encode("utf-8", errors="ignore")).hexdigest()
     if digest in cache:
         return cache[digest]
 
@@ -455,20 +471,16 @@ def _generate_chat_ai_summary(doc: dict, api_key: Optional[str], cache: dict[str
         return summary
 
     try:
-        from openai import OpenAI
-        client = OpenAI(api_key=api_key)
+        from llm_providers import call_llm, make_client
+        client = make_client(provider, api_key)
+        model = "gemini-2.5-flash" if provider == "gemini" else "gpt-4o"
         prompt = (
             "Vat deze Nederlandse Woo-chatberichten samen in precies 1 zin (max 24 woorden). "
             "Noem geen namen van geredigeerde personen. Geef alleen de zin, zonder labels.\n\n"
             f"Chatberichten:\n{joined}"
         )
-        resp = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0,
-        )
-        text = (resp.choices[0].message.content or "").strip()
-        text = re.sub(r"\s+", " ", text)
+        text, _ = call_llm(provider, client, model, "", prompt, max_tokens=100, json_mode=False)
+        text = re.sub(r"\s+", " ", text.strip())
         if not text:
             text = _chat_summary_fallback(doc)
         if not text.endswith("."):
@@ -649,7 +661,7 @@ def _pick_emails(doc: dict, code: str) -> list[dict]:
     return text_emails
 
 
-def _pipeline_to_json(docs: dict, api_key: Optional[str] = None) -> dict:
+def _pipeline_to_json(docs: dict, api_key: Optional[str] = None, provider: str = "openai") -> dict:
     """
     Convert pipeline output (dict[str, dict]) to frontend-ready JSON.
 
@@ -686,9 +698,11 @@ def _pipeline_to_json(docs: dict, api_key: Optional[str] = None) -> dict:
         description = _generate_description(doc)
         if is_chat_doc:
             title = _format_chat_title_date(date_str)
-            description = _generate_chat_ai_summary(doc, api_key, chat_summary_cache)
+            description = _generate_chat_ai_summary(doc, api_key, chat_summary_cache, provider=provider)
         elif not is_email_doc:
-            description = _generate_nonchat_ai_summary(doc, api_key, doc_summary_cache)
+            ai_title, description = _generate_nonchat_ai_summary(doc, api_key, doc_summary_cache, provider=provider)
+            if ai_title:
+                title = ai_title
 
         display_type = _display_type_label(category, doc_subtype)
 
@@ -866,7 +880,7 @@ async def _run_pipeline_sse(
             "pct":  93,
         })
         try:
-            output = _pipeline_to_json(result_data, api_key=api_key)
+            output = _pipeline_to_json(result_data, api_key=api_key, provider=provider)
             output["pdf_url"] = "/api/session_pdf"
             yield _sse({"type": "done", **output})
         except Exception as exc:
