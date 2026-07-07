@@ -54,6 +54,10 @@ _PIPELINE_GPT4O = "gpt4o"
 # Prevent concurrent pipeline runs — stdout capture is process-wide.
 _pipeline_lock = threading.Lock()
 
+# Set by /api/analyse/cancel to stop the currently running pipeline at its
+# next checkpoint. Cleared when a new run starts.
+_cancel_event = threading.Event()
+
 # Last uploaded PDF kept for in-app page preview.
 _SESSION_PDF: Path = Path(tempfile.gettempdir()) / "woo_session.pdf"
 
@@ -739,6 +743,11 @@ def _pipeline_to_json(docs: dict, api_key: Optional[str] = None) -> dict:
 
 # ── SSE pipeline runner ───────────────────────────────────────────────────────
 
+# Matches progress lines like "[gpt4o] Page 12/50 read." or
+# "[data_import] Page 12/50 processed." to derive a real completion percentage.
+_PAGE_PROGRESS_RE = re.compile(r"[Pp]age\s+(\d+)\s*/\s*(\d+)")
+
+
 async def _run_pipeline_sse(
     pipeline: str,
     pdf_path: Path,
@@ -778,6 +787,7 @@ async def _run_pipeline_sse(
             )
             asyncio.run_coroutine_threadsafe(q.put(None), loop)
             return
+        _cancel_event.clear()
         old_stdout = sys.stdout
         capture = _StdoutCapture()
         try:
@@ -785,13 +795,17 @@ async def _run_pipeline_sse(
             # Deferred imports: pipeline modules are heavy (pdf2image, tesseract,
             # openai) and only needed when a run actually starts.
             if pipeline == _PIPELINE_OCR:
-                from pipeline_ocr import load_pdf
-                result = load_pdf(pdf_path, page_range=page_range)
+                from pipeline_ocr import load_pdf, PipelineCancelled
+                result = load_pdf(pdf_path, page_range=page_range, cancel_event=_cancel_event)
             else:
-                from pipeline_gpt4o import load_pdf_vlm
-                result = load_pdf_vlm(pdf_path, api_key=api_key, page_range=page_range)
+                from pipeline_gpt4o import load_pdf_vlm, PipelineCancelled
+                result = load_pdf_vlm(pdf_path, api_key=api_key, page_range=page_range, cancel_event=_cancel_event)
             asyncio.run_coroutine_threadsafe(
                 q.put({"type": "result", "data": result}), loop
+            )
+        except PipelineCancelled as exc:
+            asyncio.run_coroutine_threadsafe(
+                q.put({"type": "cancelled", "msg": str(exc)}), loop
             )
         except Exception as exc:
             asyncio.run_coroutine_threadsafe(
@@ -814,9 +828,20 @@ async def _run_pipeline_sse(
             break
         if item["type"] == "log":
             # Thread emits "log"; frontend expects "progress" — translate here.
-            yield _sse({"type": "progress", "msg": item["msg"], "pct": None})
+            # Derive a real percentage from "Page N/Total" lines when present.
+            msg = item["msg"]
+            pct = None
+            m = _PAGE_PROGRESS_RE.search(msg)
+            if m:
+                done, total = int(m.group(1)), int(m.group(2))
+                if total > 0:
+                    pct = 5 + round(80 * min(done, total) / total)
+            yield _sse({"type": "progress", "msg": msg, "pct": pct})
         elif item["type"] == "result":
             result_data = item["data"]
+        elif item["type"] == "cancelled":
+            yield _sse({"type": "cancelled", "msg": item["msg"]})
+            return
         elif item["type"] == "error":
             yield _sse({"type": "error", "msg": item["msg"]})
             return
@@ -932,6 +957,13 @@ async def analyse(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@app.post("/api/analyse/cancel")
+async def cancel_analyse():
+    """Signal the currently running pipeline (if any) to stop at its next checkpoint."""
+    _cancel_event.set()
+    return {"ok": True}
 
 
 # ── /api/inventarislijst ─────────────────────────────────────────────────────

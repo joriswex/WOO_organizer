@@ -11,6 +11,10 @@ from PIL import Image
 
 PDF_PATH = Path(__file__).parent / "test.pdf"
 
+
+class PipelineCancelled(Exception):
+    """Raised when a caller-supplied cancel_event is set mid-run."""
+
 # WOO (Wet open overheid) redaction codes.
 # Valid grounds are all under article 5.1.x or 5.2.x, e.g. 5.1.2e, 5.1.1, 5.2.1.
 # This intentionally excludes plain decimals (2.5), money amounts (50.000), etc.
@@ -580,6 +584,7 @@ def load_pdf(
     pdf_path: Path = PDF_PATH,
     ocr_supplement: bool = False,
     page_range: tuple[int, int] | None = None,
+    cancel_event=None,
 ) -> dict[str, dict]:
     """
     Extract text from *pdf_path* and group pages by their 4-digit document code.
@@ -595,6 +600,8 @@ def load_pdf(
         that are invisible to the text layer.  Adds ~3 s per page.
     page_range : tuple[int, int] | None
         Optional (start, end) 1-based page numbers to process a subset of the PDF.
+    cancel_event : threading.Event | None
+        If given and set mid-run, raises PipelineCancelled at the next per-page checkpoint.
 
     Returns
     -------
@@ -631,13 +638,6 @@ def load_pdf(
     searchable = _is_searchable(pdf_path)
     method     = "direct" if searchable else "ocr"
 
-    images = None
-    if not searchable:
-        print("[data_import] Image-based PDF — running OCR (DPI=300, may take a moment).")
-        images = convert_from_path(pdf_path, dpi=300)
-    else:
-        print("[data_import] Searchable PDF — using direct text extraction.")
-
     if ocr_supplement and searchable:
         print("[data_import] OCR supplement enabled — rendering all pages at 300 DPI.")
 
@@ -652,9 +652,22 @@ def load_pdf(
             print(f"[data_import] Page range: {pr_start}–{pr_end} of {total_pages} total pages.")
             pages_iter = [(idx, pdf.pages[idx - 1]) for idx in range(pr_start, pr_end + 1)]
         else:
+            pr_start, pr_end = 1, total_pages
             pages_iter = list(enumerate(pdf.pages, start=1))
 
+        images = None
+        if not searchable:
+            print(f"[data_import] Image-based PDF — running OCR (DPI=300, pages {pr_start}-{pr_end}).")
+            images = convert_from_path(pdf_path, dpi=300, first_page=pr_start, last_page=pr_end)
+        else:
+            print("[data_import] Searchable PDF — using direct text extraction.")
+
         for i, page in pages_iter:
+            if cancel_event is not None and cancel_event.is_set():
+                raise PipelineCancelled(
+                    f"Geannuleerd na {len(page_data)}/{len(pages_iter)} pagina's."
+                )
+            print(f"[data_import] Page {len(page_data) + 1}/{len(pages_iter)} processed.")
 
             if searchable:
                 # One 200 DPI render serves both page-number and doc-code detection.
@@ -683,7 +696,9 @@ def load_pdf(
 
             else:
                 # Fully image-based PDF — everything comes from pre-rendered images
-                rendered        = images[i - 1] if images and i - 1 < len(images) else None
+                # (images only spans [pr_start, pr_end], so offset by pr_start, not 1)
+                idx             = i - pr_start
+                rendered        = images[idx] if images and 0 <= idx < len(images) else None
                 within_doc_page = _find_within_doc_page_raster(rendered) if rendered else None
                 detected_code   = _find_doc_code_raster(rendered) if rendered else None
                 text            = _ocr_image(rendered) if rendered else ""

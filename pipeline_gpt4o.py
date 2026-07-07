@@ -28,6 +28,11 @@ from pathlib import Path
 
 from PIL import Image
 
+
+class PipelineCancelled(Exception):
+    """Raised when a caller-supplied cancel_event is set mid-run."""
+
+
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 OPENAI_MODEL    = "gpt-4o-2024-11-20"       # pinned snapshot for reproducibility
@@ -1206,6 +1211,7 @@ def load_pdf_vlm(
     max_pages:  int | None = None,
     cache_path: Path | None = None,
     page_range: tuple[int, int] | None = None,
+    cancel_event=None,
 ) -> dict[str, dict]:
     """
     GPT-4o full-page VLM pipeline. Drop-in replacement for load_pdf().
@@ -1214,6 +1220,8 @@ def load_pdf_vlm(
         pdf_path:   Path to the PDF file.
         api_key:    OpenAI API key (falls back to OPENAI_API_KEY env var).
         max_pages:  Only process the first N pages (test mode).
+        cancel_event: threading.Event | None — if set mid-run, raises PipelineCancelled
+            at the next per-page checkpoint (stops queuing further GPT-4o calls).
         cache_path: If given, save extracted page data to this JSON file after the run.
 
     Returns:
@@ -1236,23 +1244,30 @@ def load_pdf_vlm(
     client = OpenAI(api_key=api_key)
 
     # ── Convert PDF to images ────────────────────────────────────────────────
-    print(f"[gpt4o] Converting PDF pages to images...")
+    # Only rasterize the pages we actually need — converting a whole large
+    # scanned dossier into memory at once is what was OOM-killing this
+    # pipeline on memory-constrained hosts (e.g. Railway's default container).
     from pdf2image import convert_from_path
-    images: list[Image.Image] = convert_from_path(str(pdf_path), dpi=_RENDER_DPI)
+    from pdf2image.pdf2image import pdfinfo_from_path
+    total_pages = int(pdfinfo_from_path(str(pdf_path))["Pages"])
 
-    all_images = images
     if page_range is not None:
         pr_start = max(1, page_range[0])
-        pr_end   = min(len(all_images), page_range[1])
-        images = all_images[pr_start - 1:pr_end]
+        pr_end   = min(total_pages, page_range[1])
         page_offset = pr_start - 1  # offset to get real PDF page numbers
-        print(f"[gpt4o] Page range: {pr_start}–{pr_end} of {len(all_images)} total pages.")
+        print(f"[gpt4o] Converting pages {pr_start}–{pr_end} of {total_pages} total pages...")
+        images: list[Image.Image] = convert_from_path(
+            str(pdf_path), dpi=_RENDER_DPI, first_page=pr_start, last_page=pr_end
+        )
     elif max_pages is not None:
-        images = all_images[:max_pages]
+        pr_end = min(max_pages, total_pages)
         page_offset = 0
-        print(f"[gpt4o] Test mode — processing first {len(images)} pages.")
+        print(f"[gpt4o] Test mode — converting first {pr_end} of {total_pages} pages...")
+        images = convert_from_path(str(pdf_path), dpi=_RENDER_DPI, first_page=1, last_page=pr_end)
     else:
         page_offset = 0
+        print(f"[gpt4o] Converting all {total_pages} pages to images...")
+        images = convert_from_path(str(pdf_path), dpi=_RENDER_DPI)
 
     total = len(images)
     print(f"[gpt4o] Step 2/4 — Reading all {total} pages with GPT-4o vision ({_MAX_WORKERS} pages at a time)...")
@@ -1267,6 +1282,9 @@ def load_pdf_vlm(
     else:
         print(f"[gpt4o] No consistent stamps found "
               f"({raster_survey['coverage']:.0%} of pages had a candidate, but below threshold).")
+
+    if cancel_event is not None and cancel_event.is_set():
+        raise PipelineCancelled("Geannuleerd voor start van GPT-4o analyse.")
 
     # ── Pass 0: pilot run to profile stamp format ────────────────────────────
     # Only skip the GPT-4o pilot when raster coverage is near-zero (<= 5%).
@@ -1305,6 +1323,9 @@ def load_pdf_vlm(
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as executor:
         futures = {executor.submit(_process_page, (i, img)): i for i, img in remaining}
         for future in as_completed(futures):
+            if cancel_event is not None and cancel_event.is_set():
+                executor.shutdown(wait=False, cancel_futures=True)
+                raise PipelineCancelled(f"Geannuleerd na {completed}/{total} pagina's.")
             i, result = future.result()
             completed += 1
             print(f"[gpt4o] Page {completed}/{total} read.")
