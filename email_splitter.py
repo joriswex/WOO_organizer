@@ -215,6 +215,21 @@ _GAP_LINES  = 4
 _BODY_LINES = 2
 
 
+# How many lines ahead to look for a Subject/Onderwerp line when confirming
+# a candidate boundary — mirrors the ~500-char window used by the
+# subject-anchoring approach in the email-extraction thesis
+# (github.com/joriswex/woo-email-extraction), measured at 0.915 boundary F1
+# on 20 real Woo dossiers (second only to GPT-5.5's 0.934, ahead of a
+# fine-tuned RobBERT classifier's 0.769).
+_SUBJECT_WINDOW_LINES = 15
+
+
+def _subject_nearby(lines: list[str], idx: int, window: int = _SUBJECT_WINDOW_LINES) -> bool:
+    """Whether a Subject/Onderwerp header line appears within `window` lines of idx."""
+    end = min(len(lines), idx + window)
+    return any(_SUBJECT_RE.match(lines[k]) for k in range(idx, end))
+
+
 def _find_split_points(lines: list[str]) -> list[int]:
     """
     Return line indices where new emails begin.
@@ -222,12 +237,21 @@ def _find_split_points(lines: list[str]) -> list[int]:
     For each line in document order:
     - Outlook separator  → always start a new email.
     - Header field line  → start a new email if any of:
-        a) we are not currently in a header block (came from body text), OR
-        b) the same field type was already seen in this email's headers, OR
-        c) large line gap from last header AND several body lines seen.
+        a) the same field type was already seen in this email's headers
+           (repeated field → unambiguous new email, no further check needed), OR
+        b) we are not currently in a header block (came from body text), AND
+           a Subject/Onderwerp line appears nearby (confirms this is a real
+           header block, not a stray header-like line quoted in body text), OR
+        c) large line gap from last header AND several body lines seen, AND
+           a Subject/Onderwerp line appears nearby.
       Otherwise add the field to the current email's header set.
     - Any other line     → increment body-line counter; exit header-block mode
                            once _EXIT_BODY_THRESHOLD body lines accumulate.
+
+    (b) and (c) require nearby confirmation because, unlike (a), they are not
+    unambiguous on their own — this is the subject-anchoring insight from the
+    thesis pipeline referenced above, applied only to the weaker signals so
+    it can't regress the stronger ones.
     """
     split_points: list[int] = []
     in_header_block = False
@@ -255,10 +279,12 @@ def _find_split_points(lines: list[str]) -> list[int]:
         field = _normalize_field(m.group("field"))
         gap   = i - last_header_idx
 
+        reentered_from_body = not in_header_block
+        gap_evidence         = gap > _GAP_LINES and body_lines > _BODY_LINES
+
         new_email = (
-            not in_header_block                              # re-entered from body text
-            or field in seen_fields                          # repeated field → new email
-            or (gap > _GAP_LINES and body_lines > _BODY_LINES)  # gap + body evidence
+            field in seen_fields
+            or ((reentered_from_body or gap_evidence) and _subject_nearby(lines, i))
         )
 
         if new_email:
@@ -274,13 +300,69 @@ def _find_split_points(lines: list[str]) -> list[int]:
     return split_points
 
 
-def _extract_field(lines: list[str], pattern: re.Pattern, limit: int = 15) -> str | None:
-    """Return the first match of *pattern* in the first *limit* lines."""
-    for line in lines[:limit]:
-        m = pattern.match(line)
-        if m:
-            return m.group(1).strip()
+def _find_header_line_idx(lines: list[str], pattern: re.Pattern, limit: int = 15) -> int | None:
+    """Return the index of the first line matching *pattern* within the first *limit* lines."""
+    for i, line in enumerate(lines[:limit]):
+        if pattern.match(line):
+            return i
     return None
+
+
+def _extract_field_multiline(
+    lines: list[str],
+    pattern: re.Pattern,
+    max_extra_lines: int | None = 0,
+    join: str = " ",
+    limit: int = 15,
+) -> str | None:
+    """Return the first match of *pattern*, optionally continued across
+    subsequent lines (multi-line TO/CC recipient lists, wrapped values).
+
+    max_extra_lines=0    : single line only
+    max_extra_lines=N    : up to N continuation lines
+    max_extra_lines=None : unlimited continuation until a blank line or the
+                           next header field (whichever comes first)
+
+    Adapted from the regex_baseline pipeline in the email-extraction thesis
+    (github.com/joriswex/woo-email-extraction), which measured this
+    multi-line approach at 0.830 exact-match F1 on 1,007 held-out real
+    Woo emails — the strongest of the three approaches evaluated there.
+    """
+    for i, line in enumerate(lines[:limit]):
+        m = pattern.match(line)
+        if not m:
+            continue
+        value_lines = [m.group(1).strip()]
+        extra = 0
+        j = i + 1
+        while j < len(lines):
+            if max_extra_lines is not None and extra >= max_extra_lines:
+                break
+            nxt = lines[j]
+            if nxt.strip() == "" or _FIELD_TYPE_RE.match(nxt):
+                break
+            value_lines.append(nxt.strip())
+            extra += 1
+            j += 1
+        return join.join(v for v in value_lines if v)
+    return None
+
+
+def _scan_attachments_near_subject(lines: list[str], start_idx: int, max_lines: int = 5) -> list[str]:
+    """Scan lines immediately after the subject line for attachment filenames
+    that appear as bare/inline text (e.g. clickable filename links in the PDF)
+    without an explicit Bijlage(n)/Attachment(s) label.
+    """
+    found: list[str] = []
+    for line in lines[start_idx:start_idx + max_lines]:
+        stripped = line.strip()
+        if not stripped or _FIELD_TYPE_RE.match(line):
+            break
+        for m in _FILENAME_RE.finditer(line):
+            name = m.group().strip()
+            if name not in found:
+                found.append(name)
+    return found
 
 
 # ---------------------------------------------------------------------------
@@ -352,21 +434,28 @@ def split_emails(text: str, doc_code: str) -> list[dict]:
         if not block_text:
             continue
 
-        raw_date = _extract_field(block_lines, _DATE_RE)
+        raw_date = _extract_field_multiline(block_lines, _DATE_RE, max_extra_lines=0)
         normalized_date = _normalize_date(raw_date)
         date_only = normalized_date.split("T", 1)[0] if normalized_date else None
         time_val = _extract_time(normalized_date)
 
+        attachments = _extract_attachments(block_lines)
+        subject_idx = _find_header_line_idx(block_lines, _SUBJECT_RE)
+        if subject_idx is not None:
+            for name in _scan_attachments_near_subject(block_lines, subject_idx + 1):
+                if name not in attachments:
+                    attachments.append(name)
+
         email_idx += 1
         emails.append({
             "id": f"{doc_code}.{email_idx}",
-            "subject": _extract_field(block_lines, _SUBJECT_RE),
-            "sender": _extract_field(block_lines, _FROM_RE),
-            "to": _extract_field(block_lines, _TO_RE),
-            "cc": _extract_field(block_lines, _CC_RE),
+            "subject": _extract_field_multiline(block_lines, _SUBJECT_RE, max_extra_lines=0),
+            "sender": _extract_field_multiline(block_lines, _FROM_RE, max_extra_lines=0),
+            "to": _extract_field_multiline(block_lines, _TO_RE, max_extra_lines=None, join=" "),
+            "cc": _extract_field_multiline(block_lines, _CC_RE, max_extra_lines=None, join=" "),
             "date": date_only,
             "time": time_val,
-            "attachments": _extract_attachments(block_lines),
+            "attachments": attachments,
             "text": block_text,
             "warning": None,
         })
