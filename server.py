@@ -974,7 +974,8 @@ async def cancel_analyse():
 
 @app.post("/api/inventarislijst")
 async def analyse_inventarislijst(
-    api_key:    str            = Form(...,  description="OpenAI API key for GPT-4o-mini"),
+    api_key:    str            = Form(...,  description="API key for the chosen provider"),
+    provider:   str            = Form("openai", description="'openai' (gpt-4o-mini) or 'gemini'"),
     file:       Optional[UploadFile] = File(None, description="Separate Inventarislijst PDF"),
     pdf_url:    Optional[str]     = Form(None, description="Remote PDF URL to download"),
     page_start: Optional[int]     = Form(None, description="First page in session PDF (1-indexed)"),
@@ -1024,7 +1025,7 @@ async def analyse_inventarislijst(
         from pipeline_inventarislijst import extract_inventarislijst
         items = await asyncio.get_running_loop().run_in_executor(
             None,
-            lambda: extract_inventarislijst(pdf_path, api_key, page_range=page_range),
+            lambda: extract_inventarislijst(pdf_path, api_key, page_range=page_range, provider=provider),
         )
         return {"items": items, "total": len(items)}
     except Exception as exc:
@@ -1032,6 +1033,47 @@ async def analyse_inventarislijst(
     finally:
         if is_tmp:
             pdf_path.unlink(missing_ok=True)
+
+
+# ── /api/llm/complete ─────────────────────────────────────────────────────────
+
+@app.post("/api/llm/complete")
+async def llm_complete(
+    provider:   str = Form("openai", description="'openai' or 'gemini'"),
+    api_key:    str = Form(...,      description="API key for the chosen provider"),
+    model:      Optional[str] = Form(None, description="Overrides the provider's default model"),
+    system:     str = Form("",       description="System prompt"),
+    prompt:     str = Form(...,      description="User prompt"),
+    max_tokens: int = Form(1600),
+    json_mode:  bool = Form(False, description="Request strict JSON-object output"),
+):
+    """
+    Generic text-only LLM proxy for client-side features (dossier summary,
+    entity bios, timeline chronology) that call OpenAI directly from the
+    browser today. Gemini's API blocks direct cross-origin browser requests
+    (unlike OpenAI's), so those features route through here to reach Gemini
+    at all; OpenAI is included too so both providers share one code path.
+
+    Returns JSON: {"text": "...", "truncated": bool}
+    """
+    provider = (provider or "openai").lower()
+    if provider not in ("openai", "gemini"):
+        raise HTTPException(status_code=400, detail="provider must be 'openai' or 'gemini'")
+    default_model = "gemini-2.5-flash" if provider == "gemini" else "gpt-4o"
+
+    try:
+        from llm_providers import call_llm, make_client
+        client = make_client(provider, api_key)
+        raw_text, truncated = await asyncio.get_running_loop().run_in_executor(
+            None,
+            lambda: call_llm(
+                provider, client, model or default_model, system, prompt,
+                max_tokens=max_tokens, json_mode=json_mode,
+            ),
+        )
+        return {"text": raw_text, "truncated": truncated}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 # ── Dev entry-point ───────────────────────────────────────────────────────────

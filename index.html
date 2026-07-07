@@ -3172,7 +3172,7 @@
       </div>
       <div class="analysis-section-body">
         <div style="font-family:var(--woo-mono);font-size:11px;color:var(--text-dimmer);line-height:1.7;margin-bottom:10px" data-i18n="ai_summary_desc">
-          Genereer een analyse van dit dossier met OpenAI (GPT-4o).
+          Genereer een analyse van dit dossier met AI (OpenAI of Gemini).
         </div>
         <button class="summary-generate-btn" id="sidebarSumBtn" onclick="generateSummary()" style="margin-bottom:0;padding:9px 14px;font-size:11px">
           <span class="summary-spark">✦</span> <span data-i18n="btn_generate_summary">Genereer samenvatting</span>
@@ -3183,10 +3183,15 @@
     </div><!-- end scrollable body -->
 
     <div style="padding:12px 14px;border-top:1px solid var(--woo-border);flex-shrink:0;background:var(--woo-bg)">
-      <div style="font-family:var(--woo-mono);font-size:9px;font-weight:600;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-dimmer);margin-bottom:6px" data-i18n="openai_key_label">OpenAI sleutel (samenvatting)</div>
-      <input type="password" id="summaryApiKeyInput" placeholder="sk-…"
+      <div style="font-family:var(--woo-mono);font-size:9px;font-weight:600;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-dimmer);margin-bottom:6px" data-i18n="openai_key_label">AI-sleutel (samenvatting)</div>
+      <select id="summaryProviderSelect" class="pipeline-provider-select" style="margin-bottom:6px"
+              onchange="_setLlmProvider(this.value)">
+        <option value="openai">OpenAI</option>
+        <option value="gemini">Google Gemini</option>
+      </select>
+      <input type="password" id="summaryApiKeyInput" placeholder="sk-…  OpenAI API-sleutel"
              style="width:100%;padding:6px 8px;font-family:var(--woo-mono);font-size:11px;border:1.5px solid var(--woo-border);border-radius:4px;color:var(--woo-dark);background:var(--woo-white);outline:none;margin-bottom:8px"
-             oninput="OPENAI_API_KEY = this.value || null" />
+             oninput="_onLlmApiKeyInput(this.value, 'summaryApiKeyInput')" />
       <div style="font-family:var(--woo-mono);font-size:9px;color:var(--text-dimmer);line-height:1.8;text-align:center">
         WOOLens — AI for Open Government<br>
         Data via <a href="https://woozm.nl" target="_blank" style="color:var(--woo-text-link);text-decoration:none">woozm.nl</a>
@@ -3219,9 +3224,9 @@ const _i18n = {
     section_sources: 'Bronlinks', section_ai_summary: 'AI Samenvatting',
     stat_emails: 'E-mails', stat_docs: 'Documenten', stat_pages: "Pagina's", stat_redaction: 'Redactiegraad',
     btn_generate_summary: 'Genereer samenvatting',
-    ai_summary_desc: 'Genereer een analyse van dit dossier met OpenAI (GPT-4o).',
+    ai_summary_desc: 'Genereer een analyse van dit dossier met AI (OpenAI of Gemini).',
     btn_export: '↓ Export', btn_import: '↑ Import',
-    openai_key_label: 'OpenAI sleutel (samenvatting)',
+    openai_key_label: 'AI-sleutel (samenvatting)',
     // Home screen
     home_tagline: 'Doorzoek Woo-dossiers · Van archief naar inzicht',
     home_search_placeholder: 'Zoek een WOO-dossier op onderwerp, organisatie of trefwoord…',
@@ -3278,9 +3283,9 @@ const _i18n = {
     section_sources: 'Source links', section_ai_summary: 'AI Summary',
     stat_emails: 'Emails', stat_docs: 'Documents', stat_pages: 'Pages', stat_redaction: 'Redaction rate',
     btn_generate_summary: 'Generate summary',
-    ai_summary_desc: 'Generate an analysis of this dossier with OpenAI (GPT-4o).',
+    ai_summary_desc: 'Generate an analysis of this dossier with AI (OpenAI or Gemini).',
     btn_export: '↓ Export', btn_import: '↑ Import',
-    openai_key_label: 'OpenAI key (summary)',
+    openai_key_label: 'AI key (summary)',
     // Home screen
     home_tagline: 'Search WOO dossiers · From archive to insight',
     home_search_placeholder: 'Search a WOO dossier by topic, organisation or keyword…',
@@ -5350,24 +5355,8 @@ ${contextBlock || '(Geen directe vermeldingen gevonden in de beschikbare documen
 Vraag: Wat is "${name}"? Los afkortingen op, beschrijf wat deze organisatie doet en welke rol zij speelt in dit dossier.`;
 
   try {
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: 'gpt-4o',
-        max_tokens: 160,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user',   content: userPrompt   },
-        ],
-      }),
-    });
-
-    const data = await response.json();
-    const aiText = (data?.choices?.[0]?.message?.content || '').trim();
+    const data = await _llmComplete({ system: systemPrompt, prompt: userPrompt, maxTokens: 160 });
+    const aiText = (data?.text || '').trim();
 
     _entityCache[key] = { staticText, aiText: aiText || null };
 
@@ -6551,7 +6540,7 @@ function _sanitizeTimelineParagraph(text) {
 }
 
 async function _generateTimelineChronologySummaryWithGuidance() {
-  if (!OPENAI_API_KEY) return generateTimelineChronologySummary();
+  if (!_pipelineApiKey) return generateTimelineChronologySummary();
 
   const dayPayload = _buildTimelineSummaryAIPayload();
   if (!dayPayload.length) return [];
@@ -6600,25 +6589,13 @@ Geef alleen JSON terug met schema:
 
   const userPrompt = `Brondata per dag (al gegroepeerd):\n${JSON.stringify(dayPayload, null, 2)}`;
 
-  const resp = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${OPENAI_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model: 'gpt-4o',
-      temperature: 0,
-      response_format: { type: 'json_object' },
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt },
-      ],
-    }),
-  });
-
-  const data = await resp.json();
-  const raw = data?.choices?.[0]?.message?.content || '{}';
+  let data;
+  try {
+    data = await _llmComplete({ system: systemPrompt, prompt: userPrompt, jsonMode: true });
+  } catch {
+    return generateTimelineChronologySummary();
+  }
+  const raw = data?.text || '{}';
   let parsed = {};
   try {
     parsed = JSON.parse(raw);
@@ -7283,10 +7260,10 @@ function renderSummaryContent(content) {
 async function generateSummary() {
   if (summaryState.loading) return;
 
-  if (!OPENAI_API_KEY) {
+  if (!_pipelineApiKey) {
     setViewTab('summary');
     const output = document.getElementById('summaryOutput');
-    if (output) output.innerHTML = `<div class="summary-block"><div class="summary-block-body" style="color:var(--woo-accent)">Voer eerst een OpenAI API-sleutel in het veld hierboven in (sk-…).</div></div>`;
+    if (output) output.innerHTML = `<div class="summary-block"><div class="summary-block-body" style="color:var(--woo-accent)">Voer eerst een API-sleutel in het veld hierboven in.</div></div>`;
     return;
   }
 
@@ -7305,14 +7282,14 @@ async function generateSummary() {
   const label = document.getElementById('sumBtnLabel');
   const spark = document.getElementById('sumSpark');
   if (btn) btn.disabled = true;
-  if (label) label.textContent = 'OpenAI analyseert…';
+  if (label) label.textContent = 'AI analyseert…';
   if (spark) spark.style.animation = 'spin 0.6s linear infinite';
 
   // Also disable the sidebar button and show loading state there
   const sideBtn = document.getElementById('sidebarSumBtn');
   if (sideBtn) {
     sideBtn.disabled = true;
-    sideBtn.innerHTML = `<span class="summary-spark" style="animation:spin 0.6s linear infinite">✦</span> OpenAI analyseert…`;
+    sideBtn.innerHTML = `<span class="summary-spark" style="animation:spin 0.6s linear infinite">✦</span> AI analyseert…`;
   }
 
   // Show entity extraction loading state in sidebar
@@ -7436,40 +7413,13 @@ ${state.emails.map((e,i) => `[${i+1}] ${(e.text||'').slice(0,600)}`).join('\n\n'
 
   try {
     // ── Fire both calls in parallel ─────────────────────────────────────────
-    const [summaryResp, entityResp] = await Promise.all([
-      fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${OPENAI_API_KEY}` },
-        body: JSON.stringify({
-          model: 'gpt-4o',
-          max_tokens: 1600,
-          messages: [
-            { role: 'system', content: summarySystemPrompt },
-            { role: 'user',   content: summaryUserPrompt },
-          ],
-        }),
-      }),
-      fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${OPENAI_API_KEY}` },
-        body: JSON.stringify({
-          model: 'gpt-4o',
-          max_tokens: 800,
-          messages: [
-            { role: 'system', content: entitySystemPrompt },
-            { role: 'user',   content: entityUserPrompt },
-          ],
-        }),
-      }),
-    ]);
-
     const [summaryData, entityData] = await Promise.all([
-      summaryResp.json(),
-      entityResp.json(),
+      _llmComplete({ system: summarySystemPrompt, prompt: summaryUserPrompt, maxTokens: 1600 }),
+      _llmComplete({ system: entitySystemPrompt, prompt: entityUserPrompt, maxTokens: 800 }),
     ]);
 
-    const rawSummary = summaryData?.choices?.[0]?.message?.content || '';
-    const rawEntities = entityData?.choices?.[0]?.message?.content || '{}';
+    const rawSummary = summaryData?.text || '';
+    const rawEntities = entityData?.text || '{}';
 
     // Parse entities immediately and update sidebar (no wait for streaming)
     try {
@@ -7511,7 +7461,7 @@ ${state.emails.map((e,i) => `[${i+1}] ${(e.text||'').slice(0,600)}`).join('\n\n'
       output.innerHTML = `
         <div style="background:rgba(255,41,3,0.05);border:1px solid rgba(255,41,3,0.15);border-radius:8px;padding:16px;font-family:var(--woo-mono);font-size:11px;color:var(--red);line-height:1.7">
           <strong>API-fout:</strong> ${escHtml(e.message)}<br><br>
-          Controleer of je OpenAI API key correct is ingesteld.
+          Controleer of je API-sleutel correct is ingesteld voor de gekozen provider.
         </div>
       `;
     }
@@ -8502,15 +8452,58 @@ const _PROVIDER_KEY_PLACEHOLDERS = {
   gemini: 'AIza…  Gemini API-sleutel',
 };
 
-function _setLlmProvider(value, inputId) {
+function _setLlmProvider(value) {
   _llmProvider    = value;
   _pipelineApiKey = '';
   if (value !== 'openai') OPENAI_API_KEY = null;
-  const input = document.getElementById(inputId);
-  if (input) {
-    input.value = '';
-    input.placeholder = _PROVIDER_KEY_PLACEHOLDERS[value] || 'API-sleutel';
+
+  // Several views (pipeline selector, doc browser, summary sidebar) each have
+  // their own copy of the key input and provider select — keep all present
+  // instances in sync rather than just the one that triggered this.
+  const placeholder = _PROVIDER_KEY_PLACEHOLDERS[value] || 'API-sleutel';
+  for (const id of ['pipelineApiKeyInput', 'browserApiKeyInput', 'summaryApiKeyInput']) {
+    const el = document.getElementById(id);
+    if (el) { el.value = ''; el.placeholder = placeholder; }
   }
+  for (const id of ['pipelineProviderSelect', 'browserProviderSelect', 'summaryProviderSelect']) {
+    const el = document.getElementById(id);
+    if (el) el.value = value;
+  }
+}
+
+// Same key typed into whichever of the 3 key inputs is currently visible —
+// mirror it into the others so switching views doesn't lose it.
+function _onLlmApiKeyInput(value, sourceId) {
+  _pipelineApiKey = value;
+  if (_llmProvider === 'openai') OPENAI_API_KEY = value || null;
+  for (const id of ['pipelineApiKeyInput', 'browserApiKeyInput', 'summaryApiKeyInput']) {
+    if (id === sourceId) continue;
+    const el = document.getElementById(id);
+    if (el) el.value = value;
+  }
+}
+
+// Shared text-completion call for client-side AI features (dossier summary,
+// entity bios, timeline chronology). Routes through the server instead of
+// calling OpenAI directly, because Gemini's API blocks direct browser calls
+// (CORS) the way OpenAI's happens to allow — this is the one path both
+// providers can use. Returns { text, truncated }.
+async function _llmComplete({ system = '', prompt, maxTokens = 1600, model = null, jsonMode = false } = {}) {
+  const form = new FormData();
+  form.append('provider', _llmProvider);
+  form.append('api_key', _pipelineApiKey);
+  if (model) form.append('model', model);
+  form.append('system', system);
+  form.append('prompt', prompt);
+  form.append('max_tokens', maxTokens);
+  form.append('json_mode', jsonMode ? 'true' : 'false');
+  const resp = await fetch('/api/llm/complete', { method: 'POST', body: form });
+  if (!resp.ok) {
+    let detail = `HTTP ${resp.status}`;
+    try { const j = await resp.json(); detail = j.detail || detail; } catch {}
+    throw new Error(detail);
+  }
+  return resp.json();
 }
 let _pageRangeStart   = null;   // first page (1-indexed, null = all)
 let _pageRangeEnd     = null;   // last page  (1-indexed, null = all)
@@ -8698,13 +8691,13 @@ function _renderPipelineSelector({ mode, title }) {
             </div>
             <div class="pipeline-api-key-wrap" id="pipelineApiKeyWrap">
               <select id="pipelineProviderSelect" class="pipeline-provider-select"
-                      onchange="_setLlmProvider(this.value, 'pipelineApiKeyInput')">
+                      onchange="_setLlmProvider(this.value)">
                 <option value="openai">OpenAI</option>
                 <option value="gemini">Google Gemini</option>
               </select>
               <input type="password" id="pipelineApiKeyInput" class="pipeline-api-key-input"
                      placeholder="sk-…  OpenAI API-sleutel"
-                     oninput="_pipelineApiKey = this.value; if (_llmProvider === 'openai') { OPENAI_API_KEY = this.value || null; const _sk = document.getElementById('summaryApiKeyInput'); if (_sk) _sk.value = this.value; }" />
+                     oninput="_onLlmApiKeyInput(this.value, 'pipelineApiKeyInput')" />
             </div>
           </div>
         </div>
@@ -8779,7 +8772,7 @@ function _renderPipelineSelector({ mode, title }) {
                    onchange="_invFile=this.files[0]" />
           </div>
           `}
-          <div style="margin-top:8px;font-size:10px;color:var(--text-dimmer);font-family:var(--woo-mono)">Vereist OpenAI API-sleutel</div>
+          <div style="margin-top:8px;font-size:10px;color:var(--text-dimmer);font-family:var(--woo-mono)">Vereist API-sleutel (OpenAI of Gemini)</div>
         </div>
       </div>
 
@@ -8887,6 +8880,7 @@ async function _runInventarislijst() {
 
   const form = new FormData();
   form.append('api_key', _pipelineApiKey || '');
+  form.append('provider', _llmProvider);
 
   if (_invMode === 'dossier' && _invDossierUrl) {
     form.append('pdf_url', _invDossierUrl);
@@ -9096,7 +9090,7 @@ function _startSelectedPipeline() {
     const section = document.getElementById('invAnalysisSection');
     const body    = document.getElementById('invResultSection');
     if (section) section.style.display = 'flex';
-    if (body)    body.innerHTML = '<span style="font-size:11px;color:var(--woo-accent);font-family:var(--woo-mono)">Voer een OpenAI API-sleutel in om de inventarislijst te analyseren</span>';
+    if (body)    body.innerHTML = '<span style="font-size:11px;color:var(--woo-accent);font-family:var(--woo-mono)">Voer een API-sleutel in om de inventarislijst te analyseren</span>';
   }
 }
 
@@ -9391,13 +9385,13 @@ function _renderDocumentBrowser() {
             </div>
             <div id="browserApiKeyWrap" style="display:none">
               <select id="browserProviderSelect" class="pipeline-provider-select"
-                      onchange="_setLlmProvider(this.value, 'browserApiKeyInput')">
+                      onchange="_setLlmProvider(this.value)">
                 <option value="openai">OpenAI</option>
                 <option value="gemini">Google Gemini</option>
               </select>
               <input type="password" id="browserApiKeyInput" class="doc-browser-api-key"
                      placeholder="sk-… OpenAI API-sleutel"
-                     oninput="_pipelineApiKey=this.value; if (_llmProvider === 'openai') { OPENAI_API_KEY = this.value || null; const _sk2 = document.getElementById('summaryApiKeyInput'); if (_sk2) _sk2.value = this.value; }" />
+                     oninput="_onLlmApiKeyInput(this.value, 'browserApiKeyInput')" />
             </div>
             <div style="margin-bottom:9px">
               <div class="doc-browser-pipeline-label" style="margin-bottom:5px">Paginabereik (optioneel)</div>
@@ -9462,7 +9456,7 @@ function _renderDocumentBrowser() {
                          style="font-size:11px;font-family:var(--woo-mono);color:var(--woo-text);width:100%"
                          onchange="_invFile=this.files[0]" />
                 </div>
-                <div style="margin-top:7px;font-size:10px;color:var(--text-dimmer);font-family:var(--woo-mono)">Vereist OpenAI API-sleutel</div>
+                <div style="margin-top:7px;font-size:10px;color:var(--text-dimmer);font-family:var(--woo-mono)">Vereist API-sleutel (OpenAI of Gemini)</div>
               </div>
             </div>
             <div style="font-size:10px;font-family:var(--woo-mono);color:var(--text-dimmer);margin-bottom:8px;line-height:1.5">

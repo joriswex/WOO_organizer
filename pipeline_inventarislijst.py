@@ -1,8 +1,8 @@
 """
 pipeline_inventarislijst.py — Extract WOO document inventory from an Inventarislijst PDF.
 
-Uses GPT-4o-mini vision to parse the inventory table rows.
-Can be given a separate PDF or a page range from the main dossier PDF.
+Uses a cheap vision-LLM (OpenAI gpt-4o-mini or Gemini) to parse the inventory
+table rows. Can be given a separate PDF or a page range from the main dossier PDF.
 """
 from __future__ import annotations
 
@@ -15,9 +15,12 @@ from pathlib import Path
 
 from PIL import Image
 
-_MODEL      = "gpt-4o-mini"
-_RENDER_DPI = 150        # table text is large; lower DPI keeps cost down
-_MAX_RETRIES = 3
+from llm_providers import call_llm, make_client
+
+_MODEL        = "gpt-4o-mini"
+_GEMINI_MODEL = "gemini-2.5-flash"
+_RENDER_DPI   = 150        # table text is large; lower DPI keeps cost down
+_MAX_RETRIES  = 3
 
 _SYSTEM = (
     "You are extracting rows from a Dutch government WOO (Wet Open Overheid) inventarislijst — "
@@ -61,26 +64,25 @@ def extract_inventarislijst(
     pdf_path:   Path,
     api_key:    str,
     page_range: tuple[int, int] | None = None,
+    provider:   str = "openai",
 ) -> list[dict]:
     """
     Extract the document inventory table from a WOO Inventarislijst PDF.
 
     Args:
         pdf_path:   Path to the PDF (dedicated file or main dossier PDF).
-        api_key:    OpenAI API key (used for GPT-4o-mini).
+        api_key:    API key for the chosen provider.
         page_range: (start, end) 1-indexed inclusive page range, or None for all pages.
+        provider:   "openai" (default, gpt-4o-mini) or "gemini".
 
     Returns:
         List of dicts with keys: code, title, date, pages, decision, grounds.
     """
-    try:
-        from openai import OpenAI
-    except ImportError:
-        raise ImportError("openai package not installed. Run: pip install openai")
+    provider = (provider or "openai").lower()
+    model    = _GEMINI_MODEL if provider == "gemini" else _MODEL
+    client   = make_client(provider, api_key)
 
     from pdf2image import convert_from_path
-
-    client = OpenAI(api_key=api_key)
 
     # Render only the needed pages — avoid decoding the whole PDF when a range is given
     first_page = page_range[0] if page_range else 1
@@ -92,36 +94,18 @@ def extract_inventarislijst(
         kwargs["last_page"] = last_page
     images: list[Image.Image] = convert_from_path(str(pdf_path), **kwargs)
 
-    print(f"[inventarislijst] Analysing {len(images)} page(s) with {_MODEL} (concurrent)...")
+    print(f"[inventarislijst] Analysing {len(images)} page(s) with {model} (concurrent)...")
 
     def _analyse_page(args: tuple[int, Image.Image]) -> tuple[int, list[dict]]:
         i, img = args
         b64 = _encode_page(img)
         for attempt in range(_MAX_RETRIES):
             try:
-                response = client.chat.completions.create(
-                    model=_MODEL,
-                    max_tokens=16384,
-                    temperature=0,
-                    response_format={"type": "json_object"},
-                    messages=[
-                        {"role": "system", "content": _SYSTEM},
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "image_url",
-                                    "image_url": {
-                                        "url": f"data:image/jpeg;base64,{b64}",
-                                        "detail": "high",
-                                    },
-                                },
-                                {"type": "text", "text": _PROMPT},
-                            ],
-                        },
-                    ],
+                raw_text, _ = call_llm(
+                    provider, client, model, _SYSTEM, _PROMPT,
+                    image_b64=b64, max_tokens=16384,
                 )
-                data  = json.loads(response.choices[0].message.content or "{}")
+                data  = json.loads(raw_text)
                 items = data.get("items") or []
                 print(f"[inventarislijst] Pagina {i + 1}: {len(items)} rij(en) gevonden")
                 return i, items

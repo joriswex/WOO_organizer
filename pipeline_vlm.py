@@ -29,6 +29,8 @@ from pathlib import Path
 
 from PIL import Image
 
+from llm_providers import call_llm, make_client
+
 
 class PipelineCancelled(Exception):
     """Raised when a caller-supplied cancel_event is set mid-run."""
@@ -940,73 +942,11 @@ def _repair_truncated_json(raw: str) -> dict:
     return json.loads(s)
 
 
-# ── Provider dispatch ────────────────────────────────────────────────────────
-# Single low-level call per provider, shared by all three call sites (vision
-# page-read, boundary pass, email extraction) so adding a provider only means
-# adding one branch here instead of duplicating it three times.
-
-def _llm_json_call(
-    provider: str,
-    client,
-    model: str,
-    system_msg: str,
-    user_text: str,
-    image_b64: str | None = None,
-    max_tokens: int = 8192,
-    timeout: float | None = None,
-) -> tuple[str, bool]:
-    """One (non-retried) call to the given provider.
-
-    Returns (raw_json_text, was_truncated) — was_truncated is True when the
-    model hit its output-token limit mid-response, so the caller can skip
-    retrying with the same input (it would just truncate again).
-    """
-    if provider == "gemini":
-        from google.genai import types
-        parts: list = []
-        if image_b64:
-            parts.append(types.Part.from_bytes(data=base64.b64decode(image_b64), mime_type="image/jpeg"))
-        parts.append(user_text)
-        response = client.models.generate_content(
-            model=model,
-            contents=parts,
-            config=types.GenerateContentConfig(
-                system_instruction=system_msg,
-                temperature=0,
-                response_mime_type="application/json",
-                max_output_tokens=max_tokens,
-            ),
-        )
-        raw = response.text or "{}"
-        truncated = bool(response.candidates) and response.candidates[0].finish_reason == "MAX_TOKENS"
-        return raw, truncated
-
-    # openai (default)
-    messages: list = [{"role": "system", "content": system_msg}]
-    if image_b64:
-        messages.append({
-            "role": "user",
-            "content": [
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}", "detail": "high"}},
-                {"type": "text", "text": user_text},
-            ],
-        })
-    else:
-        messages.append({"role": "user", "content": user_text})
-
-    kwargs = dict(
-        model=model, max_tokens=max_tokens, temperature=0,
-        response_format={"type": "json_object"}, messages=messages,
-    )
-    if timeout is not None:
-        kwargs["timeout"] = timeout
-    response = client.chat.completions.create(**kwargs)
-    choice = response.choices[0]
-    raw = choice.message.content or "{}"
-    return raw, choice.finish_reason == "length"
-
-
 # ── Vision page call ─────────────────────────────────────────────────────────
+# All three LLM call sites (vision page-read, boundary pass, email extraction)
+# share one low-level dispatch function, call_llm() from llm_providers.py, so
+# adding a provider means adding one branch there instead of duplicating it
+# three times here.
 
 def _call_gpt4o(image_b64: str, client, page_index: int, pdf_page_num: int,
                 system_hint: str = "", provider: str = "openai") -> dict:
@@ -1016,7 +956,7 @@ def _call_gpt4o(image_b64: str, client, page_index: int, pdf_page_num: int,
     model      = GEMINI_MODEL if provider == "gemini" else OPENAI_MODEL
     for attempt in range(_MAX_RETRIES):
         try:
-            raw, _ = _llm_json_call(
+            raw, _ = call_llm(
                 provider, client, model, system_msg, page_hint + _PAGE_PROMPT,
                 image_b64=image_b64, max_tokens=8192,
             )
@@ -1285,33 +1225,20 @@ def load_pdf_vlm(
         raise ValueError(f"Unknown provider {provider!r} — must be 'openai' or 'gemini'.")
 
     if provider == "gemini":
-        try:
-            from google import genai
-        except ImportError:
-            raise ImportError(
-                "google-genai package not installed. Run: pip install google-genai"
-            )
         api_key = api_key or os.environ.get("GEMINI_API_KEY", "")
         if not api_key:
             raise ValueError(
                 "No Gemini API key provided. "
                 "Set the GEMINI_API_KEY environment variable or pass api_key=..."
             )
-        client = genai.Client(api_key=api_key)
     else:
-        try:
-            from openai import OpenAI
-        except ImportError:
-            raise ImportError(
-                "openai package not installed. Run: pip install openai"
-            )
         api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
         if not api_key:
             raise ValueError(
                 "No OpenAI API key provided. "
                 "Set the OPENAI_API_KEY environment variable or pass api_key=..."
             )
-        client = OpenAI(api_key=api_key)
+    client = make_client(provider, api_key)
 
     # ── Convert PDF to images ────────────────────────────────────────────────
     # Only rasterize the pages we actually need — converting a whole large
@@ -1696,7 +1623,7 @@ def _extract_emails_full_doc(code: str, text: str, client, provider: str = "open
 
     for attempt in range(_MAX_RETRIES):
         try:
-            raw_text, was_truncated = _llm_json_call(
+            raw_text, was_truncated = call_llm(
                 provider, client, model, _EMAIL_EXTRACT_SYSTEM, prompt,
                 max_tokens=16384, timeout=90.0,
             )
@@ -1848,7 +1775,7 @@ def _call_boundary_pass(summary: str, n_pages: int, client, inv_hint: str = "", 
     model  = GEMINI_MODEL if provider == "gemini" else _BOUNDARY_MODEL
     for attempt in range(_MAX_RETRIES):
         try:
-            raw_text, _ = _llm_json_call(
+            raw_text, _ = call_llm(
                 provider, client, model, _BOUNDARY_SYSTEM, prompt, max_tokens=4096,
             )
             data = json.loads(raw_text)
