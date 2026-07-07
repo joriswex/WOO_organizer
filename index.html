@@ -2367,12 +2367,12 @@
   }
 
   /* ── PIPELINE SELECTOR ── */
+  .pipeline-selector-layout { display: grid; grid-template-columns: 1fr 340px; height: 100%; overflow: hidden; }
+  .pipeline-selector-form { overflow-y: auto; }
   .pipeline-selector {
     padding: 28px 32px 24px;
     max-width: 560px;
     margin: 0 auto;
-    overflow-y: auto;
-    height: 100%;
   }
   .pipeline-selector-title {
     font-size: 18px;
@@ -8613,6 +8613,8 @@ function _renderPipelineSelector({ mode, title }) {
   const invBodyDisplay = _invEnabled ? 'block' : 'none';
 
   content.innerHTML = `
+    <div class="pipeline-selector-layout">
+    <div class="pipeline-selector-form">
     <div class="pipeline-selector">
       <div class="pipeline-selector-title">Verwerkingsmethode kiezen</div>
       <div class="pipeline-selector-subtitle">${escHtml(title)}</div>
@@ -8743,7 +8745,19 @@ function _renderPipelineSelector({ mode, title }) {
         Verwerken →
       </button>
     </div>
+    </div>
+    <div class="doc-browser-right" id="docBrowserPreview">
+      <div class="doc-browser-preview-loading">
+        <div style="width:14px;height:14px;border:2px solid var(--woo-border);border-top-color:var(--woo-accent);border-radius:50%;animation:spin 0.7s linear infinite"></div>
+        PDF laden…
+      </div>
+    </div>
+    </div>
   `;
+
+  if (isUpload && _pendingFile) {
+    _previewPdfInBrowser(URL.createObjectURL(_pendingFile));
+  }
 }
 
 
