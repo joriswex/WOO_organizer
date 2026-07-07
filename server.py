@@ -79,6 +79,17 @@ async def favicon():
     return FileResponse(favicon_path, media_type="image/svg+xml")
 
 
+@app.get("/demo_dossier.pdf")
+async def demo_dossier_pdf():
+    """Permanent PDF backing the home-screen demo case study — unlike a live
+    analysis, the demo isn't uploaded per-session, so it needs a fixed file
+    the server always has, rather than /api/session_pdf (last-uploaded-file)."""
+    demo_path = Path(__file__).parent / "demo_dossier.pdf"
+    if not demo_path.exists():
+        raise HTTPException(status_code=404, detail="demo_dossier.pdf not found")
+    return FileResponse(demo_path, media_type="application/pdf", headers={"Content-Disposition": "inline"})
+
+
 # ── /proxy?url=XXX ───────────────────────────────────────────────────────────
 
 @app.get("/proxy")
