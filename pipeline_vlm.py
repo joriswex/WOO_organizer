@@ -24,6 +24,7 @@ import os
 import re
 import time
 from collections import Counter
+from difflib import SequenceMatcher
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -1441,25 +1442,84 @@ def load_pdf_vlm(
                               stamp_format=profile.get("stamp_format"), provider=provider)
 
 
+def _norm_text(s: str | None) -> str:
+    return re.sub(r"\s+", " ", (s or "")).strip().lower()
+
+
+def _text_similarity(a: str | None, b: str | None) -> float:
+    a, b = _norm_text(a), _norm_text(b)
+    if not a or not b:
+        return 0.0
+    return SequenceMatcher(None, a, b).ratio()
+
+
+def _email_page_match_score(email: dict, page: dict) -> float:
+    """How well an extracted email's subject/sender/date agree with a
+    candidate email_start page's own (independently read) subject/sender/date."""
+    score = 0.0
+    score += 0.5 * _text_similarity(email.get("subject"), page.get("email_subject"))
+    score += 0.3 * _text_similarity(email.get("sender"), page.get("email_from"))
+    e_date = (email.get("date") or "")[:10]
+    p_date = (page.get("email_date") or "")[:10]
+    if e_date and p_date and e_date == p_date:
+        score += 0.3
+    return score
+
+
 def _backfill_email_pdf_pages(emails: list[dict], email_pages: list[dict]) -> None:
     """
     Attach pdf_page to emails produced by _extract_emails_full_doc (pass-3),
     which sees only text and has no page info.
 
-    Strategy: walk email_pages in order; each entry with email_start=True is
-    the start of a new email. Match to the emails list positionally — pass-3
-    returns emails in the same order as the thread appears in the PDF.
+    Pass-3 processes the whole document's text as one blob, so it never sees
+    page boundaries. A separate, independent per-page pass (pass-1) flags
+    which pages start a new email (email_start=True) — but the two passes can
+    disagree on how many emails/boundaries there are, so blindly zipping the
+    two lists by position (the old approach) drifts for every email after the
+    first point they diverge.
+
+    Instead: score every pass-3 email against every still-unclaimed
+    email_start page by how well their subject/sender/date agree (each page
+    carries pass-1's own independent read of those fields), and greedily
+    assign each email to its best remaining match. Only emails with no
+    confident match fall back to the next page left over, in document order.
     """
-    start_pages = [p for p in email_pages if p.get("email_start") or (email_pages.index(p) == 0 and not any(q.get("email_start") for q in email_pages))]
-    # Simpler: collect pdf_page for every email_start page in order
-    start_pdf_pages = [p.get("pdf_page") for p in email_pages if p.get("email_start")]
-    if not start_pdf_pages:
-        # No email_start markers — use first page of the doc for all
+    candidates = [p for p in email_pages if p.get("email_start")]
+    if not candidates:
         first = next((p.get("pdf_page") for p in email_pages if p.get("pdf_page")), None)
-        start_pdf_pages = [first] * len(emails)
+        for email in emails:
+            if email.get("pdf_page") is None:
+                email["pdf_page"] = first
+        return
+
+    _MIN_MATCH_SCORE = 0.35
+    unused = list(range(len(candidates)))
+    needs_fallback: list[int] = []
+
     for i, email in enumerate(emails):
-        if "pdf_page" not in email or email["pdf_page"] is None:
-            email["pdf_page"] = start_pdf_pages[i] if i < len(start_pdf_pages) else start_pdf_pages[-1]
+        if email.get("pdf_page") is not None:
+            continue
+        best_idx, best_score = None, 0.0
+        for ci in unused:
+            s = _email_page_match_score(email, candidates[ci])
+            if s > best_score:
+                best_score, best_idx = s, ci
+        if best_idx is not None and best_score >= _MIN_MATCH_SCORE:
+            email["pdf_page"] = candidates[best_idx]["pdf_page"]
+            unused.remove(best_idx)
+        else:
+            needs_fallback.append(i)
+
+    # Leftover emails with no confident content match get whatever candidate
+    # pages are still unclaimed, in document order — closer to a reasonable
+    # guess than the old blanket positional zip, since it only applies to the
+    # emails that genuinely couldn't be matched by content.
+    remaining = sorted(unused, key=lambda ci: candidates[ci].get("pdf_page") or 0)
+    for j, i in enumerate(needs_fallback):
+        if j < len(remaining):
+            emails[i]["pdf_page"] = candidates[remaining[j]]["pdf_page"]
+        else:
+            emails[i]["pdf_page"] = candidates[-1]["pdf_page"]
 
 
 def _build_emails_from_pages(doc_code: str, email_pages: list[dict]) -> list[dict]:

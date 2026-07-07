@@ -5667,8 +5667,12 @@ async function _renderPdfCanvasPreview(host, pdfUrl, pageNum, sourceUrl, failRea
       const page = await pdf.getPage(currentPage);
       const baseVp = page.getViewport({ scale: 1 });
       const availableWidth = Math.max((canvasHost.clientWidth || 840) - 24, 320);
-      const scale = availableWidth / baseVp.width;
-      const vp = page.getViewport({ scale });
+      // Render at native device pixel density (dpr), not just CSS pixel width —
+      // otherwise a Retina/high-DPI screen stretches a low-res buffer to fit,
+      // making text look blurry. canvas.style keeps the on-screen CSS size.
+      const dpr   = window.devicePixelRatio || 1;
+      const scale = (availableWidth / baseVp.width) * dpr;
+      const vp    = page.getViewport({ scale });
 
       const canvas = document.createElement('canvas');
       canvas.width = Math.floor(vp.width);
