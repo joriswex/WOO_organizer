@@ -1,0 +1,5 @@
+services:
+  woo-organizer:
+    build: .
+    ports:
+      - "8000:8000"
