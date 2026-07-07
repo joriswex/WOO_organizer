@@ -9119,7 +9119,11 @@ async function _runServerPipeline({ pipeline, urls, url, file, apiKey, pid, page
   let stalled         = false;
   _cancelRequested    = false;
 
-  const _STALL_MS = 25000;
+  // Some steps (e.g. rasterizing every page of a large dossier before the
+  // first per-page progress line appears) legitimately take longer than a
+  // few seconds without anything being wrong — keep this generous to avoid
+  // false alarms on normal, just-slow runs.
+  const _STALL_MS = 60000;
   const stallInterval = setInterval(() => {
     if (!stalled && Date.now() - lastProgressTs > _STALL_MS) {
       stalled = true;
@@ -9253,7 +9257,7 @@ function _showServerProgressUI(msg, pct, logLines, container, stalled) {
       </div>
       ${stalled ? `
       <div style="font-family:var(--woo-mono);font-size:11px;color:var(--woo-accent);margin-top:8px;max-width:380px;text-align:center;line-height:1.5">
-        ⚠ Al een tijdje geen update ontvangen — de server werkt mogelijk nog, of is vastgelopen. Controleer de logs, of annuleer hieronder.
+        ⚠ Dit duurt langer dan gebruikelijk. Sommige stappen (bijv. een groot dossier inlezen) kunnen even duren zonder dat er iets mis is — maar controleer gerust de logs, of annuleer hieronder.
       </div>` : ''}
       <button id="_cancelPipelineBtn" onclick="_cancelRunningPipeline()" ${_cancelRequested ? 'disabled' : ''}
               style="margin-top:10px;padding:7px 16px;font-family:var(--woo-font);font-size:12px;font-weight:600;color:var(--woo-dark);background:var(--woo-white);border:1.5px solid var(--woo-border);border-radius:var(--woo-radius-sm);cursor:${_cancelRequested ? 'default' : 'pointer'};opacity:${_cancelRequested ? '0.6' : '1'}">
