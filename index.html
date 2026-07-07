@@ -4313,7 +4313,7 @@ function loadCaseStudy() {
   };
   // Permanent static PDF (not the ephemeral per-session upload) — see
   // /demo_dossier.pdf in server.py.
-  state.pdfSource = { type: 'url', url: '/demo_dossier.pdf' };
+  state.pdfSource = { type: 'direct', url: '/demo_dossier.pdf' };
 
   _hideHomeScreen();
   document.getElementById('viewerToolbar').style.display = 'flex';
@@ -5526,7 +5526,12 @@ function openDocTextPreview(item) {
     const src = state.pdfSource;
     const startPage = parseInt(item.pdf_page_start, 10) || 1;
     const endPage = parseInt(item.pdf_page_end, 10) || startPage;
-    if (src.type === 'url') {
+    if (src.type === 'direct') {
+      // Same-origin static file (e.g. the demo dossier) — use as-is, no proxy needed.
+      sourceUrl = src.url || '';
+      pdfUrl  = src.url;
+      pdfPage = startPage;
+    } else if (src.type === 'url') {
       sourceUrl = src.url || '';
       pdfUrl  = `/proxy?url=${encodeURIComponent(src.url)}`;
       pdfPage = startPage;
@@ -5552,7 +5557,11 @@ function openDocTextPreview(item) {
   if (!pdfUrl && state.pdfSource) {
     const src = state.pdfSource;
     const startPage = parseInt(item.pdf_page_start, 10) || 1;
-    if (src.type === 'url' && src.url) {
+    if (src.type === 'direct' && src.url) {
+      sourceUrl = src.url;
+      pdfUrl = src.url;
+      pdfPage = startPage;
+    } else if (src.type === 'url' && src.url) {
       sourceUrl = src.url;
       pdfUrl = `/proxy?url=${encodeURIComponent(src.url)}`;
       pdfPage = startPage;
@@ -11278,7 +11287,8 @@ function _showInWooDossier(docCode, emailPdfPage) {
   const pdfPage = (emailPdfPage != null) ? emailPdfPage : (parseInt(item.pdf_page_start, 10) || 1);
   const src = state.pdfSource;
   if (src) {
-    if (src.type === 'url' && src.url)  pdfUrl = `/proxy?url=${encodeURIComponent(src.url)}`;
+    if (src.type === 'direct' && src.url) pdfUrl = src.url;
+    else if (src.type === 'url' && src.url)  pdfUrl = `/proxy?url=${encodeURIComponent(src.url)}`;
     else if (src.type === 'server')     pdfUrl = `/api/session_pdf`;
     else if (src.blobUrl)               pdfUrl = src.blobUrl;
   }
