@@ -1,18 +1,19 @@
 """
-pipeline_gpt4o.py — Full-page GPT-4o VLM pipeline for WOO documents.
+pipeline_vlm.py — Full-page vision-LLM pipeline for WOO documents.
 
-Uses OpenAI GPT-4o vision to:
+Uses a vision-capable LLM (OpenAI GPT-4o or Google Gemini, selected via the
+`provider` argument) to:
   1. Extract page text with layout and structure preservation
   2. Detect document boundaries (new document starts)
   3. Classify document type (Email, Nota, Brief, etc.)
   4. Identify document codes and within-doc page numbers
 
 Drop-in alternative to pipeline_ocr.py with the same output schema.
-Use main_gpt4o.py as the entry point.
 
 Usage:
-    from pipeline_gpt4o import load_pdf_vlm
-    docs = load_pdf_vlm(pdf_path, api_key="sk-...", max_pages=10)
+    from pipeline_vlm import load_pdf_vlm
+    docs = load_pdf_vlm(pdf_path, api_key="sk-...", provider="openai", max_pages=10)
+    docs = load_pdf_vlm(pdf_path, api_key="AIza...", provider="gemini", max_pages=10)
 """
 from __future__ import annotations
 
@@ -37,6 +38,7 @@ class PipelineCancelled(Exception):
 
 OPENAI_MODEL    = "gpt-4o-2024-11-20"       # pinned snapshot for reproducibility
 _BOUNDARY_MODEL = "gpt-4o-mini-2024-07-18"  # text-only boundary pass — no vision needed, much cheaper
+GEMINI_MODEL    = "gemini-2.5-flash"         # vision + text, used for all three Gemini call sites
 _RENDER_DPI     = 200
 _MAX_IMG_PX     = 1568      # GPT-4o "high" detail works best ≤ 2048px; 1568 is optimal tile size
 _MAX_RETRIES    = 3
@@ -262,7 +264,7 @@ EMAIL HEADER RULES (only when category = "Email"):
 _PROFILE_N_SAMPLES = 8    # pilot pages run through full pass-1 to determine stamp format
 
 
-def _profile_dossier(images: list, client) -> tuple[dict, dict[int, dict]]:
+def _profile_dossier(images: list, client, provider: str = "openai") -> tuple[dict, dict[int, dict]]:
     """
     Pass 0: run a small pilot of real pass-1 calls on a spread of pages, then
     determine the stamp format from the returned doc_code values in Python.
@@ -301,7 +303,7 @@ def _profile_dossier(images: list, client) -> tuple[dict, dict[int, dict]]:
     pilot_results: dict[int, dict] = {}
     for idx in indices:
         b64 = _encode_image(images[idx])
-        pilot_results[idx] = _call_gpt4o(b64, client, idx, pdf_page_num=idx + 1)
+        pilot_results[idx] = _call_gpt4o(b64, client, idx, pdf_page_num=idx + 1, provider=provider)
 
     # ── Analyse returned doc_codes in Python ──────────────────────────────────
     raw_strs  = [str(pilot_results[i].get("doc_code") or "") for i in indices]
@@ -938,38 +940,86 @@ def _repair_truncated_json(raw: str) -> dict:
     return json.loads(s)
 
 
-# ── GPT-4o call ───────────────────────────────────────────────────────────────
+# ── Provider dispatch ────────────────────────────────────────────────────────
+# Single low-level call per provider, shared by all three call sites (vision
+# page-read, boundary pass, email extraction) so adding a provider only means
+# adding one branch here instead of duplicating it three times.
+
+def _llm_json_call(
+    provider: str,
+    client,
+    model: str,
+    system_msg: str,
+    user_text: str,
+    image_b64: str | None = None,
+    max_tokens: int = 8192,
+    timeout: float | None = None,
+) -> tuple[str, bool]:
+    """One (non-retried) call to the given provider.
+
+    Returns (raw_json_text, was_truncated) — was_truncated is True when the
+    model hit its output-token limit mid-response, so the caller can skip
+    retrying with the same input (it would just truncate again).
+    """
+    if provider == "gemini":
+        from google.genai import types
+        parts: list = []
+        if image_b64:
+            parts.append(types.Part.from_bytes(data=base64.b64decode(image_b64), mime_type="image/jpeg"))
+        parts.append(user_text)
+        response = client.models.generate_content(
+            model=model,
+            contents=parts,
+            config=types.GenerateContentConfig(
+                system_instruction=system_msg,
+                temperature=0,
+                response_mime_type="application/json",
+                max_output_tokens=max_tokens,
+            ),
+        )
+        raw = response.text or "{}"
+        truncated = bool(response.candidates) and response.candidates[0].finish_reason == "MAX_TOKENS"
+        return raw, truncated
+
+    # openai (default)
+    messages: list = [{"role": "system", "content": system_msg}]
+    if image_b64:
+        messages.append({
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}", "detail": "high"}},
+                {"type": "text", "text": user_text},
+            ],
+        })
+    else:
+        messages.append({"role": "user", "content": user_text})
+
+    kwargs = dict(
+        model=model, max_tokens=max_tokens, temperature=0,
+        response_format={"type": "json_object"}, messages=messages,
+    )
+    if timeout is not None:
+        kwargs["timeout"] = timeout
+    response = client.chat.completions.create(**kwargs)
+    choice = response.choices[0]
+    raw = choice.message.content or "{}"
+    return raw, choice.finish_reason == "length"
+
+
+# ── Vision page call ─────────────────────────────────────────────────────────
 
 def _call_gpt4o(image_b64: str, client, page_index: int, pdf_page_num: int,
-                system_hint: str = "") -> dict:
-    """Call GPT-4o vision with retry logic. Returns parsed JSON dict."""
+                system_hint: str = "", provider: str = "openai") -> dict:
+    """Call the vision model (OpenAI or Gemini) with retry logic. Returns parsed JSON dict."""
     page_hint  = f"[PDF page {pdf_page_num}]\n\n"
     system_msg = _SYSTEM_PROMPT + ("\n\n" + system_hint if system_hint else "")
+    model      = GEMINI_MODEL if provider == "gemini" else OPENAI_MODEL
     for attempt in range(_MAX_RETRIES):
         try:
-            response = client.chat.completions.create(
-                model=OPENAI_MODEL,
-                max_tokens=8192,
-                temperature=0,
-                response_format={"type": "json_object"},
-                messages=[
-                    {"role": "system", "content": system_msg},
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/jpeg;base64,{image_b64}",
-                                    "detail": "high",
-                                },
-                            },
-                            {"type": "text", "text": page_hint + _PAGE_PROMPT},
-                        ],
-                    },
-                ],
+            raw, _ = _llm_json_call(
+                provider, client, model, system_msg, page_hint + _PAGE_PROMPT,
+                image_b64=image_b64, max_tokens=8192,
             )
-            raw = response.choices[0].message.content or "{}"
             try:
                 return json.loads(raw)
             except json.JSONDecodeError:
@@ -1212,36 +1262,56 @@ def load_pdf_vlm(
     cache_path: Path | None = None,
     page_range: tuple[int, int] | None = None,
     cancel_event=None,
+    provider:   str = "openai",
 ) -> dict[str, dict]:
     """
-    GPT-4o full-page VLM pipeline. Drop-in replacement for load_pdf().
+    Vision-LLM full-page pipeline. Drop-in replacement for load_pdf().
 
     Args:
         pdf_path:   Path to the PDF file.
-        api_key:    OpenAI API key (falls back to OPENAI_API_KEY env var).
+        api_key:    API key for the chosen provider (falls back to OPENAI_API_KEY
+                    or GEMINI_API_KEY env var depending on `provider`).
         max_pages:  Only process the first N pages (test mode).
         cancel_event: threading.Event | None — if set mid-run, raises PipelineCancelled
-            at the next per-page checkpoint (stops queuing further GPT-4o calls).
+            at the next per-page checkpoint (stops queuing further model calls).
         cache_path: If given, save extracted page data to this JSON file after the run.
+        provider:   "openai" (default) or "gemini".
 
     Returns:
         dict[str, dict] with the same schema as pipeline_ocr.load_pdf().
     """
-    try:
-        from openai import OpenAI
-    except ImportError:
-        raise ImportError(
-            "openai package not installed. Run: pip install openai"
-        )
+    provider = (provider or "openai").lower()
+    if provider not in ("openai", "gemini"):
+        raise ValueError(f"Unknown provider {provider!r} — must be 'openai' or 'gemini'.")
 
-    api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
-    if not api_key:
-        raise ValueError(
-            "No OpenAI API key provided. "
-            "Set the OPENAI_API_KEY environment variable or pass api_key=..."
-        )
-
-    client = OpenAI(api_key=api_key)
+    if provider == "gemini":
+        try:
+            from google import genai
+        except ImportError:
+            raise ImportError(
+                "google-genai package not installed. Run: pip install google-genai"
+            )
+        api_key = api_key or os.environ.get("GEMINI_API_KEY", "")
+        if not api_key:
+            raise ValueError(
+                "No Gemini API key provided. "
+                "Set the GEMINI_API_KEY environment variable or pass api_key=..."
+            )
+        client = genai.Client(api_key=api_key)
+    else:
+        try:
+            from openai import OpenAI
+        except ImportError:
+            raise ImportError(
+                "openai package not installed. Run: pip install openai"
+            )
+        api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
+        if not api_key:
+            raise ValueError(
+                "No OpenAI API key provided. "
+                "Set the OPENAI_API_KEY environment variable or pass api_key=..."
+            )
+        client = OpenAI(api_key=api_key)
 
     # ── Convert PDF to images ────────────────────────────────────────────────
     # Only rasterize the pages we actually need — converting a whole large
@@ -1301,7 +1371,7 @@ def load_pdf_vlm(
         pilot_results = {}
         print("[gpt4o] Stamp sampling skipped — pre-scan confirmed this dossier has no stamps.")
     else:
-        profile, pilot_results = _profile_dossier(images, client)
+        profile, pilot_results = _profile_dossier(images, client, provider=provider)
 
     profile_hint = _profile_to_hint(profile)
     raster_hint  = _raster_survey_to_hint(raster_survey, page_offset)
@@ -1313,7 +1383,7 @@ def load_pdf_vlm(
         i, img = args
         image_b64 = _encode_image(img)
         return i, _call_gpt4o(image_b64, client, i, pdf_page_num=i + 1 + page_offset,
-                               system_hint=system_hint)
+                               system_hint=system_hint, provider=provider)
 
     raw_results: dict[int, dict] = dict(pilot_results)  # seed with pilot data
     completed = len(pilot_results)
@@ -1609,11 +1679,11 @@ Document text:
 _EMAIL_EXTRACT_MAX_CHARS = 24_000   # ~6 000 tokens — keeps cost low for gpt-4o-mini
 
 
-def _extract_emails_full_doc(code: str, text: str, client) -> list[dict]:
+def _extract_emails_full_doc(code: str, text: str, client, provider: str = "openai") -> list[dict]:
     """
-    Full-document email extraction via GPT-4o-mini.
+    Full-document email extraction via a cheap text-only model (gpt-4o-mini or Gemini).
 
-    Sends the complete email document text in a single call so GPT can see
+    Sends the complete email document text in a single call so the model can see
     the whole thread, correctly identify split points, parse Dutch dates,
     and extract attachment lists — without page-boundary fragmentation.
 
@@ -1622,27 +1692,20 @@ def _extract_emails_full_doc(code: str, text: str, client) -> list[dict]:
     """
     truncated = text[:_EMAIL_EXTRACT_MAX_CHARS]
     prompt    = _EMAIL_EXTRACT_PROMPT.format(code=code, text=truncated)
+    model     = GEMINI_MODEL if provider == "gemini" else _BOUNDARY_MODEL
 
     for attempt in range(_MAX_RETRIES):
         try:
-            response = client.chat.completions.create(
-                model=_BOUNDARY_MODEL,   # gpt-4o-mini — text only, no vision needed
-                max_tokens=16384,        # gpt-4o-mini max — large threads can produce long JSON
-                temperature=0,
-                response_format={"type": "json_object"},
-                messages=[
-                    {"role": "system", "content": _EMAIL_EXTRACT_SYSTEM},
-                    {"role": "user",   "content": prompt},
-                ],
-                timeout=90.0,            # prevent silent hang on slow/long responses
+            raw_text, was_truncated = _llm_json_call(
+                provider, client, model, _EMAIL_EXTRACT_SYSTEM, prompt,
+                max_tokens=16384, timeout=90.0,
             )
-            choice = response.choices[0]
-            if choice.finish_reason == "length":
+            if was_truncated:
                 # Response was truncated — JSON will be invalid; no point retrying
                 # with the same input. Fall back to per-page assembly.
                 print(f"  [gpt4o-email] Doc {code}: email thread too long for single pass — using page-by-page fallback.")
                 return []
-            data = json.loads(choice.message.content or "{}")
+            data = json.loads(raw_text)
             raw  = data.get("emails") or []
             result: list[dict] = []
             for i, em in enumerate(raw, 1):
@@ -1778,23 +1841,17 @@ def _build_page_summary(page_data: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _call_boundary_pass(summary: str, n_pages: int, client, inv_hint: str = "") -> list[dict]:
-    """Single GPT-4o-mini text-only call that returns document + email boundaries."""
+def _call_boundary_pass(summary: str, n_pages: int, client, inv_hint: str = "", provider: str = "openai") -> list[dict]:
+    """Single cheap text-only call that returns document + email boundaries."""
     hint_prefix = inv_hint + "\n\n" if inv_hint else ""
     prompt = hint_prefix + _BOUNDARY_PROMPT.format(n=n_pages, summary=summary)
+    model  = GEMINI_MODEL if provider == "gemini" else _BOUNDARY_MODEL
     for attempt in range(_MAX_RETRIES):
         try:
-            response = client.chat.completions.create(
-                model=_BOUNDARY_MODEL,
-                max_tokens=4096,
-                temperature=0,
-                response_format={"type": "json_object"},
-                messages=[
-                    {"role": "system", "content": _BOUNDARY_SYSTEM},
-                    {"role": "user",   "content": prompt},
-                ],
+            raw_text, _ = _llm_json_call(
+                provider, client, model, _BOUNDARY_SYSTEM, prompt, max_tokens=4096,
             )
-            data = json.loads(response.choices[0].message.content or "{}")
+            data = json.loads(raw_text)
             return data.get("documents") or []
         except json.JSONDecodeError as e:
             print(f"  [gpt4o-pass2] JSON parse error (attempt {attempt + 1}): {e}")
@@ -1890,7 +1947,7 @@ def _finalise_pipeline(
             n_docs = sum(1 for l in inv_hint.splitlines() if l.startswith("  ["))
             print(f"[gpt4o] Found an inventory table listing {n_docs} document(s) — using it to guide boundary detection.")
         summary   = _build_page_summary(page_data)
-        documents = _call_boundary_pass(summary, len(page_data), client, inv_hint=inv_hint)
+        documents = _call_boundary_pass(summary, len(page_data), client, inv_hint=inv_hint, provider=provider)
         if documents:
             docs_raw = _build_docs_from_boundaries(page_data, documents)
             method   = "gpt4o-2pass"
@@ -1956,7 +2013,7 @@ def _finalise_pipeline(
 
     def _extract_email_worker(code: str) -> tuple[str, list]:
         print(f"  [gpt4o-email] Doc {code}: extracting email thread...")
-        return code, _extract_emails_full_doc(code, doc_meta[code]["annotated"], client)
+        return code, _extract_emails_full_doc(code, doc_meta[code]["annotated"], client, provider=provider)
 
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as executor:
         futures = {executor.submit(_extract_email_worker, code): code for code in email_codes}

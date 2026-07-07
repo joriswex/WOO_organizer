@@ -1293,7 +1293,7 @@ def _load_from_cache(cache_path: Path, pdf_path: Path) -> list[dict]:
     try:
         import sys as _sys
         _sys.path.insert(0, str(Path(__file__).parent))
-        from pipeline_gpt4o import docs_from_cache  # noqa: F401
+        from pipeline_vlm import docs_from_cache  # noqa: F401
         from text_sorting import sort_documents      # noqa: F401
     except ImportError:
         pass  # We'll still re-derive pages from raw cache below
@@ -1435,7 +1435,7 @@ def _load_from_cache(cache_path: Path, pdf_path: Path) -> list[dict]:
 
     # Try to overlay dates from sort_documents (best effort)
     try:
-        from pipeline_gpt4o import docs_from_cache as _dfc
+        from pipeline_vlm import docs_from_cache as _dfc
         from text_sorting import sort_documents as _sd
         docs = _sd(_dfc(cache_path, pdf_path))
         for code, doc in docs.items():
@@ -1529,7 +1529,7 @@ def _load_segments_json(path: Path) -> list[dict]:
 def _load_api_key(pdf_path: Path, api_key: str) -> list[dict]:
     import sys as _sys
     _sys.path.insert(0, str(pdf_path.parent))
-    from pipeline_gpt4o import load_pdf_vlm
+    from pipeline_vlm import load_pdf_vlm
     from text_sorting import sort_documents
 
     pdf_stem   = pdf_path.stem

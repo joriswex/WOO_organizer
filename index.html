@@ -2459,6 +2459,20 @@
     transition: border-color 0.15s;
   }
   .pipeline-api-key-input:focus { border-color: var(--woo-dark); }
+  .pipeline-provider-select {
+    width: 100%;
+    padding: 7px 10px;
+    margin-bottom: 6px;
+    font-family: var(--woo-font);
+    font-size: 12px;
+    font-weight: 600;
+    border: 1.5px solid var(--woo-border);
+    border-radius: var(--woo-radius-sm);
+    color: var(--woo-dark);
+    background: var(--woo-white);
+    outline: none;
+    cursor: pointer;
+  }
   .pipeline-pdf-section { margin-bottom: 18px; display: none; }
   .pipeline-pdf-section.visible { display: block; }
   .pipeline-pdf-section-label {
@@ -8480,7 +8494,24 @@ let _pendingFile      = null;   // File object for uploads
 let _selectedPipeline = 'api';  // 'api' | 'ocr' | 'gpt4o'
 let _selectedPdfUrl   = null;   // chosen PDF URL — doc browser (single-select)
 let _selectedPdfUrls  = new Set(); // chosen PDF URLs — pipeline selector (multi-select)
-let _pipelineApiKey   = '';     // OpenAI key entered in pipeline selector
+let _pipelineApiKey   = '';     // API key entered in pipeline selector (provider set by _llmProvider)
+let _llmProvider       = 'openai'; // 'openai' | 'gemini' — which LLM the vision pipeline calls
+
+const _PROVIDER_KEY_PLACEHOLDERS = {
+  openai: 'sk-…  OpenAI API-sleutel',
+  gemini: 'AIza…  Gemini API-sleutel',
+};
+
+function _setLlmProvider(value, inputId) {
+  _llmProvider    = value;
+  _pipelineApiKey = '';
+  if (value !== 'openai') OPENAI_API_KEY = null;
+  const input = document.getElementById(inputId);
+  if (input) {
+    input.value = '';
+    input.placeholder = _PROVIDER_KEY_PLACEHOLDERS[value] || 'API-sleutel';
+  }
+}
 let _pageRangeStart   = null;   // first page (1-indexed, null = all)
 let _pageRangeEnd     = null;   // last page  (1-indexed, null = all)
 let _invEnabled       = false;  // whether to extract inventarislijst
@@ -8511,6 +8542,8 @@ async function _showOnlinePipelineSelector(item) {
   _invPageStart     = null;
   _invPageEnd       = null;
   _invDossierUrl    = null;
+  _llmProvider      = 'openai';
+  _pipelineApiKey   = '';
 
   // Full-screen: hide toolbar (tabs), analysis panel, doc nav
   document.getElementById('viewerToolbar').style.display = 'none';
@@ -8580,6 +8613,8 @@ function _showUploadPipelineSelector(file) {
   _invPageStart     = null;
   _invPageEnd       = null;
   _invDossierUrl    = null;
+  _llmProvider      = 'openai';
+  _pipelineApiKey   = '';
 
   document.getElementById('viewerToolbar').style.display = 'flex';
   document.getElementById('noticeStrip').style.display   = 'none';
@@ -8654,17 +8689,22 @@ function _renderPipelineSelector({ mode, title }) {
         <div class="pipeline-option" data-pipeline="gpt4o" onclick="_selectPipelineOption(this)">
           <div class="pipeline-option-radio"></div>
           <div class="pipeline-option-body">
-            <div class="pipeline-option-name">✦ GPT-4o Vision Pipeline</div>
-            <div class="pipeline-option-desc">Analyseert elke pagina als afbeelding met GPT-4o. Hogere kwaliteit voor complexe documenten, chatgesprekken en onleesbare scans. Nauwkeurigere structuur- en metadataextractie dan OCR.</div>
+            <div class="pipeline-option-name">✦ Vision-model pipeline</div>
+            <div class="pipeline-option-desc">Analyseert elke pagina als afbeelding met een vision-LLM (OpenAI of Gemini, kies hieronder). Hogere kwaliteit voor complexe documenten, chatgesprekken en onleesbare scans. Nauwkeurigere structuur- en metadataextractie dan OCR.</div>
             <div class="pipeline-tags">
               <span class="pipeline-tag red">API-credits</span>
               <span class="pipeline-tag">~5–15 min</span>
               <span class="pipeline-tag">PDF vereist</span>
             </div>
             <div class="pipeline-api-key-wrap" id="pipelineApiKeyWrap">
+              <select id="pipelineProviderSelect" class="pipeline-provider-select"
+                      onchange="_setLlmProvider(this.value, 'pipelineApiKeyInput')">
+                <option value="openai">OpenAI</option>
+                <option value="gemini">Google Gemini</option>
+              </select>
               <input type="password" id="pipelineApiKeyInput" class="pipeline-api-key-input"
                      placeholder="sk-…  OpenAI API-sleutel"
-                     oninput="_pipelineApiKey = this.value; OPENAI_API_KEY = this.value || null; const _sk = document.getElementById('summaryApiKeyInput'); if (_sk) _sk.value = this.value;" />
+                     oninput="_pipelineApiKey = this.value; if (_llmProvider === 'openai') { OPENAI_API_KEY = this.value || null; const _sk = document.getElementById('summaryApiKeyInput'); if (_sk) _sk.value = this.value; }" />
             </div>
           </div>
         </div>
@@ -9034,9 +9074,9 @@ function _startSelectedPipeline() {
   }
 
   if (_pendingFile) {
-    _runServerPipeline({ pipeline: _selectedPipeline, file: _pendingFile, apiKey: _pipelineApiKey, ...rangeOpts });
+    _runServerPipeline({ pipeline: _selectedPipeline, file: _pendingFile, apiKey: _pipelineApiKey, provider: _llmProvider, ...rangeOpts });
   } else if (selectedUrls.length > 0) {
-    _runServerPipeline({ pipeline: _selectedPipeline, urls: selectedUrls, apiKey: _pipelineApiKey, pid: _pendingPid, ...rangeOpts });
+    _runServerPipeline({ pipeline: _selectedPipeline, urls: selectedUrls, apiKey: _pipelineApiKey, pid: _pendingPid, provider: _llmProvider, ...rangeOpts });
   } else {
     alert('Kies eerst een PDF-bestand om te verwerken.');
     return;
@@ -9065,7 +9105,7 @@ function _startSelectedPipeline() {
 // Server pipeline — POST /api/analyse with SSE stream
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function _runServerPipeline({ pipeline, urls, url, file, apiKey, pid, pageStart, pageEnd }) {
+async function _runServerPipeline({ pipeline, urls, url, file, apiKey, pid, pageStart, pageEnd, provider }) {
   const content = document.getElementById('viewerContent');
   const logLines = [];
 
@@ -9088,6 +9128,7 @@ async function _runServerPipeline({ pipeline, urls, url, file, apiKey, pid, page
   form.append('pipeline', pipeline);
   for (const u of urlList) form.append('url', u);
   if (apiKey)    form.append('api_key',    apiKey);
+  if (pipeline === 'gpt4o') form.append('provider', provider || 'openai');
   if (file)      form.append('file',       file);
   if (pageStart) form.append('page_start', pageStart);
   if (pageEnd)   form.append('page_end',   pageEnd);
@@ -9344,13 +9385,20 @@ function _renderDocumentBrowser() {
                 <div class="compact-pipeline-radio"></div>
                 <div>
                   <div class="compact-pipeline-name">✦ Visiemodel</div>
-                  <div class="compact-pipeline-sub">GPT-4o Vision · hogere kwaliteit</div>
+                  <div class="compact-pipeline-sub">OpenAI / Gemini · hogere kwaliteit</div>
                 </div>
               </div>
             </div>
-            <input type="password" id="browserApiKeyInput" class="doc-browser-api-key"
-                   placeholder="sk-… OpenAI API-sleutel"
-                   style="display:none" oninput="_pipelineApiKey=this.value; OPENAI_API_KEY = this.value || null; const _sk2 = document.getElementById('summaryApiKeyInput'); if (_sk2) _sk2.value = this.value;" />
+            <div id="browserApiKeyWrap" style="display:none">
+              <select id="browserProviderSelect" class="pipeline-provider-select"
+                      onchange="_setLlmProvider(this.value, 'browserApiKeyInput')">
+                <option value="openai">OpenAI</option>
+                <option value="gemini">Google Gemini</option>
+              </select>
+              <input type="password" id="browserApiKeyInput" class="doc-browser-api-key"
+                     placeholder="sk-… OpenAI API-sleutel"
+                     oninput="_pipelineApiKey=this.value; if (_llmProvider === 'openai') { OPENAI_API_KEY = this.value || null; const _sk2 = document.getElementById('summaryApiKeyInput'); if (_sk2) _sk2.value = this.value; }" />
+            </div>
             <div style="margin-bottom:9px">
               <div class="doc-browser-pipeline-label" style="margin-bottom:5px">Paginabereik (optioneel)</div>
               <div style="display:flex;align-items:center;gap:6px">
@@ -9485,8 +9533,8 @@ function _selectCompactPipeline(el) {
   document.querySelectorAll('.compact-pipeline-option').forEach(o => o.classList.remove('selected'));
   el.classList.add('selected');
   _selectedPipeline = el.dataset.pipeline;
-  const inp = document.getElementById('browserApiKeyInput');
-  if (inp) inp.style.display = _selectedPipeline === 'gpt4o' ? 'block' : 'none';
+  const wrap = document.getElementById('browserApiKeyWrap');
+  if (wrap) wrap.style.display = _selectedPipeline === 'gpt4o' ? 'block' : 'none';
 }
 
 async function _previewPdfInBrowser(url) {

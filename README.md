@@ -20,7 +20,7 @@ browser  ←→  server.py (FastAPI)
                 ├── GET  /api/session_pdf_range     → serves a page range of the session PDF
                 ├── POST /api/analyse               → runs pipeline, streams SSE progress + result
                 │       ├── pipeline_ocr.py         (pipeline="ocr")
-                │       └── pipeline_gpt4o.py       (pipeline="gpt4o")
+                │       └── pipeline_vlm.py         (pipeline="gpt4o", provider="openai"|"gemini")
                 │               └── pipeline_inventarislijst.py  (Inventarislijst pages)
                 └── POST /api/inventarislijst       → standalone inventory-table extraction
 ```
@@ -120,9 +120,11 @@ Page texts are joined, redaction codes are summed and annotated as `[REDACTED: 5
 
 ---
 
-#### GPT-4o pipeline (`pipeline_gpt4o.py`)
+#### Vision-LLM pipeline (`pipeline_vlm.py`)
 
-**Pipeline architecture**
+Supports two providers, selected per-run via the `provider` argument / form field: `"openai"` (default) or `"gemini"`. All three call sites (pilot, per-page read, boundary + email extraction) route through one dispatch helper, `_llm_json_call()`, so both providers share the same retry/JSON-repair logic.
+
+**Pipeline architecture (OpenAI; Gemini uses `gemini-2.5-flash` for every step instead)**
 
 | Step | Model | Input | Purpose |
 |---|---|---|---|
@@ -224,7 +226,7 @@ Both Dutch (`Van`, `Aan`, `Onderwerp`, `Verzonden`, `CC`) and English header fie
 | `server.py` | FastAPI server — serves the frontend, proxies WOO/WooZM requests, exposes `/api/analyse` SSE endpoint, `/search`, `/infobox`, `/text`, and `/api/inventarislijst` |
 | `index.html` | WOOLens frontend — single-file vanilla JS + CSS, no build step; PDF.js for in-browser rendering; NL/EN language toggle |
 | `pipeline_ocr.py` | OCR pipeline: stamp detection, pdfplumber + Tesseract text extraction, document splitting |
-| `pipeline_gpt4o.py` | GPT-4o pipeline: three-pass vision extraction, boundary detection, email extraction, cache management |
+| `pipeline_vlm.py` | Vision-LLM pipeline (OpenAI or Gemini): three-pass vision extraction, boundary detection, email extraction, cache management |
 | `pipeline_inventarislijst.py` | GPT-4o-mini vision extraction of WOO inventory table rows |
 | `email_splitter.py` | Splits email document text into individual emails with structured metadata |
 | `text_sorting.py` | Date extraction and chronological sorting |

@@ -753,6 +753,7 @@ async def _run_pipeline_sse(
     pdf_path: Path,
     api_key: Optional[str],
     page_range: Optional[Tuple[int, int]] = None,
+    provider: str = "openai",
 ) -> AsyncIterator[str]:
     """
     Async generator — runs the chosen pipeline in a background thread,
@@ -798,8 +799,9 @@ async def _run_pipeline_sse(
                 from pipeline_ocr import load_pdf, PipelineCancelled
                 result = load_pdf(pdf_path, page_range=page_range, cancel_event=_cancel_event)
             else:
-                from pipeline_gpt4o import load_pdf_vlm, PipelineCancelled
-                result = load_pdf_vlm(pdf_path, api_key=api_key, page_range=page_range, cancel_event=_cancel_event)
+                from pipeline_vlm import load_pdf_vlm, PipelineCancelled
+                result = load_pdf_vlm(pdf_path, api_key=api_key, page_range=page_range,
+                                       cancel_event=_cancel_event, provider=provider)
             asyncio.run_coroutine_threadsafe(
                 q.put({"type": "result", "data": result}), loop
             )
@@ -865,12 +867,13 @@ async def _pipeline_with_cleanup(
     pdf_path: Path,
     api_key: Optional[str],
     page_range: Optional[Tuple[int, int]] = None,
+    provider: str = "openai",
 ) -> AsyncIterator[str]:
     """Wraps _run_pipeline_sse to delete the temp PDF when done.
     Saves a copy to _SESSION_PDF first so the frontend can display PDF pages."""
     shutil.copy2(pdf_path, _SESSION_PDF)
     try:
-        async for chunk in _run_pipeline_sse(pipeline, pdf_path, api_key, page_range=page_range):
+        async for chunk in _run_pipeline_sse(pipeline, pdf_path, api_key, page_range=page_range, provider=provider):
             yield chunk
     finally:
         pdf_path.unlink(missing_ok=True)
@@ -882,7 +885,8 @@ async def _pipeline_with_cleanup(
 async def analyse(
     pipeline:   str            = Form(..., description="'ocr' or 'gpt4o'"),
     url:        list[str]      = Form(default=[], description="PDF URL(s) — repeat field for multiple"),
-    api_key:    Optional[str]  = Form(None, description="OpenAI API key (gpt4o only)"),
+    api_key:    Optional[str]  = Form(None, description="API key for the chosen provider (gpt4o only)"),
+    provider:   str            = Form("openai", description="'openai' or 'gemini' (gpt4o only)"),
     file:       Optional[UploadFile] = File(None, description="Uploaded PDF file"),
     page_start: Optional[int]  = Form(None, description="First page to process (1-indexed, inclusive)"),
     page_end:   Optional[int]  = Form(None, description="Last page to process (1-indexed, inclusive)"),
@@ -950,7 +954,7 @@ async def analyse(
     page_range = (page_start, page_end) if page_start and page_end else None
 
     return StreamingResponse(
-        _pipeline_with_cleanup(pipeline, pdf_path, api_key or None, page_range=page_range),
+        _pipeline_with_cleanup(pipeline, pdf_path, api_key or None, page_range=page_range, provider=provider),
         media_type="text/event-stream",
         headers={
             "Cache-Control":    "no-cache",
