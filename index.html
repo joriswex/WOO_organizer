@@ -9076,6 +9076,14 @@ async function _runServerPipeline({ pipeline, urls, url, file, apiKey, pid, page
   if (urlList.length > 0) state.pdfSource = { type: 'url', url: urlList[0] };
   if (file) state.pdfSource = { type: 'file', blobUrl: URL.createObjectURL(file) };
 
+  // Show feedback the instant the button is pressed. Uploading the actual PDF
+  // to a hosted server (as opposed to localhost) can take several seconds
+  // before the server even responds — with no indicator that looks frozen.
+  content.innerHTML = `<div class="loading-spinner">
+    <div class="spinner-ring"></div>
+    <div class="loading-text">${file ? 'PDF wordt verzonden naar de server…' : 'PDF wordt opgehaald…'}</div>
+  </div>`;
+
   const form = new FormData();
   form.append('pipeline', pipeline);
   for (const u of urlList) form.append('url', u);
@@ -9109,6 +9117,7 @@ async function _runServerPipeline({ pipeline, urls, url, file, apiKey, pid, page
   let lastPct         = null;
   let lastProgressTs  = Date.now();
   let stalled         = false;
+  _cancelRequested    = false;
 
   const _STALL_MS = 25000;
   const stallInterval = setInterval(() => {
@@ -9180,8 +9189,9 @@ async function _runServerPipeline({ pipeline, urls, url, file, apiKey, pid, page
 }
 
 async function _cancelRunningPipeline() {
+  _cancelRequested = true;
   const btn = document.getElementById('_cancelPipelineBtn');
-  if (btn) { btn.disabled = true; btn.textContent = 'Annuleren…'; }
+  if (btn) { btn.disabled = true; btn.textContent = 'Bezig met annuleren…'; }
   try { await fetch('/api/analyse/cancel', { method: 'POST' }); } catch {}
 }
 
@@ -9198,6 +9208,12 @@ const _LOADING_QUIPS = [
 ];
 let _quipIdx = 0;
 let _quipTimer = null;
+
+// Tracks whether cancellation was requested for the run currently being
+// displayed — _showServerProgressUI redraws the whole panel on every
+// progress tick, so this has to persist outside that function or the
+// disabled button state gets wiped by the next tick almost immediately.
+let _cancelRequested = false;
 
 function _showServerProgressUI(msg, pct, logLines, container, stalled) {
   const pctVal = pct ?? 0;
@@ -9239,9 +9255,9 @@ function _showServerProgressUI(msg, pct, logLines, container, stalled) {
       <div style="font-family:var(--woo-mono);font-size:11px;color:var(--woo-accent);margin-top:8px;max-width:380px;text-align:center;line-height:1.5">
         ⚠ Al een tijdje geen update ontvangen — de server werkt mogelijk nog, of is vastgelopen. Controleer de logs, of annuleer hieronder.
       </div>` : ''}
-      <button id="_cancelPipelineBtn" onclick="_cancelRunningPipeline()"
-              style="margin-top:10px;padding:7px 16px;font-family:var(--woo-font);font-size:12px;font-weight:600;color:var(--woo-dark);background:var(--woo-white);border:1.5px solid var(--woo-border);border-radius:var(--woo-radius-sm);cursor:pointer">
-        Annuleren
+      <button id="_cancelPipelineBtn" onclick="_cancelRunningPipeline()" ${_cancelRequested ? 'disabled' : ''}
+              style="margin-top:10px;padding:7px 16px;font-family:var(--woo-font);font-size:12px;font-weight:600;color:var(--woo-dark);background:var(--woo-white);border:1.5px solid var(--woo-border);border-radius:var(--woo-radius-sm);cursor:${_cancelRequested ? 'default' : 'pointer'};opacity:${_cancelRequested ? '0.6' : '1'}">
+        ${_cancelRequested ? 'Bezig met annuleren…' : 'Annuleren'}
       </button>
       ${logLines.length > 0 ? `
       <div class="pipeline-server-log" id="serverLogBox">
